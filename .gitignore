@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+logs/
+exports/
+
+config/quick_send.cfg
+
+.DS_Store
+Thumbs.db
