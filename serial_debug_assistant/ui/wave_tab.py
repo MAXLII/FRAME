@@ -97,6 +97,18 @@ class WaveformTab(ttk.Frame):
         self.window_var.trace_add("write", self._on_window_changed)
         self.bind_all("<KeyPress-f>", self._on_show_all_shortcut, add=True)
         self.bind_all("<KeyPress-F>", self._on_show_all_shortcut, add=True)
+        self.bind_all("<KeyPress-r>", self._on_apply_period_shortcut, add=True)
+        self.bind_all("<KeyPress-R>", self._on_apply_period_shortcut, add=True)
+        self.bind_all("<KeyPress-p>", self._on_pause_shortcut, add=True)
+        self.bind_all("<KeyPress-P>", self._on_pause_shortcut, add=True)
+        self.bind_all("<KeyPress-l>", self._on_back_to_live_shortcut, add=True)
+        self.bind_all("<KeyPress-L>", self._on_back_to_live_shortcut, add=True)
+        self.bind_all("<Control-e>", self._on_export_shortcut, add=True)
+        self.bind_all("<Control-E>", self._on_export_shortcut, add=True)
+        self.bind_all("<Control-i>", self._on_import_shortcut, add=True)
+        self.bind_all("<Control-I>", self._on_import_shortcut, add=True)
+        self.bind_all("<KeyPress-m>", self._on_marker_shortcut, add=True)
+        self.bind_all("<KeyPress-M>", self._on_marker_shortcut, add=True)
         self.bind_all("<KeyPress-Alt_L>", self._on_alt_press, add=True)
         self.bind_all("<KeyPress-Alt_R>", self._on_alt_press, add=True)
         self.bind_all("<KeyRelease-Alt_L>", self._on_alt_release, add=True)
@@ -109,34 +121,46 @@ class WaveformTab(ttk.Frame):
 
         top = ttk.Frame(self, style="Panel.TFrame")
         top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        top.columnconfigure(13, weight=1)
+        top.columnconfigure(9, weight=1)
 
-        ttk.Label(top, text="上报周期(ms):", style="Header.TLabel").grid(row=0, column=0)
-        ttk.Entry(top, textvariable=self.period_var, width=10).grid(row=0, column=1, padx=(6, 8))
-        ttk.Button(top, text="应用周期", command=self.on_apply_period).grid(row=0, column=2)
-        ttk.Button(top, textvariable=self.run_button_text, command=self.on_toggle_run, style="Accent.TButton").grid(
+        row1 = ttk.Frame(top, style="Panel.TFrame")
+        row1.grid(row=0, column=0, sticky="ew")
+        row1.columnconfigure(9, weight=1)
+        ttk.Label(row1, text="上报周期(ms):", style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(row1, textvariable=self.period_var, width=10).grid(row=0, column=1, padx=(6, 8))
+        ttk.Button(row1, text="应用周期 R", command=self.on_apply_period).grid(row=0, column=2)
+        ttk.Button(row1, textvariable=self.run_button_text, command=self.on_toggle_run, style="Accent.TButton").grid(
             row=0,
             column=3,
             padx=(8, 8),
         )
-        ttk.Button(top, textvariable=self.pause_button_text, command=self.toggle_pause_view).grid(row=0, column=4)
-        ttk.Button(top, text="回到实时", command=self.back_to_live).grid(row=0, column=5, padx=(8, 0))
-        ttk.Button(top, text="显示全部(F)", command=self.show_all).grid(row=0, column=6, padx=(8, 0))
-        ttk.Button(top, text="清空波形", command=self.on_clear).grid(row=0, column=7, padx=(8, 0))
-        ttk.Label(top, text="查看窗口:", style="Header.TLabel").grid(row=0, column=8, padx=(12, 0))
+        ttk.Button(row1, text="暂停/继续 P", command=self.toggle_pause_view).grid(row=0, column=4)
+        ttk.Button(row1, text="回到实时 L", command=self.back_to_live).grid(row=0, column=5, padx=(8, 0))
+        ttk.Button(row1, text="显示全部 F", command=self.show_all).grid(row=0, column=6, padx=(8, 0))
+        ttk.Button(row1, text="清空", command=self.on_clear).grid(row=0, column=7, padx=(8, 0))
+        ttk.Label(row1, textvariable=self.status_var, style="Header.TLabel").grid(row=0, column=8, sticky="w", padx=(16, 12))
+        ttk.Label(row1, textvariable=self.view_var).grid(row=0, column=9, sticky="e")
+
+        row2 = ttk.Frame(top, style="Panel.TFrame")
+        row2.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        row2.columnconfigure(7, weight=1)
+        ttk.Label(row2, text="查看窗口:", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
-            top,
+            row2,
             textvariable=self.window_var,
             values=tuple(WINDOW_OPTIONS.keys()),
             state="readonly",
-            width=10,
-        ).grid(row=0, column=9, padx=(6, 0))
-        ttk.Button(top, text="导出波形", command=self.export_waveform_file).grid(row=0, column=10, padx=(12, 0))
-        ttk.Button(top, text="导入波形", command=self.import_waveform_file).grid(row=0, column=11, padx=(8, 0))
-        ttk.Entry(top, textvariable=self.marker_var, width=16).grid(row=0, column=12, padx=(12, 6))
-        ttk.Button(top, text="添加标记", command=self.add_marker).grid(row=0, column=13)
-        ttk.Label(top, textvariable=self.status_var, style="Header.TLabel").grid(row=0, column=14, sticky="w", padx=(16, 12))
-        ttk.Label(top, textvariable=self.view_var).grid(row=0, column=15, sticky="e")
+            width=12,
+        ).grid(row=0, column=1, padx=(6, 12), sticky="w")
+        ttk.Button(row2, text="导出 Ctrl+E", command=self.export_waveform_file).grid(row=0, column=2)
+        ttk.Button(row2, text="导入 Ctrl+I", command=self.import_waveform_file).grid(row=0, column=3, padx=(8, 0))
+        ttk.Entry(row2, textvariable=self.marker_var, width=18).grid(row=0, column=4, padx=(12, 6), sticky="w")
+        ttk.Button(row2, text="添加标记 M", command=self.add_marker).grid(row=0, column=5)
+        ttk.Label(
+            row2,
+            text="提示: Space 启停, Alt 显示当前点值",
+            style="Status.TLabel",
+        ).grid(row=0, column=7, sticky="e")
 
         left = ttk.LabelFrame(self, text="已选参数", style="Section.TLabelframe", padding=10)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
@@ -221,6 +245,8 @@ class WaveformTab(ttk.Frame):
                 label.grid(row=0, column=1, sticky="w", padx=(0, 6))
                 row.columnconfigure(1, weight=1)
                 row.pack(fill="x", padx=2, pady=1)
+                for widget in (row, checkbox, label):
+                    widget.bind("<MouseWheel>", self._on_series_canvas_mousewheel)
                 self._row_vars[name] = row_var
                 self._row_widgets[name] = (row, checkbox, label)
 
@@ -714,23 +740,33 @@ class WaveformTab(ttk.Frame):
     def _draw_value_labels(self, latest_points: list[tuple[str, str, float]], label_x: float, plot_top: float, plot_bottom: float) -> None:
         if not latest_points:
             return
-        legend_items = [(name, color) for name, color, _ in latest_points]
+        legend_items = [
+            (name, color, self.latest_values.get(name, "-"))
+            for name, color, _ in latest_points
+        ]
         line_height = 18
         padding = 8
         max_visible = max(1, int((plot_bottom - plot_top - 20) // line_height))
         hidden_count = max(0, len(legend_items) - max_visible)
         visible_items = legend_items[:max_visible]
         box_height = padding * 2 + len(visible_items) * line_height + (line_height if hidden_count else 0)
-        box_width = 150
+        box_width = 230
         box_x0 = label_x - 6
         box_y0 = plot_top + 8
         self.canvas.create_rectangle(box_x0, box_y0, box_x0 + box_width, box_y0 + box_height, fill="#ffffff", outline="#cbd5e1")
         self.canvas.create_text(box_x0 + padding, box_y0 + padding - 1, text="图例", anchor="nw", fill="#475569", font=("Segoe UI", 9, "bold"))
         base_y = box_y0 + padding + 16
-        for idx, (name, color) in enumerate(visible_items):
+        for idx, (name, color, latest_value) in enumerate(visible_items):
             y = base_y + idx * line_height
             self.canvas.create_line(box_x0 + padding, y + 6, box_x0 + padding + 14, y + 6, fill=color, width=3)
-            self.canvas.create_text(box_x0 + padding + 20, y + 6, text=name, anchor="w", fill="#0f172a", font=("Segoe UI", 9))
+            self.canvas.create_text(
+                box_x0 + padding + 20,
+                y + 6,
+                text=f"{name} = {latest_value}",
+                anchor="w",
+                fill="#0f172a",
+                font=("Segoe UI", 9),
+            )
         if hidden_count:
             more_y = base_y + len(visible_items) * line_height
             self.canvas.create_text(box_x0 + padding, more_y + 6, text=f"还有 {hidden_count} 条", anchor="w", fill="#64748b", font=("Segoe UI", 9))
@@ -757,6 +793,38 @@ class WaveformTab(ttk.Frame):
 
     def _on_show_all_shortcut(self, _event) -> None:
         self.show_all()
+
+    def _on_apply_period_shortcut(self, _event) -> str:
+        self.on_apply_period()
+        return "break"
+
+    def _on_toggle_run_shortcut(self, _event) -> str:
+        self.on_toggle_run()
+        return "break"
+
+    def _on_pause_shortcut(self, _event) -> str:
+        self.toggle_pause_view()
+        return "break"
+
+    def _on_back_to_live_shortcut(self, _event) -> str:
+        self.back_to_live()
+        return "break"
+
+    def _on_clear_shortcut(self, _event) -> str:
+        self.on_clear()
+        return "break"
+
+    def _on_export_shortcut(self, _event) -> str:
+        self.export_waveform_file()
+        return "break"
+
+    def _on_import_shortcut(self, _event) -> str:
+        self.import_waveform_file()
+        return "break"
+
+    def _on_marker_shortcut(self, _event) -> str:
+        self.add_marker()
+        return "break"
 
     def _on_alt_press(self, _event) -> None:
         if self._alt_pressed:

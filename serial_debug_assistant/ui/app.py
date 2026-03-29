@@ -50,6 +50,7 @@ class SerialDebugAssistant(tk.Tk):
         self.project_root = Path(__file__).resolve().parents[2]
         self.logger = DebugLogger(self.project_root / "logs" / "app_debug.log")
         self.serial_service = SerialService()
+        self.port_display_map: dict[str, str] = {}
         self.frame_parser = FrameParser()
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
@@ -249,14 +250,21 @@ class SerialDebugAssistant(tk.Tk):
         ttk.Combobox(self.sidebar, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=22).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
 
     def refresh_ports(self) -> None:
-        ports = self.serial_service.list_ports()
-        self.port_combo["values"] = ports
-        if ports and self.port_var.get() not in ports:
-            self.port_var.set(ports[0])
-        if not ports:
+        ports = self.serial_service.list_ports_with_details()
+        display_values = [item["display"] for item in ports]
+        self.port_display_map = {item["display"]: item["device"] for item in ports}
+        current_device = self.port_display_map.get(self.port_var.get(), self.port_var.get())
+        self.port_combo["values"] = display_values
+        if display_values:
+            selected_display = next(
+                (item["display"] for item in ports if item["device"] == current_device),
+                display_values[0],
+            )
+            self.port_var.set(selected_display)
+        else:
             self.port_var.set("")
-        self.set_status(f"Ready | {len(ports)} port(s) found")
-        self.logger.log("PORTS", f"refresh -> {ports}")
+        self.set_status(f"Ready | {len(display_values)} port(s) found")
+        self.logger.log("PORTS", f"refresh -> {display_values}")
 
     def toggle_connection(self) -> None:
         if self.serial_service.is_open():
@@ -268,9 +276,10 @@ class SerialDebugAssistant(tk.Tk):
         if not self.port_var.get():
             self.set_status("Please select a serial port.", error=True)
             return
+        selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
         try:
             self.serial_service.open(
-                port=self.port_var.get(),
+                port=selected_port,
                 baudrate=int(self.baud_var.get()),
                 data_bits=self.data_bits_var.get(),
                 parity=self.parity_var.get(),
@@ -293,10 +302,10 @@ class SerialDebugAssistant(tk.Tk):
         self.wave_tab.set_running(False)
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
-        self.set_status(f"Connected to {self.port_var.get()}")
+        self.set_status(f"Connected to {selected_port}")
         self.parameter_tab.set_message("串口已连接，已向广播地址发送停止波形上传命令")
         self._set_open_button_text("Close")
-        self.logger.log("SERIAL", f"open port={self.port_var.get()} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
+        self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
         self.logger.log("WAVE", "send broadcast stop on connect dst=0x00 d_dst=0x00")
         self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
         if self.auto_send_var.get():

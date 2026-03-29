@@ -6,6 +6,9 @@ __pycache__/
 
 logs/
 exports/
+build/
+dist/
+*.spec
 
 config/quick_send.cfg
 

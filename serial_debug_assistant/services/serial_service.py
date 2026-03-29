@@ -21,6 +21,20 @@ class SerialService:
     def list_ports(self) -> list[str]:
         return [port.device for port in serial.tools.list_ports.comports()]
 
+    def list_ports_with_details(self) -> list[dict[str, str]]:
+        ports: list[dict[str, str]] = []
+        for port in serial.tools.list_ports.comports():
+            description = (port.description or "").strip()
+            display = port.device if not description or description == "n/a" else f"{port.device} - {description}"
+            ports.append(
+                {
+                    "device": port.device,
+                    "description": description,
+                    "display": display,
+                }
+            )
+        return ports
+
     def open(
         self,
         *,
