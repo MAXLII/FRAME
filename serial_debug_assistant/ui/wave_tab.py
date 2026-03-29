@@ -161,7 +161,7 @@ class WaveformTab(ttk.Frame):
         ttk.Button(row2, text="添加标记 M", command=self.add_marker).grid(row=0, column=5)
         ttk.Label(
             row2,
-            text="提示: Space 启停, Alt 显示当前点值",
+            text="提示: Alt 显示当前点值",
             style="Status.TLabel",
         ).grid(row=0, column=7, sticky="e")
 
@@ -680,7 +680,7 @@ class WaveformTab(ttk.Frame):
         width = max(self.canvas.winfo_width(), 100)
         height = max(self.canvas.winfo_height(), 100)
         pad_left = 72
-        pad_right = 190
+        pad_right = 24
         pad_top = 20
         pad_bottom = 52
         plot_left = pad_left
