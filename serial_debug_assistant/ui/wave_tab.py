@@ -731,16 +731,21 @@ class WaveformTab(ttk.Frame):
         for index in range(5):
             ratio = index / 4
             y = plot_top + (plot_bottom - plot_top) * ratio
-            self.canvas.create_line(plot_left, y, plot_right, y, fill="#e2e8f0")
+            self.canvas.create_line(plot_left, y, plot_right, y, fill="#cbd5e1", dash=(3, 3))
             value = y_max - (y_max - y_min) * ratio
             self.canvas.create_text(plot_left - 8, y, text=self._format_numeric(value), anchor="e", fill="#475569")
 
         for tick in range(5):
             ratio = tick / 4
             x = plot_left + (plot_right - plot_left) * ratio
-            self.canvas.create_line(x, plot_top, x, plot_bottom, fill="#f1f5f9")
+            self.canvas.create_line(x, plot_top, x, plot_bottom, fill="#e2e8f0", dash=(3, 3))
             tick_ts = x_min + (x_max - x_min) * ratio
             self.canvas.create_text(x, plot_bottom + 18, text=datetime.fromtimestamp(tick_ts).strftime("%H:%M:%S"), fill="#475569")
+
+        if y_min <= 0.0 <= y_max:
+            zero_y = plot_bottom - (0.0 - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
+            self.canvas.create_line(plot_left, zero_y, plot_right, zero_y, fill="#94a3b8", width=1)
+            self.canvas.create_text(plot_left - 8, zero_y, text="0", anchor="e", fill="#334155", font=("Segoe UI", 9, "bold"))
 
         self._draw_markers(plot_left, plot_top, plot_bottom, x_min, x_max)
 
