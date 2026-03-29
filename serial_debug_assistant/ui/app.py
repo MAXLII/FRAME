@@ -152,6 +152,7 @@ class SerialDebugAssistant(tk.Tk):
             on_send_preset=self.send_preset_payload,
             on_reset_count=self.reset_counters,
             config_path=self.project_root / "config" / "quick_send.cfg",
+            on_layout_change=self._log_monitor_layout,
         )
         self.parameter_tab = ParameterReadWriteTab(
             self.notebook,
@@ -248,6 +249,23 @@ class SerialDebugAssistant(tk.Tk):
 
     def _build_stop_bits_selector(self, row: int) -> None:
         ttk.Combobox(self.sidebar, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=22).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+
+    def _log_monitor_layout(self, layout: dict[str, int | str]) -> None:
+        self.logger.log(
+            "LAYOUT",
+            "monitor_split "
+            f"source={layout['source']} total_height={layout['total_height']} "
+            f"sash_y={layout['sash_y']} top_height={layout['top_height']} "
+            f"bottom_height={layout['bottom_height']} "
+            f"send_tabs_height={layout.get('send_tabs_height', 0)} "
+            f"manual_tab_height={layout.get('manual_tab_height', 0)} "
+            f"preset_tab_height={layout.get('preset_tab_height', 0)} "
+            f"receive_reqheight={layout.get('receive_reqheight', 0)} "
+            f"send_reqheight={layout.get('send_reqheight', 0)} "
+            f"send_tabs_reqheight={layout.get('send_tabs_reqheight', 0)} "
+            f"manual_reqheight={layout.get('manual_reqheight', 0)} "
+            f"preset_reqheight={layout.get('preset_reqheight', 0)}",
+        )
 
     def refresh_ports(self) -> None:
         ports = self.serial_service.list_ports_with_details()

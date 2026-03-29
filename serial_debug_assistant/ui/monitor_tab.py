@@ -12,18 +12,22 @@ class SerialMonitorTab(ttk.Frame):
     PRESET_CRLF_WIDTH = 64
     PRESET_SEND_WIDTH = 76
 
-    def __init__(self, master, *, on_send, on_send_preset, on_reset_count, config_path: Path) -> None:
+    def __init__(self, master, *, on_send, on_send_preset, on_reset_count, config_path: Path, on_layout_change=None) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
         self.on_send = on_send
         self.on_send_preset = on_send_preset
         self.on_reset_count = on_reset_count
         self.config_path = config_path
+        self.on_layout_change = on_layout_change
         self.preset_hex_vars: list[tk.BooleanVar] = []
         self.preset_line_vars: list[tk.BooleanVar] = []
         self.preset_text_vars: list[tk.StringVar] = []
         self._suspend_save = False
         self._saved_sash_y: int | None = None
+        self._saved_sash_ratio: float | None = None
         self._last_sash_y: int | None = None
+        self._last_layout_signature: tuple[int, ...] | None = None
+        self._layout_restored = False
         self._build()
         self._load_preset_config()
 
@@ -42,11 +46,13 @@ class SerialMonitorTab(ttk.Frame):
         )
         paned.grid(row=0, column=0, sticky="nsew")
         self.main_paned = paned
+        self.main_paned.bind("<Configure>", self._on_main_paned_configure)
         self.main_paned.bind("<ButtonRelease-1>", self._on_main_paned_release)
 
         receive_container = ttk.Frame(self, style="Panel.TFrame")
         receive_container.rowconfigure(0, weight=1)
         receive_container.columnconfigure(0, weight=1)
+        self.receive_container = receive_container
 
         self.receive_text = tk.Text(
             receive_container,
@@ -68,17 +74,21 @@ class SerialMonitorTab(ttk.Frame):
         recv_scroll.grid(row=0, column=1, sticky="ns")
         self.receive_text.configure(yscrollcommand=recv_scroll.set)
 
-        send_container = ttk.Frame(self, style="Panel.TFrame")
+        send_container = ttk.Frame(self, style="Panel.TFrame", height=240)
         send_container.rowconfigure(0, weight=1)
         send_container.columnconfigure(0, weight=1)
+        send_container.grid_propagate(False)
+        self.send_container = send_container
 
-        send_tabs = ttk.Notebook(send_container)
+        send_tabs = ttk.Notebook(send_container, height=210)
         send_tabs.grid(row=0, column=0, sticky="nsew")
+        self.send_tabs = send_tabs
 
         manual_tab = ttk.Frame(send_tabs, style="Panel.TFrame", padding=8)
         manual_tab.rowconfigure(0, weight=1)
         manual_tab.columnconfigure(0, weight=1)
         send_tabs.add(manual_tab, text="手动发送")
+        self.manual_tab = manual_tab
 
         manual_editor = ttk.Frame(manual_tab, style="Panel.TFrame")
         manual_editor.grid(row=0, column=0, sticky="nsew")
@@ -126,6 +136,7 @@ class SerialMonitorTab(ttk.Frame):
         preset_tab.rowconfigure(0, weight=1)
         preset_tab.columnconfigure(0, weight=1)
         send_tabs.add(preset_tab, text="快捷发送")
+        self.preset_tab = preset_tab
 
         preset_frame = ttk.Frame(preset_tab, style="Panel.TFrame")
         preset_frame.grid(row=0, column=0, sticky="nsew")
@@ -146,7 +157,7 @@ class SerialMonitorTab(ttk.Frame):
             highlightthickness=1,
             highlightbackground="#cbd5e1",
             relief="flat",
-            height=240,
+            height=160,
         )
         self.preset_canvas.grid(row=1, column=0, sticky="nsew")
         preset_scroll = ttk.Scrollbar(preset_frame, orient="vertical", command=self.preset_canvas.yview)
@@ -227,25 +238,36 @@ class SerialMonitorTab(ttk.Frame):
         self.on_send_preset(index, raw_text, self.preset_hex_vars[index].get(), self.preset_line_vars[index].get())
 
     def _restore_or_set_default_pane_ratio(self) -> None:
+        total_height = self.main_paned.winfo_height()
+        if total_height < 300:
+            self.after(80, self._restore_or_set_default_pane_ratio)
+            return
+        if self._saved_sash_ratio is not None:
+            sash_y = max(220, min(int(total_height * self._saved_sash_ratio), max(total_height - 170, 220)))
+            self.main_paned.sash_place(0, 0, sash_y)
+            self._last_sash_y = sash_y
+            self._layout_restored = True
+            self.after_idle(lambda: self._report_layout("restore_ratio"))
+            return
         if self._saved_sash_y is not None:
-            total_height = self.main_paned.winfo_height()
-            if total_height <= 0:
-                self.after(80, self._restore_or_set_default_pane_ratio)
-                return
             sash_y = max(220, min(self._saved_sash_y, max(total_height - 170, 220)))
             self.main_paned.sash_place(0, 0, sash_y)
             self._last_sash_y = sash_y
+            self._layout_restored = True
+            self.after_idle(lambda: self._report_layout("restore_pixel"))
             return
         self._set_default_pane_ratio()
 
     def _set_default_pane_ratio(self) -> None:
         total_height = self.main_paned.winfo_height()
-        if total_height <= 0:
+        if total_height < 300:
             self.after(80, self._set_default_pane_ratio)
             return
-        top_height = max(int(total_height * 0.72), 300)
+        top_height = max(int(total_height * 0.78), 300)
         self.main_paned.sash_place(0, 0, top_height)
         self._last_sash_y = top_height
+        self._layout_restored = True
+        self._report_layout("default")
 
     def _on_main_paned_release(self, _event) -> None:
         try:
@@ -255,7 +277,71 @@ class SerialMonitorTab(ttk.Frame):
         if sash_y != self._last_sash_y:
             self._last_sash_y = sash_y
             self._saved_sash_y = sash_y
+            total_height = self.main_paned.winfo_height()
+            if total_height > 0:
+                self._saved_sash_ratio = sash_y / total_height
             self._save_preset_config()
+            self.after_idle(lambda: self._report_layout("manual"))
+
+    def _on_main_paned_configure(self, _event) -> None:
+        if not self._layout_restored and self.main_paned.winfo_height() >= 300:
+            self.after_idle(self._restore_or_set_default_pane_ratio)
+            return
+        self.after_idle(lambda: self._report_layout("configure"))
+
+    def _report_layout(self, source: str) -> None:
+        if self.on_layout_change is None:
+            return
+        try:
+            _x, sash_y = self.main_paned.sash_coord(0)
+        except tk.TclError:
+            sash_y = self._last_sash_y or 0
+        self._last_sash_y = sash_y
+        total_height = max(self.main_paned.winfo_height(), 0)
+        top_height = max(self.receive_container.winfo_height(), 0)
+        bottom_height = max(self.send_container.winfo_height(), 0)
+        send_tabs_height = max(self.send_tabs.winfo_height(), 0)
+        manual_tab_height = max(self.manual_tab.winfo_height(), 0)
+        preset_tab_height = max(self.preset_tab.winfo_height(), 0)
+        receive_reqheight = self.receive_container.winfo_reqheight()
+        send_reqheight = self.send_container.winfo_reqheight()
+        send_tabs_reqheight = self.send_tabs.winfo_reqheight()
+        manual_reqheight = self.manual_tab.winfo_reqheight()
+        preset_reqheight = self.preset_tab.winfo_reqheight()
+        signature = (
+            total_height,
+            sash_y,
+            top_height,
+            bottom_height,
+            send_tabs_height,
+            manual_tab_height,
+            preset_tab_height,
+            receive_reqheight,
+            send_reqheight,
+            send_tabs_reqheight,
+            manual_reqheight,
+            preset_reqheight,
+        )
+        if source == "configure" and signature == self._last_layout_signature:
+            return
+        self._last_layout_signature = signature
+        self.on_layout_change(
+            {
+                "source": source,
+                "total_height": total_height,
+                "sash_y": sash_y,
+                "top_height": top_height,
+                "bottom_height": bottom_height,
+                "send_tabs_height": send_tabs_height,
+                "manual_tab_height": manual_tab_height,
+                "preset_tab_height": preset_tab_height,
+                "receive_reqheight": receive_reqheight,
+                "send_reqheight": send_reqheight,
+                "send_tabs_reqheight": send_tabs_reqheight,
+                "manual_reqheight": manual_reqheight,
+                "preset_reqheight": preset_reqheight,
+            }
+        )
 
     def _configure_preset_columns(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, minsize=self.PRESET_HEX_WIDTH, weight=0)
@@ -295,6 +381,13 @@ class SerialMonitorTab(ttk.Frame):
                 self.preset_text_vars[index].set(text_value)
             if config.has_section("layout"):
                 self._saved_sash_y = config.getint("layout", "main_sash_y", fallback=0) or None
+                ratio_value = config.get("layout", "main_sash_ratio", fallback="").strip()
+                if ratio_value:
+                    try:
+                        ratio = float(ratio_value)
+                    except ValueError:
+                        ratio = 0.0
+                    self._saved_sash_ratio = ratio if 0.0 < ratio < 1.0 else None
         finally:
             self._suspend_save = False
 
@@ -311,6 +404,7 @@ class SerialMonitorTab(ttk.Frame):
             }
         config["layout"] = {
             "main_sash_y": str(self._saved_sash_y or self._last_sash_y or 0),
+            "main_sash_ratio": f"{(self._saved_sash_ratio or 0.78):.4f}",
         }
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config_path.open("w", encoding="utf-8") as handle:
