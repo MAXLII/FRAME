@@ -72,7 +72,10 @@ class WaveformTab(ttk.Frame):
 
         self._row_widgets: dict[str, tuple[tk.Frame, tk.Checkbutton, tk.Label]] = {}
         self._row_vars: dict[str, tk.BooleanVar] = {}
+        self._latest_widgets: dict[str, tuple[tk.Frame, tk.Canvas, tk.Label, tk.Label]] = {}
+        self._latest_empty_label: tk.Label | None = None
         self._list_refresh_job: str | None = None
+        self._latest_refresh_job: str | None = None
         self._redraw_job: str | None = None
         self._plot_bounds: tuple[float, float, float, float] | None = None
         self._x_range: tuple[float, float] | None = None
@@ -196,6 +199,7 @@ class WaveformTab(ttk.Frame):
         right.rowconfigure(0, weight=1)
         right.rowconfigure(1, weight=0)
         right.columnconfigure(0, weight=1)
+        right.columnconfigure(1, weight=0, minsize=250)
 
         self.canvas = tk.Canvas(right, bg="#ffffff", highlightthickness=0, relief="flat")
         self.canvas.grid(row=0, column=0, sticky="nsew")
@@ -206,6 +210,30 @@ class WaveformTab(ttk.Frame):
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag_move)
         self.canvas.bind("<ButtonRelease-1>", self._on_drag_end)
+
+        latest_frame = ttk.LabelFrame(right, text="最新值", style="Section.TLabelframe", padding=8)
+        latest_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        latest_frame.rowconfigure(0, weight=1)
+        latest_frame.columnconfigure(0, weight=1)
+
+        self.latest_canvas = tk.Canvas(
+            latest_frame,
+            bg="#ffffff",
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            relief="flat",
+            width=240,
+        )
+        self.latest_canvas.grid(row=0, column=0, sticky="nsew")
+        self.latest_list_frame = tk.Frame(self.latest_canvas, bg="#ffffff")
+        self.latest_window = self.latest_canvas.create_window((0, 0), window=self.latest_list_frame, anchor="nw")
+        self.latest_list_frame.bind("<Configure>", self._on_latest_frame_configure)
+        self.latest_canvas.bind("<Configure>", self._on_latest_canvas_configure)
+        self.latest_canvas.bind("<MouseWheel>", self._on_latest_canvas_mousewheel)
+
+        latest_scroll = ttk.Scrollbar(latest_frame, orient="vertical", command=self.latest_canvas.yview)
+        latest_scroll.grid(row=0, column=1, sticky="ns")
+        self.latest_canvas.configure(yscrollcommand=latest_scroll.set)
 
         ttk.Label(right, textvariable=self.cursor_var, style="Status.TLabel", anchor="w", justify="left").grid(
             row=1,
@@ -263,11 +291,13 @@ class WaveformTab(ttk.Frame):
 
         self._refresh_series_order()
         self._queue_list_refresh()
+        self._queue_latest_refresh()
         self._queue_redraw()
 
     def update_latest_value(self, name: str, value_text: str) -> None:
         self.latest_values[name] = value_text
         self._queue_list_refresh()
+        self._queue_latest_refresh()
 
     def append_batch(self, batch: dict[str, float], batch_time: float | None = None) -> None:
         timestamp = batch_time if batch_time is not None else datetime.now().timestamp()
@@ -276,6 +306,7 @@ class WaveformTab(ttk.Frame):
         for name, value in batch.items():
             self.latest_values[name] = self._format_numeric(value)
         self._queue_list_refresh()
+        self._queue_latest_refresh()
         self._queue_redraw()
 
     def clear_plot(self) -> None:
@@ -300,6 +331,7 @@ class WaveformTab(ttk.Frame):
         self.pause_button_text.set("暂停显示")
         self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
         self._queue_list_refresh()
+        self._queue_latest_refresh()
         self._queue_redraw()
 
     def _checkbox_text(self, name: str) -> str:
@@ -471,6 +503,7 @@ class WaveformTab(ttk.Frame):
                     break
 
         self._queue_list_refresh()
+        self._queue_latest_refresh()
         self._queue_redraw()
         self.on_status(f"已导入波形文件: {file_path}", False)
 
@@ -503,6 +536,79 @@ class WaveformTab(ttk.Frame):
         self._list_refresh_job = None
         for name in self.selected_names:
             self._refresh_row_widget(name)
+
+    def _queue_latest_refresh(self) -> None:
+        if self._latest_refresh_job is not None:
+            return
+        self._latest_refresh_job = self.after(LIST_REFRESH_MS, self._run_latest_refresh)
+
+    def _run_latest_refresh(self) -> None:
+        self._latest_refresh_job = None
+        visible_names = [name for name in self.selected_names if name in self.visible_names]
+        if not visible_names:
+            for stale_name, widgets in list(self._latest_widgets.items()):
+                widgets[0].destroy()
+                del self._latest_widgets[stale_name]
+            if self._latest_empty_label is None:
+                self._latest_empty_label = tk.Label(
+                    self.latest_list_frame,
+                    text="当前没有勾选显示的参数。",
+                    anchor="w",
+                    justify="left",
+                    bg="#ffffff",
+                    fg="#64748b",
+                )
+                self._latest_empty_label.pack(fill="x", padx=8, pady=8)
+            return
+        if self._latest_empty_label is not None:
+            self._latest_empty_label.destroy()
+            self._latest_empty_label = None
+
+        for idx, name in enumerate(visible_names):
+            color = SERIES_COLORS[idx % len(SERIES_COLORS)]
+            value_text = self.latest_values.get(name, "-")
+            widgets = self._latest_widgets.get(name)
+            if widgets is None:
+                row = tk.Frame(self.latest_list_frame, bg="#ffffff", highlightthickness=0, bd=0)
+                swatch = tk.Canvas(row, width=12, height=12, bg="#ffffff", highlightthickness=0, bd=0)
+                swatch.grid(row=0, column=0, padx=(0, 6), sticky="n")
+                name_label = tk.Label(
+                    row,
+                    text=name,
+                    anchor="w",
+                    justify="left",
+                    bg="#ffffff",
+                    fg="#0f172a",
+                    wraplength=130,
+                )
+                name_label.grid(row=0, column=1, sticky="w")
+                value_label = tk.Label(
+                    row,
+                    text=value_text,
+                    anchor="e",
+                    justify="right",
+                    bg="#ffffff",
+                    fg="#334155",
+                    font=("Consolas", 10),
+                )
+                value_label.grid(row=0, column=2, sticky="e", padx=(8, 0))
+                row.columnconfigure(1, weight=1)
+                for widget in (row, swatch, name_label, value_label):
+                    widget.bind("<MouseWheel>", self._on_latest_canvas_mousewheel)
+                self._latest_widgets[name] = (row, swatch, name_label, value_label)
+                widgets = self._latest_widgets[name]
+            row, swatch, name_label, value_label = widgets
+            row.pack_forget()
+            row.pack(fill="x", padx=6, pady=2)
+            swatch.delete("all")
+            swatch.create_line(1, 6, 11, 6, fill=color, width=3)
+            name_label.configure(text=name)
+            value_label.configure(text=value_text)
+
+        for stale_name, widgets in list(self._latest_widgets.items()):
+            if stale_name not in visible_names:
+                widgets[0].destroy()
+                del self._latest_widgets[stale_name]
 
     def _series_color(self, name: str) -> str:
         try:
@@ -545,6 +651,15 @@ class WaveformTab(ttk.Frame):
 
     def _on_series_canvas_mousewheel(self, event) -> None:
         self.series_canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _on_latest_frame_configure(self, _event) -> None:
+        self.latest_canvas.configure(scrollregion=self.latest_canvas.bbox("all"))
+
+    def _on_latest_canvas_configure(self, event) -> None:
+        self.latest_canvas.itemconfigure(self.latest_window, width=event.width)
+
+    def _on_latest_canvas_mousewheel(self, event) -> None:
+        self.latest_canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def _queue_redraw(self) -> None:
         if self._redraw_job is not None:
@@ -665,7 +780,6 @@ class WaveformTab(ttk.Frame):
                 self.canvas.create_oval(last_x - 3, last_y - 3, last_x + 3, last_y + 3, fill=color, outline="")
                 latest_points.append((name, color, last_y))
 
-        self._draw_value_labels(latest_points, plot_right + 12, plot_top, plot_bottom)
         self._draw_view_hint(plot_left, plot_top)
 
         if self._zoom_rect_start and self._zoom_rect_end:
@@ -740,33 +854,23 @@ class WaveformTab(ttk.Frame):
     def _draw_value_labels(self, latest_points: list[tuple[str, str, float]], label_x: float, plot_top: float, plot_bottom: float) -> None:
         if not latest_points:
             return
-        legend_items = [
-            (name, color, self.latest_values.get(name, "-"))
-            for name, color, _ in latest_points
-        ]
+        legend_items = [(name, color) for name, color, _ in latest_points]
         line_height = 18
         padding = 8
         max_visible = max(1, int((plot_bottom - plot_top - 20) // line_height))
         hidden_count = max(0, len(legend_items) - max_visible)
         visible_items = legend_items[:max_visible]
         box_height = padding * 2 + len(visible_items) * line_height + (line_height if hidden_count else 0)
-        box_width = 230
+        box_width = 150
         box_x0 = label_x - 6
         box_y0 = plot_top + 8
         self.canvas.create_rectangle(box_x0, box_y0, box_x0 + box_width, box_y0 + box_height, fill="#ffffff", outline="#cbd5e1")
         self.canvas.create_text(box_x0 + padding, box_y0 + padding - 1, text="图例", anchor="nw", fill="#475569", font=("Segoe UI", 9, "bold"))
         base_y = box_y0 + padding + 16
-        for idx, (name, color, latest_value) in enumerate(visible_items):
+        for idx, (name, color) in enumerate(visible_items):
             y = base_y + idx * line_height
             self.canvas.create_line(box_x0 + padding, y + 6, box_x0 + padding + 14, y + 6, fill=color, width=3)
-            self.canvas.create_text(
-                box_x0 + padding + 20,
-                y + 6,
-                text=f"{name} = {latest_value}",
-                anchor="w",
-                fill="#0f172a",
-                font=("Segoe UI", 9),
-            )
+            self.canvas.create_text(box_x0 + padding + 20, y + 6, text=name, anchor="w", fill="#0f172a", font=("Segoe UI", 9))
         if hidden_count:
             more_y = base_y + len(visible_items) * line_height
             self.canvas.create_text(box_x0 + padding, more_y + 6, text=f"还有 {hidden_count} 条", anchor="w", fill="#64748b", font=("Segoe UI", 9))
