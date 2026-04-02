@@ -25,7 +25,23 @@ from serial_debug_assistant.constants import (
     STOP_BITS_OPTIONS,
 )
 from serial_debug_assistant.debug_logger import DebugLogger
-from serial_debug_assistant.models import ParameterEntry, ProtocolFrame
+from serial_debug_assistant.firmware_update import (
+    CMD_SET_UPDATE,
+    CMD_WORD_UPDATE_END,
+    CMD_WORD_UPDATE_FW,
+    CMD_WORD_UPDATE_INFO,
+    CMD_WORD_UPDATE_READY,
+    build_update_end_payload,
+    build_update_info_payload,
+    build_update_packet_payload,
+    build_update_ready_payload,
+    describe_reject_reason,
+    format_unix_time,
+    format_version,
+    load_firmware_image,
+    module_name,
+)
+from serial_debug_assistant.models import FirmwareImage, FirmwareUpdateSession, ParameterEntry, ProtocolFrame
 from serial_debug_assistant.protocol import (
     FrameParser,
     build_frame,
@@ -36,6 +52,7 @@ from serial_debug_assistant.protocol import (
 from serial_debug_assistant.services.serial_service import SerialService
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
+from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
 
 
@@ -66,6 +83,9 @@ class SerialDebugAssistant(tk.Tk):
         self.last_wave_table_sync = 0.0
         self.parameter_list_request_job: str | None = None
         self.ignore_wave_frames_until = 0.0
+        self.loaded_firmware: FirmwareImage | None = None
+        self.update_session: FirmwareUpdateSession | None = None
+        self.update_tick_job: str | None = None
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD_RATE)
@@ -169,10 +189,16 @@ class SerialDebugAssistant(tk.Tk):
             export_dir=self.project_root / "exports",
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
         )
+        self.upgrade_tab = UpgradeTab(
+            self.notebook,
+            on_browse=self.load_upgrade_firmware,
+            on_start_stop=self.toggle_upgrade,
+        )
 
         self.notebook.add(self.monitor_tab, text="串口调试")
         self.notebook.add(self.parameter_tab, text="参数读写")
         self.notebook.add(self.wave_tab, text="参数波形")
+        self.notebook.add(self.upgrade_tab, text="固件升级")
         self.notebook.select(self.monitor_tab)
 
         footer = ttk.Frame(root, style="App.TFrame")
@@ -321,6 +347,7 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
         self.set_status(f"Connected to {selected_port}")
+        self.upgrade_tab.set_connection_state(True, selected_port)
         self.parameter_tab.set_message("串口已连接，已向广播地址发送停止波形上传命令")
         self._set_open_button_text("Close")
         self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
@@ -331,7 +358,9 @@ class SerialDebugAssistant(tk.Tk):
 
     def close_connection(self) -> None:
         self.cancel_auto_send()
+        self.stop_upgrade("串口已断开，升级已停止。", user_initiated=False)
         self.serial_service.close()
+        self.upgrade_tab.set_connection_state(False)
         self.set_status("Disconnected")
         self.parameter_tab.set_message("串口已断开")
         self._set_open_button_text("Open")
@@ -349,6 +378,244 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("ERROR", f"serial error: {exc}")
         self.close_connection()
         self.set_status(f"Serial error: {exc}", error=True)
+
+    def load_upgrade_firmware(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择升级固件",
+            filetypes=[("Binary Files", "*.bin"), ("All Files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            image = load_firmware_image(path)
+        except (OSError, ValueError) as exc:
+            self.upgrade_tab.set_status("固件加载失败", str(exc), error_code="LOAD")
+            self.set_status(f"Load firmware failed: {exc}", error=True)
+            return
+
+        self.loaded_firmware = image
+        if image.footer.module_id in {0x02, 0x03}:
+            self.upgrade_tab.download_addr_var.set("2")
+        summary = {
+            "version": format_version(image.footer.version),
+            "compile_time": format_unix_time(image.footer.unix_time),
+            "file_size": f"{len(image.data)} byte",
+            "commit": image.footer.commit_id or "-",
+            "module": module_name(image.footer.module_id),
+            "footer_crc": "OK" if image.footer_crc_ok else "FAIL",
+        }
+        self.upgrade_tab.set_firmware(image, summary=summary)
+        self.upgrade_tab.clear_log()
+        self.upgrade_tab.append_log(f"已加载固件: {image.path}")
+        self.upgrade_tab.append_log(f"版本: {summary['version']}")
+        self.upgrade_tab.append_log(f"编译时间: {summary['compile_time']}")
+        self.upgrade_tab.append_log(f"模块: {summary['module']}")
+        self.upgrade_tab.append_log(f"Footer CRC32: {summary['footer_crc']}")
+        if image.footer.module_id == 0x03:
+            self.upgrade_tab.append_log("PFC 固件默认下发到 0x02，由 LLC 负责接收并转发升级。")
+        for warning in image.warnings:
+            self.upgrade_tab.append_log(f"警告: {warning}")
+
+        if not image.footer_crc_ok:
+            self.upgrade_tab.set_status("固件已加载，但 footer CRC 校验失败", "请确认打包结果。", error_code="CRC32")
+        elif image.warnings:
+            self.upgrade_tab.set_status("固件已加载", image.warnings[0], error_code="-")
+        else:
+            self.upgrade_tab.set_status("固件已加载", "可以开始升级。", error_code="-")
+
+    def toggle_upgrade(self) -> None:
+        if self.update_session is not None:
+            self.stop_upgrade("用户手动停止升级。", user_initiated=True)
+            return
+        self.start_upgrade()
+
+    def start_upgrade(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.upgrade_tab.set_status("无法开始升级", "请先连接串口。", error_code="SERIAL")
+            return
+        if self.loaded_firmware is None:
+            self.upgrade_tab.set_status("无法开始升级", "请先加载 .bin 固件。", error_code="FILE")
+            return
+        if not self.loaded_firmware.footer_crc_ok:
+            self.upgrade_tab.set_status("无法开始升级", "footer CRC32 校验失败。", error_code="CRC32")
+            return
+        if self.loaded_firmware.footer.fw_type != 1:
+            self.upgrade_tab.set_status("无法开始升级", "仅支持 fw_type=1 的 IAP 固件。", error_code="FW_TYPE")
+            return
+        try:
+            target_addr, target_dynamic_addr = self.upgrade_tab.get_target_address()
+        except ValueError:
+            self.upgrade_tab.set_status("无法开始升级", "下载地址和动态地址必须是整数。", error_code="ADDR")
+            return
+
+        self.update_session = FirmwareUpdateSession(
+            image=self.loaded_firmware,
+            target_addr=target_addr,
+            target_dynamic_addr=target_dynamic_addr,
+            update_type=self.upgrade_tab.get_update_type(),
+        )
+        self.upgrade_tab.clear_log()
+        self.upgrade_tab.set_running(True)
+        self.upgrade_tab.set_progress(0, len(self.loaded_firmware.data))
+        self.upgrade_tab.append_log(
+            f"开始升级 -> module={module_name(self.loaded_firmware.footer.module_id)} target=0x{target_addr:02X} d_target=0x{target_dynamic_addr:02X}"
+        )
+        if self.loaded_firmware.footer.module_id == 0x03 and target_addr != 0x02:
+            self.upgrade_tab.append_log("注意: 你说明当前 PFC 固件应发往 0x02，由 LLC 接收。")
+        self._send_upgrade_info()
+
+    def stop_upgrade(self, message: str, *, user_initiated: bool) -> None:
+        if self.update_tick_job:
+            self.after_cancel(self.update_tick_job)
+            self.update_tick_job = None
+        if self.update_session is None:
+            self.upgrade_tab.set_running(False)
+            return
+        self.upgrade_tab.append_log(message)
+        self.upgrade_tab.set_status("升级已停止", message, error_code="STOP" if user_initiated else "-")
+        self.upgrade_tab.set_running(False)
+        self.update_session = None
+
+    def _schedule_update_tick(self) -> None:
+        if self.update_tick_job:
+            self.after_cancel(self.update_tick_job)
+        self.update_tick_job = self.after(120, self._process_upgrade_tick)
+
+    def _process_upgrade_tick(self) -> None:
+        self.update_tick_job = None
+        session = self.update_session
+        if session is None:
+            return
+        now = time.monotonic()
+        if session.stage in {"wait_info_ack", "wait_ready_ack", "wait_packet_ack", "wait_end_ack"}:
+            if now - session.last_tx_at >= 1.0:
+                if session.timeout_error_since is None:
+                    session.timeout_error_since = now
+                elif now - session.timeout_error_since >= 10.0:
+                    self._fail_upgrade("升级失败", "持续通信超时超过 10 秒。", "TIMEOUT")
+                    return
+
+                if session.stage == "wait_info_ack":
+                    self.upgrade_tab.append_log("0x08 超时，重发升级信息")
+                    self._send_upgrade_info()
+                    return
+                if session.stage == "wait_ready_ack":
+                    self.upgrade_tab.append_log("0x09 超时，重试查询升级准备状态")
+                    self._send_upgrade_ready()
+                    return
+                if session.stage == "wait_packet_ack":
+                    self.upgrade_tab.append_log(f"0x0A 超时，重发 offset={session.current_packet_offset}")
+                    self._send_upgrade_packet(retry=True)
+                    return
+                if session.stage == "wait_end_ack":
+                    self.upgrade_tab.append_log("0x0B 超时，重发结束帧")
+                    self._send_upgrade_end()
+                    return
+        self._schedule_update_tick()
+
+    def _send_upgrade_info(self) -> None:
+        session = self.update_session
+        if session is None:
+            return
+        payload = build_update_info_payload(session.image, session.update_type)
+        session.stage = "wait_info_ack"
+        session.last_tx_at = time.monotonic()
+        self.upgrade_tab.set_status("升级中", "发送升级信息 (0x01 0x08)", error_code="-")
+        self.upgrade_tab.append_log(
+            f"TX 0x08 -> module=0x{session.image.footer.module_id:02X} version={format_version(session.image.footer.version)} size={len(session.image.data)} update_type={session.update_type}"
+        )
+        self.send_protocol_frame(
+            dst=session.target_addr,
+            d_dst=session.target_dynamic_addr,
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=CMD_WORD_UPDATE_INFO,
+            payload=payload,
+        )
+        self._schedule_update_tick()
+
+    def _send_upgrade_ready(self) -> None:
+        session = self.update_session
+        if session is None:
+            return
+        session.stage = "wait_ready_ack"
+        session.last_tx_at = time.monotonic()
+        self.upgrade_tab.set_status("升级中", "查询升级准备状态 (0x01 0x09)", error_code="-")
+        self.upgrade_tab.append_log("TX 0x09 -> 查询 Bootloader 是否准备完成")
+        self.send_protocol_frame(
+            dst=session.target_addr,
+            d_dst=session.target_dynamic_addr,
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=CMD_WORD_UPDATE_READY,
+            payload=build_update_ready_payload(),
+        )
+        self._schedule_update_tick()
+
+    def _send_upgrade_packet(self, *, retry: bool = False) -> None:
+        session = self.update_session
+        if session is None:
+            return
+        payload = build_update_packet_payload(session.image, session.offset, session.packet_size)
+        session.current_packet_offset = session.offset
+        actual_len = min(session.packet_size, len(session.image.data) - session.offset)
+        session.sent_bytes = min(session.offset + actual_len, len(session.image.data))
+        session.stage = "wait_packet_ack"
+        session.last_tx_at = time.monotonic()
+        self.upgrade_tab.set_progress(session.sent_bytes, len(session.image.data))
+        self.upgrade_tab.set_status(
+            "升级中",
+            f"{'重发' if retry else '发送'}固件分包 (0x01 0x0A), offset={session.offset}",
+            error_code="-",
+        )
+        self.upgrade_tab.append_log(
+            f"TX 0x0A -> {'重发' if retry else '发送'} offset={session.offset} len={actual_len} progress={session.sent_bytes}/{len(session.image.data)}"
+        )
+        self.send_protocol_frame(
+            dst=session.target_addr,
+            d_dst=session.target_dynamic_addr,
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=CMD_WORD_UPDATE_FW,
+            payload=payload,
+        )
+        self._schedule_update_tick()
+
+    def _send_upgrade_end(self) -> None:
+        session = self.update_session
+        if session is None:
+            return
+        session.stage = "wait_end_ack"
+        session.last_tx_at = time.monotonic()
+        self.upgrade_tab.set_progress(len(session.image.data), len(session.image.data))
+        self.upgrade_tab.set_status("升级中", "发送结束帧 (0x01 0x0B)", error_code="-")
+        self.upgrade_tab.append_log(
+            f"TX 0x0B -> fw_crc16=0x{session.image.payload_crc16:04X} total={len(session.image.data)}"
+        )
+        self.send_protocol_frame(
+            dst=session.target_addr,
+            d_dst=session.target_dynamic_addr,
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=CMD_WORD_UPDATE_END,
+            payload=build_update_end_payload(session.image),
+        )
+        self._schedule_update_tick()
+
+    def _fail_upgrade(self, title: str, detail: str, error_code: str) -> None:
+        self.upgrade_tab.append_log(f"{title}: {detail}")
+        self.upgrade_tab.set_status(title, detail, error_code=error_code)
+        self.upgrade_tab.set_running(False)
+        self.update_session = None
+        if self.update_tick_job:
+            self.after_cancel(self.update_tick_job)
+            self.update_tick_job = None
+
+    def _complete_upgrade(self, detail: str) -> None:
+        self.upgrade_tab.append_log(detail)
+        self.upgrade_tab.set_status("升级成功", detail, error_code="-")
+        self.upgrade_tab.set_running(False)
+        self.update_session = None
+        if self.update_tick_job:
+            self.after_cancel(self.update_tick_job)
+            self.update_tick_job = None
 
     def process_incoming_data(self) -> None:
         updated = False
@@ -396,6 +663,8 @@ class SerialDebugAssistant(tk.Tk):
 
     def handle_protocol_frame(self, frame: ProtocolFrame) -> None:
         if frame.cmd_set != 0x01:
+            return
+        if self._handle_upgrade_protocol_frame(frame):
             return
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
@@ -470,6 +739,107 @@ class SerialDebugAssistant(tk.Tk):
             if time.monotonic() < self.ignore_wave_frames_until:
                 return
             self._handle_wave_report_payload(frame.payload)
+
+    def _handle_upgrade_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        session = self.update_session
+        if session is None or frame.is_ack != 1:
+            return False
+        if frame.cmd_word not in {CMD_WORD_UPDATE_INFO, CMD_WORD_UPDATE_READY, CMD_WORD_UPDATE_FW, CMD_WORD_UPDATE_END}:
+            return False
+
+        session.timeout_error_since = None
+
+        if frame.cmd_word == CMD_WORD_UPDATE_INFO and session.stage == "wait_info_ack":
+            if len(frame.payload) < 3:
+                self._fail_upgrade("升级失败", "0x08 应答长度无效。", "0x08_LEN")
+                return True
+            allow_update = frame.payload[0]
+            reject_reason = int.from_bytes(frame.payload[1:3], "little")
+            self.upgrade_tab.append_log(
+                f"RX 0x08 ACK <- allow_update={allow_update} reject_reason=0x{reject_reason:04X}"
+            )
+            if allow_update == 1:
+                self.upgrade_tab.append_log("0x08 应答允许升级")
+                self._send_upgrade_ready()
+            elif allow_update == 2:
+                self._fail_upgrade(
+                    "升级失败",
+                    f"0x08 拒绝升级: {describe_reject_reason(reject_reason)}",
+                    f"0x08:{reject_reason:04X}",
+                )
+            else:
+                self._fail_upgrade("升级失败", "0x08 返回 allow_update 非法。", "0x08_ACK")
+            return True
+
+        if frame.cmd_word == CMD_WORD_UPDATE_READY and session.stage == "wait_ready_ack":
+            if len(frame.payload) < 1:
+                self._fail_upgrade("升级失败", "0x09 应答长度无效。", "0x09_LEN")
+                return True
+            self.upgrade_tab.append_log(f"RX 0x09 ACK <- ready={frame.payload[0]}")
+            if frame.payload[0] == 1:
+                self.upgrade_tab.append_log("0x09 返回 ready=1，开始发送固件")
+                self._send_upgrade_packet()
+            else:
+                self.upgrade_tab.append_log("0x09 返回 ready=0，继续等待 Bootloader 准备完成")
+                session.last_tx_at = time.monotonic()
+                self._schedule_update_tick()
+            return True
+
+        if frame.cmd_word == CMD_WORD_UPDATE_FW and session.stage == "wait_packet_ack":
+            if len(frame.payload) < 1:
+                self._fail_upgrade("升级失败", "0x0A 应答长度无效。", "0x0A_LEN")
+                return True
+            ack_offset = int.from_bytes(frame.payload[1:5], "little") if len(frame.payload) >= 5 else session.current_packet_offset
+            self.upgrade_tab.append_log(
+                f"RX 0x0A ACK <- data_is_ok={frame.payload[0]} offset={ack_offset}"
+            )
+            if len(frame.payload) >= 5:
+                packet_offset = ack_offset
+                if packet_offset != session.current_packet_offset:
+                    self.upgrade_tab.append_log(
+                        f"忽略 offset 不匹配的 0x0A 应答: ack={packet_offset}, expect={session.current_packet_offset}"
+                    )
+                    return True
+            if frame.payload[0] == 1:
+                session.data_error_since = None
+                actual_len = min(session.packet_size, len(session.image.data) - session.current_packet_offset)
+                session.offset = session.current_packet_offset + actual_len
+                self.upgrade_tab.append_log(
+                    f"分包完成 offset={session.current_packet_offset} len={actual_len} -> 已确认 {session.offset}/{len(session.image.data)}"
+                )
+                if session.offset >= len(session.image.data):
+                    self.upgrade_tab.append_log("最后一个分包确认完成，开始发送结束帧")
+                    self._send_upgrade_end()
+                else:
+                    self._send_upgrade_packet()
+            else:
+                now = time.monotonic()
+                if session.data_error_since is None:
+                    session.data_error_since = now
+                elif now - session.data_error_since >= 10.0:
+                    self._fail_upgrade("升级失败", "持续数据错误超过 10 秒。", "0x0A_DATA")
+                    return True
+                self.upgrade_tab.append_log(f"0x0A 返回 data_is_ok=0，重发 offset={session.current_packet_offset}")
+                session.offset = session.current_packet_offset
+                self._send_upgrade_packet(retry=True)
+            return True
+
+        if frame.cmd_word == CMD_WORD_UPDATE_END and session.stage == "wait_end_ack":
+            if len(frame.payload) < 1:
+                self._fail_upgrade("升级失败", "0x0B 应答长度无效。", "0x0B_LEN")
+                return True
+            self.upgrade_tab.append_log(f"RX 0x0B ACK <- success_flg={frame.payload[0]}")
+            if frame.payload[0] == 1:
+                if session.image.footer.module_id == 0x01:
+                    detail = "升级成功，LLC 将复位并按 APP 流程继续转发 PFC 固件。"
+                else:
+                    detail = "升级成功，设备将复位并跳转到新的 APP。"
+                self._complete_upgrade(detail)
+            else:
+                self._fail_upgrade("升级失败", "0x0B 返回 success_flg=0。", "0x0B_FAIL")
+            return True
+
+        return False
 
     def _handle_wave_report_payload(self, payload: bytes) -> None:
         if len(payload) < 6:
@@ -871,6 +1241,7 @@ class SerialDebugAssistant(tk.Tk):
     def on_close(self) -> None:
         self.logger.log("APP", "shutdown")
         self.cancel_auto_send()
+        self.stop_upgrade("应用关闭，升级已停止。", user_initiated=False)
         self.serial_service.close()
         if self.save_handle:
             self.save_handle.close()
