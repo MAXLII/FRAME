@@ -70,6 +70,7 @@ class WaveformTab(ttk.Frame):
         self.latest_values: dict[str, str] = {}
         self.series_data: dict[str, list[tuple[float, float | None]]] = {}
         self.markers: list[tuple[float, str]] = []
+        self.reference_lines: list[tuple[str, float]] = []
 
         self._row_widgets: dict[str, tuple[tk.Frame, tk.Checkbutton, tk.Label]] = {}
         self._row_vars: dict[str, tk.BooleanVar] = {}
@@ -96,6 +97,8 @@ class WaveformTab(ttk.Frame):
         self._zoom_rect_start: tuple[float, float] | None = None
         self._zoom_rect_end: tuple[float, float] | None = None
         self._cached_visible_series: dict[str, list[tuple[float, float | None]]] = {}
+        self._pending_reference_line: str | None = None
+        self._preview_reference_value: float | tuple[float, float] | None = None
 
         self._build()
         self.window_var.trace_add("write", self._on_window_changed)
@@ -114,6 +117,12 @@ class WaveformTab(ttk.Frame):
         self.bind_all("<Control-I>", self._on_import_shortcut, add=True)
         self.bind_all("<KeyPress-m>", self._on_marker_shortcut, add=True)
         self.bind_all("<KeyPress-M>", self._on_marker_shortcut, add=True)
+        self.bind_all("<KeyPress-h>", self._on_horizontal_reference_shortcut, add=True)
+        self.bind_all("<KeyPress-H>", self._on_horizontal_reference_shortcut, add=True)
+        self.bind_all("<KeyPress-v>", self._on_vertical_reference_shortcut, add=True)
+        self.bind_all("<KeyPress-V>", self._on_vertical_reference_shortcut, add=True)
+        self.bind_all("<KeyPress-c>", self._on_cross_reference_shortcut, add=True)
+        self.bind_all("<KeyPress-C>", self._on_cross_reference_shortcut, add=True)
         self.bind_all("<KeyPress-Alt_L>", self._on_alt_press, add=True)
         self.bind_all("<KeyPress-Alt_R>", self._on_alt_press, add=True)
         self.bind_all("<KeyRelease-Alt_L>", self._on_alt_release, add=True)
@@ -148,7 +157,7 @@ class WaveformTab(ttk.Frame):
 
         row2 = ttk.Frame(top, style="Panel.TFrame")
         row2.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        row2.columnconfigure(7, weight=1)
+        row2.columnconfigure(10, weight=1)
         ttk.Label(row2, text="查看窗口:", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Combobox(
             row2,
@@ -161,11 +170,15 @@ class WaveformTab(ttk.Frame):
         ttk.Button(row2, text="导入 Ctrl+I", command=self.import_waveform_file).grid(row=0, column=3, padx=(8, 0))
         ttk.Entry(row2, textvariable=self.marker_var, width=18).grid(row=0, column=4, padx=(12, 6), sticky="w")
         ttk.Button(row2, text="添加标记 M", command=self.add_marker).grid(row=0, column=5)
+        ttk.Button(row2, text="水平参考线 H", command=self.start_horizontal_reference_line).grid(row=0, column=6, padx=(12, 0))
+        ttk.Button(row2, text="垂直参考线 V", command=self.start_vertical_reference_line).grid(row=0, column=7, padx=(8, 0))
+        ttk.Button(row2, text="十字参考线 C", command=self.start_cross_reference_line).grid(row=0, column=8, padx=(8, 0))
+        ttk.Button(row2, text="清除参考线", command=self.clear_reference_lines).grid(row=0, column=9, padx=(8, 0))
         ttk.Label(
             row2,
             text="提示: Alt 显示当前点值",
             style="Status.TLabel",
-        ).grid(row=0, column=7, sticky="e")
+        ).grid(row=0, column=10, sticky="e")
 
         left = ttk.LabelFrame(self, text="已选参数", style="Section.TLabelframe", padding=10)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
@@ -322,6 +335,9 @@ class WaveformTab(ttk.Frame):
             data.clear()
         self.latest_values.clear()
         self.markers.clear()
+        self.reference_lines.clear()
+        self._pending_reference_line = None
+        self._preview_reference_value = None
         self._last_hover_index = None
         self._manual_range = None
         self._manual_y_range = None
@@ -393,6 +409,38 @@ class WaveformTab(ttk.Frame):
         self.on_status(f"已添加标记: {label}", False)
         self._queue_redraw()
 
+    def start_horizontal_reference_line(self) -> None:
+        self._pending_reference_line = "horizontal"
+        self._preview_reference_value = self._y_range[0] if self._y_range else None
+        self.on_status("移动鼠标选择水平参考线位置，在波形中单击固定", False)
+        self._queue_redraw()
+
+    def start_vertical_reference_line(self) -> None:
+        self._pending_reference_line = "vertical"
+        self._preview_reference_value = self._x_range[0] if self._x_range else None
+        self.on_status("移动鼠标选择垂直参考线位置，在波形中单击固定", False)
+        self._queue_redraw()
+
+    def start_cross_reference_line(self) -> None:
+        self._pending_reference_line = "cross"
+        if self._x_range and self._y_range:
+            self._preview_reference_value = (self._x_range[0], self._y_range[0])
+        else:
+            self._preview_reference_value = None
+        self.on_status("移动鼠标同时预览水平和垂直参考线，在波形中单击固定", False)
+        self._queue_redraw()
+
+    def clear_reference_lines(self) -> None:
+        had_lines = bool(self.reference_lines) or self._pending_reference_line is not None
+        self.reference_lines.clear()
+        self._pending_reference_line = None
+        self._preview_reference_value = None
+        if had_lines:
+            self.on_status("已清除所有参考线", False)
+        else:
+            self.on_status("当前没有可清除的参考线", False)
+        self._queue_redraw()
+
     def export_waveform_file(self) -> None:
         if not any(self.series_data.values()):
             self.on_status("当前没有可导出的波形数据", True)
@@ -419,6 +467,10 @@ class WaveformTab(ttk.Frame):
             "selected_names": self.selected_names,
             "visible_names": sorted(self.visible_names),
             "markers": [{"timestamp": timestamp, "label": label} for timestamp, label in self.markers],
+            "reference_lines": [
+                {"orientation": orientation, "value": value}
+                for orientation, value in self.reference_lines
+            ],
             "series_data": {
                 name: [
                     {"timestamp": timestamp, "value": value}
@@ -481,6 +533,9 @@ class WaveformTab(ttk.Frame):
         self.series_data = {}
         self.latest_values.clear()
         self.markers = []
+        self.reference_lines = []
+        self._pending_reference_line = None
+        self._preview_reference_value = None
         self._last_hover_index = None
         self._manual_range = None
         self._manual_y_range = None
@@ -497,6 +552,15 @@ class WaveformTab(ttk.Frame):
             except (KeyError, TypeError, ValueError):
                 continue
             self.markers.append((timestamp, label))
+
+        for line in payload.get("reference_lines", []):
+            try:
+                orientation = str(line["orientation"])
+                value = float(line["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if orientation in {"horizontal", "vertical"}:
+                self.reference_lines.append((orientation, value))
 
         period_ms = str(payload.get("period_ms", self.period_var.get()))
         if period_ms.isdigit():
@@ -766,6 +830,7 @@ class WaveformTab(ttk.Frame):
             self.canvas.create_text(plot_left - 8, zero_y, text="0", anchor="e", fill="#334155", font=("Segoe UI", 9, "bold"))
 
         self._draw_markers(plot_left, plot_top, plot_bottom, x_min, x_max)
+        self._draw_reference_lines(plot_left, plot_top, plot_right, plot_bottom, x_min, x_max, y_min, y_max)
 
         latest_points: list[tuple[str, str, float]] = []
         for idx, name in enumerate(visible_names):
@@ -907,6 +972,66 @@ class WaveformTab(ttk.Frame):
             self.canvas.create_line(x, plot_top, x, plot_bottom, fill="#f59e0b", dash=(2, 4), width=2)
             self.canvas.create_text(x + 4, plot_top + 6, text=label, anchor="nw", fill="#b45309", font=("Segoe UI", 9, "bold"))
 
+    def _draw_reference_lines(
+        self,
+        plot_left: float,
+        plot_top: float,
+        plot_right: float,
+        plot_bottom: float,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+    ) -> None:
+        lines = list(self.reference_lines)
+        preview_lines: list[tuple[str, float]] = []
+        if self._pending_reference_line and self._preview_reference_value is not None:
+            if self._pending_reference_line == "cross":
+                if isinstance(self._preview_reference_value, tuple):
+                    preview_x, preview_y = self._preview_reference_value
+                    preview_lines.append(("vertical", preview_x))
+                    preview_lines.append(("horizontal", preview_y))
+            elif isinstance(self._preview_reference_value, (int, float)):
+                preview_lines.append((self._pending_reference_line, float(self._preview_reference_value)))
+        lines.extend(preview_lines)
+
+        for index, (orientation, value) in enumerate(lines):
+            is_preview = index >= len(self.reference_lines)
+            if orientation == "vertical":
+                if value < x_min or value > x_max:
+                    continue
+                x = self._timestamp_to_canvas_x(value, plot_left, plot_right, x_min, x_max)
+                self.canvas.create_line(
+                    x,
+                    plot_top,
+                    x,
+                    plot_bottom,
+                    fill="#06b6d4" if is_preview else "#0f766e",
+                    dash=(6, 4),
+                    width=2,
+                )
+                label = f"参考 {datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]}"
+                if is_preview:
+                    label = f"预览 {datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]}"
+                self.canvas.create_text(x + 4, plot_top + 18, text=label, anchor="nw", fill="#0f766e", font=("Consolas", 9))
+            elif orientation == "horizontal":
+                if value < y_min or value > y_max:
+                    continue
+                y = self._value_to_canvas_y(value, plot_top, plot_bottom, y_min, y_max)
+                self.canvas.create_line(
+                    plot_left,
+                    y,
+                    plot_right,
+                    y,
+                    fill="#38bdf8" if is_preview else "#0369a1",
+                    dash=(6, 4),
+                    width=2,
+                )
+                label = f"参考 {self._format_numeric(value)}"
+                if is_preview:
+                    label = f"预览 {self._format_numeric(value)}"
+                self.canvas.create_text(plot_left + 6, y - 8, text=label, anchor="sw", fill="#0369a1", font=("Consolas", 9))
+
     def _draw_zoom_rectangle(self) -> None:
         if not self._zoom_rect_start or not self._zoom_rect_end:
             return
@@ -951,6 +1076,18 @@ class WaveformTab(ttk.Frame):
 
     def _on_marker_shortcut(self, _event) -> str:
         self.add_marker()
+        return "break"
+
+    def _on_horizontal_reference_shortcut(self, _event) -> str:
+        self.start_horizontal_reference_line()
+        return "break"
+
+    def _on_vertical_reference_shortcut(self, _event) -> str:
+        self.start_vertical_reference_line()
+        return "break"
+
+    def _on_cross_reference_shortcut(self, _event) -> str:
+        self.start_cross_reference_line()
         return "break"
 
     def _on_alt_press(self, _event) -> None:
@@ -998,6 +1135,9 @@ class WaveformTab(ttk.Frame):
             return
         plot_left, plot_top, plot_right, plot_bottom = self._plot_bounds
         if not (plot_left <= event.x <= plot_right and plot_top <= event.y <= plot_bottom):
+            return
+        if self._pending_reference_line is not None:
+            self._place_reference_line(event.x, event.y)
             return
         self._drag_anchor = (event.x, event.y)
         self._drag_start_x_range = self._x_range
@@ -1111,6 +1251,9 @@ class WaveformTab(ttk.Frame):
         self.pause_button_text.set("继续显示")
 
     def _on_canvas_motion(self, event) -> None:
+        if self._pending_reference_line is not None:
+            self._update_reference_preview(event.x, event.y)
+            return
         if self._zoom_rect_start is not None:
             self._zoom_rect_end = (event.x, event.y)
             self._queue_redraw()
@@ -1127,6 +1270,10 @@ class WaveformTab(ttk.Frame):
         self.redraw()
 
     def _on_canvas_leave(self, _event) -> None:
+        if self._pending_reference_line is not None:
+            self._preview_reference_value = None
+            self._queue_redraw()
+            return
         if self._zoom_rect_start is not None:
             return
         self._last_hover_index = None
@@ -1157,6 +1304,78 @@ class WaveformTab(ttk.Frame):
             if visible:
                 return visible
         return None
+
+    def _update_reference_preview(self, canvas_x: float, canvas_y: float) -> None:
+        if not self._pending_reference_line or not self._plot_bounds or not self._x_range or not self._y_range:
+            return
+        plot_left, plot_top, plot_right, plot_bottom = self._plot_bounds
+        if not (plot_left <= canvas_x <= plot_right and plot_top <= canvas_y <= plot_bottom):
+            if self._preview_reference_value is not None:
+                self._preview_reference_value = None
+                self._queue_redraw()
+            return
+
+        x_min, x_max = self._x_range
+        y_min, y_max = self._y_range
+        if self._pending_reference_line == "vertical":
+            preview_value = x_min + (x_max - x_min) * ((canvas_x - plot_left) / max(plot_right - plot_left, 1))
+        elif self._pending_reference_line == "cross":
+            preview_x = x_min + (x_max - x_min) * ((canvas_x - plot_left) / max(plot_right - plot_left, 1))
+            preview_y = y_max - (y_max - y_min) * ((canvas_y - plot_top) / max(plot_bottom - plot_top, 1))
+            preview_value = (preview_x, preview_y)
+        else:
+            preview_value = y_max - (y_max - y_min) * ((canvas_y - plot_top) / max(plot_bottom - plot_top, 1))
+
+        if self._reference_preview_changed(preview_value):
+            self._preview_reference_value = preview_value
+            self._queue_redraw()
+
+    def _place_reference_line(self, canvas_x: float, canvas_y: float) -> None:
+        if not self._pending_reference_line or not self._plot_bounds or not self._x_range or not self._y_range:
+            return
+        self._update_reference_preview(canvas_x, canvas_y)
+        if self._preview_reference_value is None:
+            return
+        orientation = self._pending_reference_line
+        value = self._preview_reference_value
+        if orientation == "cross":
+            if not isinstance(value, tuple):
+                return
+            x_value, y_value = value
+            self.reference_lines.append(("vertical", x_value))
+            self.reference_lines.append(("horizontal", y_value))
+        else:
+            if isinstance(value, tuple):
+                return
+            self.reference_lines.append((orientation, value))
+        self._pending_reference_line = None
+        self._preview_reference_value = None
+        if orientation == "vertical":
+            label = datetime.fromtimestamp(value).strftime("%H:%M:%S.%f")[:-3]
+            self.on_status(f"已固定垂直参考线: {label}", False)
+        elif orientation == "cross":
+            x_value, y_value = value
+            x_label = datetime.fromtimestamp(x_value).strftime("%H:%M:%S.%f")[:-3]
+            self.on_status(f"已固定十字参考线: {x_label}, {self._format_numeric(y_value)}", False)
+        else:
+            self.on_status(f"已固定水平参考线: {self._format_numeric(value)}", False)
+        self._queue_redraw()
+
+    def _reference_preview_changed(self, preview_value: float | tuple[float, float]) -> bool:
+        current = self._preview_reference_value
+        if current is None:
+            return True
+        if isinstance(current, tuple) and isinstance(preview_value, tuple):
+            return any(abs(a - b) > 1e-9 for a, b in zip(current, preview_value))
+        if not isinstance(current, tuple) and not isinstance(preview_value, tuple):
+            return abs(current - preview_value) > 1e-9
+        return True
+
+    def _timestamp_to_canvas_x(self, timestamp: float, plot_left: float, plot_right: float, x_min: float, x_max: float) -> float:
+        return plot_left + (timestamp - x_min) / max(x_max - x_min, 1e-9) * (plot_right - plot_left)
+
+    def _value_to_canvas_y(self, value: float, plot_top: float, plot_bottom: float, y_min: float, y_max: float) -> float:
+        return plot_bottom - (value - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
 
     def _draw_hover_overlay(self, index: int) -> None:
         reference = self._reference_series()
