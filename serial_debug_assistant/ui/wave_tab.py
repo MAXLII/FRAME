@@ -58,6 +58,7 @@ class WaveformTab(ttk.Frame):
         self.period_var = tk.StringVar(value="300")
         self.window_var = tk.StringVar(value="最近30秒")
         self.marker_var = tk.StringVar()
+        self.selected_search_var = tk.StringVar()
         self.status_var = tk.StringVar(value="当前处于停止状态")
         self.view_var = tk.StringVar(value="查看窗口: 最近30秒")
         self.cursor_var = tk.StringVar(value="把鼠标移动到图上即可查看该时刻的数据")
@@ -98,6 +99,7 @@ class WaveformTab(ttk.Frame):
 
         self._build()
         self.window_var.trace_add("write", self._on_window_changed)
+        self.selected_search_var.trace_add("write", self._on_selected_search_changed)
         self.bind_all("<KeyPress-f>", self._on_show_all_shortcut, add=True)
         self.bind_all("<KeyPress-F>", self._on_show_all_shortcut, add=True)
         self.bind_all("<KeyPress-r>", self._on_apply_period_shortcut, add=True)
@@ -167,7 +169,7 @@ class WaveformTab(ttk.Frame):
 
         left = ttk.LabelFrame(self, text="已选参数", style="Section.TLabelframe", padding=10)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(3, weight=1)
         left.columnconfigure(0, weight=1)
 
         ttk.Label(left, text="在“参数读写”页勾选波形显示后，这里会自动列出已选择的参数。").grid(
@@ -177,13 +179,19 @@ class WaveformTab(ttk.Frame):
             pady=(0, 8),
         )
 
+        search_row = ttk.Frame(left, style="Panel.TFrame")
+        search_row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        search_row.columnconfigure(1, weight=1)
+        ttk.Label(search_row, text="搜索:", style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(search_row, textvariable=self.selected_search_var).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
         header = ttk.Frame(left, style="Panel.TFrame")
-        header.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        header.grid(row=2, column=0, sticky="ew", pady=(0, 4))
         ttk.Label(header, text="显示", width=5).grid(row=0, column=0, padx=(2, 8))
         ttk.Label(header, text="参数名").grid(row=0, column=1, sticky="w")
 
         self.series_canvas = tk.Canvas(left, bg="#ffffff", highlightthickness=1, highlightbackground="#cbd5e1", relief="flat")
-        self.series_canvas.grid(row=2, column=0, sticky="nsew")
+        self.series_canvas.grid(row=3, column=0, sticky="nsew")
         self.series_list_frame = tk.Frame(self.series_canvas, bg="#ffffff")
         self.series_window = self.series_canvas.create_window((0, 0), window=self.series_list_frame, anchor="nw")
         self.series_list_frame.bind("<Configure>", self._on_series_frame_configure)
@@ -191,7 +199,7 @@ class WaveformTab(ttk.Frame):
         self.series_canvas.bind("<MouseWheel>", self._on_series_canvas_mousewheel)
 
         left_scroll = ttk.Scrollbar(left, orient="vertical", command=self.series_canvas.yview)
-        left_scroll.grid(row=2, column=1, sticky="ns")
+        left_scroll.grid(row=3, column=1, sticky="ns")
         self.series_canvas.configure(yscrollcommand=left_scroll.set)
 
         right = ttk.LabelFrame(self, text="实时波形", style="Section.TLabelframe", padding=10)
@@ -524,8 +532,14 @@ class WaveformTab(ttk.Frame):
         for name in self.selected_names:
             widgets = self._row_widgets.get(name)
             if widgets:
-                widgets[0].pack_forget()
-                widgets[0].pack(fill="x", padx=2, pady=1)
+                row = widgets[0]
+                row.pack_forget()
+                if self._matches_selected_filter(name):
+                    row.pack(fill="x", padx=2, pady=1)
+
+    def _matches_selected_filter(self, name: str) -> bool:
+        keyword = self.selected_search_var.get().strip().lower()
+        return not keyword or keyword in name.lower()
 
     def _queue_list_refresh(self) -> None:
         if self._list_refresh_job is not None:
@@ -534,8 +548,12 @@ class WaveformTab(ttk.Frame):
 
     def _run_list_refresh(self) -> None:
         self._list_refresh_job = None
+        self._refresh_series_order()
         for name in self.selected_names:
             self._refresh_row_widget(name)
+
+    def _on_selected_search_changed(self, *_args) -> None:
+        self._queue_list_refresh()
 
     def _queue_latest_refresh(self) -> None:
         if self._latest_refresh_job is not None:
