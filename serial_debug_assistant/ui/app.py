@@ -963,22 +963,45 @@ class SerialDebugAssistant(tk.Tk):
             self.logger.log("PARAM", f"send execute command name={name}")
             self.send_protocol_frame(cmd_set=0x01, cmd_word=0x03, payload=payload)
             return
-        pending_value = self.parameter_tab.get_pending_display_value(name)
-        if pending_value is None:
+        pending_values = self.parameter_tab.get_pending_display_values(name)
+        if pending_values is None:
             return
+        pending_value, pending_min, pending_max = pending_values
         try:
             raw_value = value_to_u32(pending_value, entry.type_id)
-            min_value = u32_to_value(entry.min_raw, entry.type_id)
-            max_value = u32_to_value(entry.max_raw, entry.type_id)
+            min_raw = value_to_u32(pending_min, entry.type_id)
+            max_raw = value_to_u32(pending_max, entry.type_id)
             typed_value = u32_to_value(raw_value, entry.type_id)
+            min_value = u32_to_value(min_raw, entry.type_id)
+            max_value = u32_to_value(max_raw, entry.type_id)
         except ValueError as exc:
+            self.parameter_tab.clear_busy(name)
+            self.parameter_tab.mark_invalid(name)
+            self.parameter_tab.set_message(f"Invalid parameter input: {name}")
             self.set_status(str(exc), error=True)
             self.logger.log("ERROR", f"write value error name={name} err={exc}")
             return
         if isinstance(typed_value, float):
-            in_range = float(min_value) <= float(typed_value) <= float(max_value)
+            typed_min = float(min_value)
+            typed_max = float(max_value)
+            typed_data = float(typed_value)
         else:
-            in_range = int(min_value) <= int(typed_value) <= int(max_value)
+            typed_min = int(min_value)
+            typed_max = int(max_value)
+            typed_data = int(typed_value)
+
+        if typed_min > typed_max:
+            self.parameter_tab.clear_busy(name)
+            self.parameter_tab.mark_invalid(name)
+            self.parameter_tab.set_message(f"Invalid range: {name} min {min_value} > max {max_value}")
+            self.set_status(f"Invalid range: {name}", error=True)
+            self.logger.log(
+                "WARN",
+                f"write invalid range name={name} min={min_value} max={max_value}",
+            )
+            return
+
+        in_range = typed_min <= typed_data <= typed_max
         if not in_range:
             self.parameter_tab.clear_busy(name)
             self.parameter_tab.mark_invalid(name)
@@ -990,10 +1013,20 @@ class SerialDebugAssistant(tk.Tk):
             )
             return
         self.parameter_tab.clear_invalid(name)
-        payload = bytes([len(name.encode("utf-8"))]) + raw_value.to_bytes(4, "little") + entry.max_raw.to_bytes(4, "little", signed=False) + entry.min_raw.to_bytes(4, "little", signed=False) + name.encode("utf-8")
+        payload = (
+            bytes([len(name.encode("utf-8"))])
+            + raw_value.to_bytes(4, "little")
+            + max_raw.to_bytes(4, "little", signed=False)
+            + min_raw.to_bytes(4, "little", signed=False)
+            + name.encode("utf-8")
+        )
         self.parameter_tab.mark_busy(name)
         self.parameter_tab.set_message(f"正在写入: {name}")
-        self.logger.log("PARAM", f"send write name={name} raw=0x{raw_value:08X} display={pending_value}")
+        self.logger.log(
+            "PARAM",
+            f"send write name={name} raw=0x{raw_value:08X} min=0x{min_raw:08X} max=0x{max_raw:08X} "
+            f"display={pending_value} display_min={pending_min} display_max={pending_max}",
+        )
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x03, payload=payload)
 
     def toggle_auto_report(self, name: str, enabled: bool) -> None:

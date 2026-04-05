@@ -227,43 +227,66 @@ class ParameterReadWriteTab(ttk.Frame):
     def _on_tree_double_click(self, event) -> None:
         row_id = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
-        if column == "#3" and row_id:
-            self._edit_data_cell(row_id)
+        if row_id and column in {"#3", "#4", "#5"}:
+            self._edit_value_cell(row_id, column)
 
-    def _edit_data_cell(self, name: str) -> None:
+    def _edit_value_cell(self, name: str, column_id: str) -> None:
         entry = self.parameters.get(name)
         if entry is None or entry.is_command:
             return
 
-        bbox = self.tree.bbox(name, "#3")
+        column_name = {"#3": "data", "#4": "min", "#5": "max"}.get(column_id)
+        if column_name is None:
+            return
+
+        bbox = self.tree.bbox(name, column_id)
         if not bbox:
             return
 
         x, y, width, height = bbox
         editor = ttk.Entry(self.tree)
-        editor.insert(0, format_value(entry.data_raw, entry.type_id))
+        current_value = str(self.tree.set(name, column_name))
+        if not current_value:
+            raw_value = {
+                "data": entry.data_raw,
+                "min": entry.min_raw,
+                "max": entry.max_raw,
+            }[column_name]
+            current_value = format_value(raw_value, entry.type_id)
+        editor.insert(0, current_value)
         editor.place(x=x, y=y, width=width, height=height)
         editor.focus_set()
         editor.select_range(0, "end")
 
-        def commit(_event=None) -> None:
+        finished = False
+
+        def close_editor(*, save: bool) -> None:
+            nonlocal finished
+            if finished or not editor.winfo_exists():
+                return
+            finished = True
             new_value = editor.get().strip()
             editor.destroy()
-            if not new_value:
+            if not save or not new_value:
                 return
-            self.tree.set(name, "data", new_value)
+            self.tree.set(name, column_name, new_value)
             cached = self.parameters[name]
             cached.dirty = True
             if self.tree.exists(name):
                 self.tree.item(name, tags=self._entry_tags(name, True))
 
-        editor.bind("<Return>", commit)
-        editor.bind("<FocusOut>", lambda _event: editor.destroy())
+        editor.bind("<Return>", lambda _event: close_editor(save=True))
+        editor.bind("<Escape>", lambda _event: close_editor(save=False))
+        editor.bind("<FocusOut>", lambda _event: close_editor(save=True))
 
-    def get_pending_display_value(self, name: str) -> str | None:
+    def get_pending_display_values(self, name: str) -> tuple[str, str, str] | None:
         if not self.tree.exists(name):
             return None
-        return str(self.tree.set(name, "data"))
+        return (
+            str(self.tree.set(name, "data")),
+            str(self.tree.set(name, "min")),
+            str(self.tree.set(name, "max")),
+        )
 
     def mark_busy(self, name: str) -> None:
         self._busy_name = name
