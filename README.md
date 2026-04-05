@@ -57,8 +57,31 @@ python .\main.py
 run_serial_debug_assistant.bat
 ```
 
+## 打包发布
+
+生成可执行目录版：
+
+```text
+build_frame_exe.bat
+```
+
+生成 Windows 安装包（`Setup.exe`）：
+
+```text
+build_frame_installer.bat
+```
+
+说明：
+
+- `build_frame_installer.bat` 会先生成 `dist\frame\frame.exe`
+- 然后使用 `Inno Setup` 把 `dist\frame` 打成可安装软件
+- 如果本机未安装 `Inno Setup 6`，脚本会提示下载地址
+- 安装包输出目录为 `dist\installer\`
+- 新版 `Setup.exe` 会沿用原安装目录，并在安装前关闭旧版程序后覆盖升级
+
 ## 说明
 
 - 界面使用 `tkinter`，无需额外 GUI 框架依赖。
 - 串口通信使用 `pyserial`。
 - 当前已经按标准小型工程方式完成拆分，后续继续加功能会更方便。
+- 安装版的用户数据会保存在 `%LOCALAPPDATA%\FRAME\` 下，升级覆盖不会影响快捷发送配置、导出文件和日志。
