@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 import serial
+from serial_debug_assistant.app_paths import ensure_runtime_dirs, get_app_paths, migrate_legacy_data
 
 from serial_debug_assistant.constants import (
     APP_GEOMETRY,
@@ -64,8 +65,10 @@ class SerialDebugAssistant(tk.Tk):
         self.minsize(APP_MIN_WIDTH, APP_MIN_HEIGHT)
         self.configure(bg="#eef2f7")
 
-        self.project_root = Path(__file__).resolve().parents[2]
-        self.logger = DebugLogger(self.project_root / "logs" / "app_debug.log")
+        self.paths = get_app_paths()
+        ensure_runtime_dirs(self.paths)
+        migration_notes = migrate_legacy_data(self.paths)
+        self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
         self.port_display_map: dict[str, str] = {}
         self.frame_parser = FrameParser()
@@ -109,6 +112,8 @@ class SerialDebugAssistant(tk.Tk):
         self._configure_styles()
         self._build_ui()
         self.logger.log("APP", f"startup log_file={self.logger.log_path}")
+        for note in migration_notes:
+            self.logger.log("APP", note)
         self.refresh_ports()
         self.after(POLL_INTERVAL_MS, self.process_incoming_data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -171,7 +176,7 @@ class SerialDebugAssistant(tk.Tk):
             on_send=self.send_payload,
             on_send_preset=self.send_preset_payload,
             on_reset_count=self.reset_counters,
-            config_path=self.project_root / "config" / "quick_send.cfg",
+            config_path=self.paths.quick_send_config,
             on_layout_change=self._log_monitor_layout,
         )
         self.parameter_tab = ParameterReadWriteTab(
@@ -186,7 +191,7 @@ class SerialDebugAssistant(tk.Tk):
             on_apply_period=self.apply_wave_period,
             on_toggle_run=self.toggle_wave_run,
             on_clear=self.clear_wave_data,
-            export_dir=self.project_root / "exports",
+            export_dir=self.paths.exports_dir,
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
         )
         self.upgrade_tab = UpgradeTab(
@@ -1098,7 +1103,13 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("UI", "clear monitor receive area")
 
     def save_receive_snapshot(self) -> None:
-        path = filedialog.asksaveasfilename(title="Save Receive Data", defaultextension=".txt", filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")])
+        self.paths.exports_dir.mkdir(parents=True, exist_ok=True)
+        path = filedialog.asksaveasfilename(
+            title="Save Receive Data",
+            initialdir=str(self.paths.exports_dir),
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+        )
         if not path:
             return
         Path(path).write_text(self.monitor_tab.receive_text.get("1.0", "end-1c"), encoding="utf-8")
@@ -1107,7 +1118,13 @@ class SerialDebugAssistant(tk.Tk):
 
     def on_toggle_save_to_file(self) -> None:
         if self.save_to_file_var.get():
-            path = filedialog.asksaveasfilename(title="Select output file", defaultextension=".bin", filetypes=[("Binary Files", "*.bin"), ("All Files", "*.*")])
+            self.paths.exports_dir.mkdir(parents=True, exist_ok=True)
+            path = filedialog.asksaveasfilename(
+                title="Select output file",
+                initialdir=str(self.paths.exports_dir),
+                defaultextension=".bin",
+                filetypes=[("Binary Files", "*.bin"), ("All Files", "*.*")],
+            )
             if not path:
                 self.save_to_file_var.set(False)
                 return
