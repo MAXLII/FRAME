@@ -123,6 +123,7 @@ class WaveformTab(ttk.Frame):
         self.bind_all("<KeyPress-V>", self._on_vertical_reference_shortcut, add=True)
         self.bind_all("<KeyPress-c>", self._on_cross_reference_shortcut, add=True)
         self.bind_all("<KeyPress-C>", self._on_cross_reference_shortcut, add=True)
+        self.bind_all("<Escape>", self._on_cancel_reference_shortcut, add=True)
         self.bind_all("<KeyPress-Alt_L>", self._on_alt_press, add=True)
         self.bind_all("<KeyPress-Alt_R>", self._on_alt_press, add=True)
         self.bind_all("<KeyRelease-Alt_L>", self._on_alt_release, add=True)
@@ -440,6 +441,15 @@ class WaveformTab(ttk.Frame):
         else:
             self.on_status("当前没有可清除的参考线", False)
         self._queue_redraw()
+
+    def cancel_pending_reference_line(self) -> bool:
+        if self._pending_reference_line is None and self._preview_reference_value is None:
+            return False
+        self._pending_reference_line = None
+        self._preview_reference_value = None
+        self.on_status("已取消预放置参考线", False)
+        self._queue_redraw()
+        return True
 
     def export_waveform_file(self) -> None:
         if not any(self.series_data.values()):
@@ -1089,6 +1099,11 @@ class WaveformTab(ttk.Frame):
     def _on_cross_reference_shortcut(self, _event) -> str:
         self.start_cross_reference_line()
         return "break"
+
+    def _on_cancel_reference_shortcut(self, _event) -> str | None:
+        if self.cancel_pending_reference_line():
+            return "break"
+        return None
 
     def _on_alt_press(self, _event) -> None:
         if self._alt_pressed:
