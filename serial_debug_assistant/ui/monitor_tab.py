@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import configparser
 from pathlib import Path
+import re
 import tkinter as tk
 from tkinter import ttk
 
@@ -361,12 +362,46 @@ class SerialMonitorTab(ttk.Frame):
             return
         self.preset_canvas.yview_scroll(int(-delta / 120), "units")
 
+    def _load_config_parser(self) -> tuple[configparser.ConfigParser, bool]:
+        config = configparser.ConfigParser()
+        if not self.config_path.exists():
+            return config, False
+        try:
+            with self.config_path.open("r", encoding="utf-8") as handle:
+                config.read_file(handle)
+            return config, False
+        except (OSError, UnicodeError, configparser.Error):
+            repaired_text = self._repair_config_text()
+            repaired = configparser.ConfigParser()
+            try:
+                repaired.read_string(repaired_text)
+            except configparser.Error:
+                return configparser.ConfigParser(), False
+            return repaired, True
+
+    def _repair_config_text(self) -> str:
+        try:
+            raw_text = self.config_path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+        repaired_lines: list[str] = []
+        section_pattern = re.compile(r"\[(preset_\d+|layout)\]\s*$")
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("["):
+                match = section_pattern.search(stripped)
+                if match:
+                    repaired_lines.append(match.group(0))
+                    continue
+            repaired_lines.append(line)
+        return "\n".join(repaired_lines) + ("\n" if raw_text.endswith(("\n", "\r")) else "")
+
     def _load_preset_config(self) -> None:
         self._suspend_save = True
+        should_rewrite = False
         try:
-            config = configparser.ConfigParser()
-            if self.config_path.exists():
-                config.read(self.config_path, encoding="utf-8")
+            config, should_rewrite = self._load_config_parser()
             for index in range(self.PRESET_ROWS):
                 section = f"preset_{index + 1}"
                 text_value = ""
@@ -390,6 +425,8 @@ class SerialMonitorTab(ttk.Frame):
                     self._saved_sash_ratio = ratio if 0.0 < ratio < 1.0 else None
         finally:
             self._suspend_save = False
+        if should_rewrite:
+            self._save_preset_config()
 
     def _save_preset_config(self) -> None:
         if self._suspend_save:
