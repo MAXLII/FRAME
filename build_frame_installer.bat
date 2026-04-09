@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 set "APP_NAME=FRAME"
-set "APP_VERSION=1.0.2"
+set "APP_VERSION=1.0.3"
 set "PUBLISHER=LWX"
 set "ISS_FILE=%~dp0installer\frame_installer.iss"
 set "DIST_APP_DIR=%~dp0dist\frame"
