@@ -131,11 +131,10 @@ class WaveformTab(ttk.Frame):
 
     def _build(self) -> None:
         self.rowconfigure(1, weight=1)
-        self.columnconfigure(0, weight=0, minsize=280)
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
 
         top = ttk.Frame(self, style="Panel.TFrame")
-        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         top.columnconfigure(9, weight=1)
 
         row1 = ttk.Frame(top, style="Panel.TFrame")
@@ -181,8 +180,18 @@ class WaveformTab(ttk.Frame):
             style="Status.TLabel",
         ).grid(row=0, column=10, sticky="e")
 
-        left = ttk.LabelFrame(self, text="已选参数", style="Section.TLabelframe", padding=10)
-        left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
+        content_paned = tk.PanedWindow(
+            self,
+            orient="horizontal",
+            sashrelief="raised",
+            sashwidth=6,
+            bd=0,
+            relief="flat",
+            bg="#e2e8f0",
+        )
+        content_paned.grid(row=1, column=0, sticky="nsew")
+
+        left = ttk.LabelFrame(content_paned, text="已选参数", style="Section.TLabelframe", padding=10)
         left.rowconfigure(3, weight=1)
         left.columnconfigure(0, weight=1)
 
@@ -216,14 +225,30 @@ class WaveformTab(ttk.Frame):
         left_scroll.grid(row=3, column=1, sticky="ns")
         self.series_canvas.configure(yscrollcommand=left_scroll.set)
 
-        right = ttk.LabelFrame(self, text="实时波形", style="Section.TLabelframe", padding=10)
-        right.grid(row=1, column=1, sticky="nsew")
-        right.rowconfigure(0, weight=1)
-        right.rowconfigure(1, weight=0)
-        right.columnconfigure(0, weight=1)
-        right.columnconfigure(1, weight=0, minsize=250)
+        center = ttk.Frame(content_paned, style="Panel.TFrame")
+        center.rowconfigure(0, weight=1)
+        center.columnconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(right, bg="#ffffff", highlightthickness=0, relief="flat")
+        content_paned.add(left, minsize=220, stretch="never")
+        content_paned.add(center, minsize=480, stretch="always")
+
+        right_paned = tk.PanedWindow(
+            center,
+            orient="horizontal",
+            sashrelief="raised",
+            sashwidth=6,
+            bd=0,
+            relief="flat",
+            bg="#e2e8f0",
+        )
+        right_paned.grid(row=0, column=0, sticky="nsew")
+
+        plot_frame = ttk.LabelFrame(right_paned, text="实时波形", style="Section.TLabelframe", padding=10)
+        plot_frame.rowconfigure(0, weight=1)
+        plot_frame.rowconfigure(1, weight=0)
+        plot_frame.columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(plot_frame, bg="#ffffff", highlightthickness=0, relief="flat")
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Configure>", lambda _event: self._queue_redraw())
         self.canvas.bind("<Motion>", self._on_canvas_motion)
@@ -233,8 +258,7 @@ class WaveformTab(ttk.Frame):
         self.canvas.bind("<B1-Motion>", self._on_drag_move)
         self.canvas.bind("<ButtonRelease-1>", self._on_drag_end)
 
-        latest_frame = ttk.LabelFrame(right, text="最新值", style="Section.TLabelframe", padding=8)
-        latest_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        latest_frame = ttk.LabelFrame(right_paned, text="最新值", style="Section.TLabelframe", padding=8)
         latest_frame.rowconfigure(0, weight=1)
         latest_frame.columnconfigure(0, weight=1)
 
@@ -257,12 +281,15 @@ class WaveformTab(ttk.Frame):
         latest_scroll.grid(row=0, column=1, sticky="ns")
         self.latest_canvas.configure(yscrollcommand=latest_scroll.set)
 
-        ttk.Label(right, textvariable=self.cursor_var, style="Status.TLabel", anchor="w", justify="left").grid(
+        ttk.Label(plot_frame, textvariable=self.cursor_var, style="Status.TLabel", anchor="w", justify="left").grid(
             row=1,
             column=0,
             sticky="ew",
             pady=(8, 0),
         )
+
+        right_paned.add(plot_frame, minsize=420, stretch="always")
+        right_paned.add(latest_frame, minsize=180, stretch="never")
 
     def set_period(self, period_ms: int) -> None:
         self.period_var.set(str(period_ms))
