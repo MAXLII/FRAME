@@ -13,7 +13,18 @@ class SerialMonitorTab(ttk.Frame):
     PRESET_CRLF_WIDTH = 64
     PRESET_SEND_WIDTH = 76
 
-    def __init__(self, master, *, on_send, on_send_preset, on_reset_count, config_path: Path, on_layout_change=None) -> None:
+    def __init__(
+        self,
+        master,
+        *,
+        on_send,
+        on_send_preset,
+        on_reset_count,
+        config_path: Path,
+        on_layout_change=None,
+        receive_hex_var: tk.BooleanVar | None = None,
+        send_hex_var: tk.BooleanVar | None = None,
+    ) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
         self.on_send = on_send
         self.on_send_preset = on_send_preset
@@ -29,6 +40,9 @@ class SerialMonitorTab(ttk.Frame):
         self._last_sash_y: int | None = None
         self._last_layout_signature: tuple[int, ...] | None = None
         self._layout_restored = False
+        self.receive_hex_var = receive_hex_var or tk.BooleanVar(value=False)
+        self.send_hex_var = send_hex_var or tk.BooleanVar(value=False)
+        self.receive_hex_var.trace_add("write", self._on_receive_mode_change)
         self._build()
         self._load_preset_config()
 
@@ -41,7 +55,7 @@ class SerialMonitorTab(ttk.Frame):
             orient="vertical",
             sashrelief="raised",
             sashwidth=6,
-            bg="#e2e8f0",
+            bg="#c7d6e5",
             bd=0,
             relief="flat",
         )
@@ -50,10 +64,61 @@ class SerialMonitorTab(ttk.Frame):
         self.main_paned.bind("<Configure>", self._on_main_paned_configure)
         self.main_paned.bind("<ButtonRelease-1>", self._on_main_paned_release)
 
-        receive_container = ttk.Frame(self, style="Panel.TFrame")
-        receive_container.rowconfigure(0, weight=1)
+        io_container = ttk.Frame(self, style="Panel.TFrame")
+        io_container.rowconfigure(0, weight=1)
+        io_container.columnconfigure(0, weight=1)
+        self.io_container = io_container
+
+        io_paned = tk.PanedWindow(
+            io_container,
+            orient="horizontal",
+            sashrelief="raised",
+            sashwidth=6,
+            bg="#c7d6e5",
+            bd=0,
+            relief="flat",
+        )
+        io_paned.grid(row=0, column=0, sticky="nsew")
+        self.io_paned = io_paned
+
+        send_log_container = ttk.LabelFrame(io_container, text="发送信息", style="Section.TLabelframe", padding=8)
+        send_log_container.rowconfigure(1, weight=1)
+        send_log_container.columnconfigure(0, weight=1)
+        self.send_log_container = send_log_container
+
+        send_log_toolbar = ttk.Frame(send_log_container, style="Panel.TFrame")
+        send_log_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Radiobutton(send_log_toolbar, text="ASCII", value=False, variable=self.send_hex_var).grid(row=0, column=0, padx=(0, 8))
+        ttk.Radiobutton(send_log_toolbar, text="HEX", value=True, variable=self.send_hex_var).grid(row=0, column=1)
+
+        self.send_log_text = tk.Text(
+            send_log_container,
+            wrap="char",
+            relief="flat",
+            borderwidth=0,
+            font=("Consolas", 11),
+            bg="#f8fbfe",
+            fg="#122033",
+            insertbackground="#1f6feb",
+            padx=12,
+            pady=12,
+        )
+        self.send_log_text.grid(row=1, column=0, sticky="nsew")
+        self.send_log_text.tag_configure("tx", foreground="#0f766e")
+
+        send_log_scroll = ttk.Scrollbar(send_log_container, orient="vertical", command=self.send_log_text.yview)
+        send_log_scroll.grid(row=1, column=1, sticky="ns")
+        self.send_log_text.configure(yscrollcommand=send_log_scroll.set)
+
+        receive_container = ttk.LabelFrame(io_container, text="接收信息", style="Section.TLabelframe", padding=8)
+        receive_container.rowconfigure(1, weight=1)
         receive_container.columnconfigure(0, weight=1)
         self.receive_container = receive_container
+
+        receive_toolbar = ttk.Frame(receive_container, style="Panel.TFrame")
+        receive_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Radiobutton(receive_toolbar, text="ASCII", value=False, variable=self.receive_hex_var).grid(row=0, column=0, padx=(0, 8))
+        ttk.Radiobutton(receive_toolbar, text="HEX", value=True, variable=self.receive_hex_var).grid(row=0, column=1)
 
         self.receive_text = tk.Text(
             receive_container,
@@ -61,18 +126,17 @@ class SerialMonitorTab(ttk.Frame):
             relief="flat",
             borderwidth=0,
             font=("Consolas", 11),
-            bg="#ffffff",
-            fg="#111827",
-            insertbackground="#2563eb",
+            bg="#f8fbfe",
+            fg="#122033",
+            insertbackground="#1f6feb",
             padx=12,
             pady=12,
         )
-        self.receive_text.grid(row=0, column=0, sticky="nsew")
-        self.receive_text.tag_configure("rx", foreground="#000000")
-        self.receive_text.tag_configure("tx", foreground="#15803d")
+        self.receive_text.grid(row=1, column=0, sticky="nsew")
+        self.receive_text.tag_configure("rx", foreground="#122033")
 
         recv_scroll = ttk.Scrollbar(receive_container, orient="vertical", command=self.receive_text.yview)
-        recv_scroll.grid(row=0, column=1, sticky="ns")
+        recv_scroll.grid(row=1, column=1, sticky="ns")
         self.receive_text.configure(yscrollcommand=recv_scroll.set)
 
         send_container = ttk.Frame(self, style="Panel.TFrame", height=240)
@@ -98,14 +162,14 @@ class SerialMonitorTab(ttk.Frame):
 
         self.send_text = tk.Text(
             manual_editor,
-            height=3,
+            height=8,
             wrap="word",
             relief="solid",
             borderwidth=1,
             font=("Consolas", 11),
-            bg="#ffffff",
-            fg="#111827",
-            insertbackground="#2563eb",
+            bg="#f8fbfe",
+            fg="#122033",
+            insertbackground="#1f6feb",
             padx=10,
             pady=8,
         )
@@ -154,9 +218,9 @@ class SerialMonitorTab(ttk.Frame):
 
         self.preset_canvas = tk.Canvas(
             preset_frame,
-            bg="#f8fafc",
+            bg="#f4f8fc",
             highlightthickness=1,
-            highlightbackground="#cbd5e1",
+            highlightbackground="#bfd0e3",
             relief="flat",
             height=160,
         )
@@ -216,23 +280,45 @@ class SerialMonitorTab(ttk.Frame):
             width=12,
         ).grid(row=0, column=0)
 
-        paned.add(receive_container, minsize=260, stretch="always")
+        io_paned.add(send_log_container, minsize=280, stretch="always")
+        io_paned.add(receive_container, minsize=280, stretch="always")
+
+        paned.add(io_container, minsize=260, stretch="always")
         paned.add(send_container, minsize=170, stretch="never")
+        self._update_receive_wrap()
         self.after(80, self._restore_or_set_default_pane_ratio)
 
     def append_receive(self, text: str, source: str = "rx", ensure_separate_line: bool = False) -> None:
+        target = self.send_log_text if source == "tx" else self.receive_text
+        tag = "tx" if source == "tx" else "rx"
         if ensure_separate_line and text and not text.startswith("\n"):
-            last_char = self.receive_text.get("end-2c", "end-1c")
+            last_char = target.get("end-2c", "end-1c")
             if last_char and last_char != "\n":
-                self.receive_text.insert("end", "\n")
-        self.receive_text.insert("end", text, source)
-        self.receive_text.see("end")
+                target.insert("end", "\n")
+        target.insert("end", text, tag)
+        target.see("end")
 
     def clear_receive(self) -> None:
+        self.send_log_text.delete("1.0", "end")
         self.receive_text.delete("1.0", "end")
 
     def get_send_text(self) -> str:
         return self.send_text.get("1.0", "end-1c")
+
+    def send_hex_enabled(self) -> bool:
+        return bool(self.send_hex_var.get())
+
+    def receive_hex_enabled(self) -> bool:
+        return bool(self.receive_hex_var.get())
+
+    def get_receive_hex_bytes_per_line(self) -> int:
+        return 0
+
+    def _on_receive_mode_change(self, *_args) -> None:
+        self._update_receive_wrap()
+
+    def _update_receive_wrap(self) -> None:
+        self.receive_text.configure(wrap="char")
 
     def _send_preset(self, index: int) -> None:
         raw_text = self.preset_text_vars[index].get()
@@ -301,26 +387,26 @@ class SerialMonitorTab(ttk.Frame):
         total_height = max(self.main_paned.winfo_height(), 0)
         top_height = max(self.receive_container.winfo_height(), 0)
         bottom_height = max(self.send_container.winfo_height(), 0)
-        send_tabs_height = max(self.send_tabs.winfo_height(), 0)
-        manual_tab_height = max(self.manual_tab.winfo_height(), 0)
+        io_width = max(self.io_container.winfo_width(), 0)
+        receive_width = max(self.receive_container.winfo_width(), 0)
+        send_width = max(self.send_container.winfo_width(), 0)
         preset_tab_height = max(self.preset_tab.winfo_height(), 0)
         receive_reqheight = self.receive_container.winfo_reqheight()
         send_reqheight = self.send_container.winfo_reqheight()
-        send_tabs_reqheight = self.send_tabs.winfo_reqheight()
-        manual_reqheight = self.manual_tab.winfo_reqheight()
+        io_reqheight = self.io_container.winfo_reqheight()
         preset_reqheight = self.preset_tab.winfo_reqheight()
         signature = (
             total_height,
             sash_y,
             top_height,
             bottom_height,
-            send_tabs_height,
-            manual_tab_height,
+            io_width,
+            receive_width,
+            send_width,
             preset_tab_height,
             receive_reqheight,
             send_reqheight,
-            send_tabs_reqheight,
-            manual_reqheight,
+            io_reqheight,
             preset_reqheight,
         )
         if source == "configure" and signature == self._last_layout_signature:
@@ -333,13 +419,13 @@ class SerialMonitorTab(ttk.Frame):
                 "sash_y": sash_y,
                 "top_height": top_height,
                 "bottom_height": bottom_height,
-                "send_tabs_height": send_tabs_height,
-                "manual_tab_height": manual_tab_height,
+                "io_width": io_width,
+                "receive_width": receive_width,
+                "send_width": send_width,
                 "preset_tab_height": preset_tab_height,
                 "receive_reqheight": receive_reqheight,
                 "send_reqheight": send_reqheight,
-                "send_tabs_reqheight": send_tabs_reqheight,
-                "manual_reqheight": manual_reqheight,
+                "io_reqheight": io_reqheight,
                 "preset_reqheight": preset_reqheight,
             }
         )

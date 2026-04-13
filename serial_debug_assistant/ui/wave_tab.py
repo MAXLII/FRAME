@@ -187,7 +187,7 @@ class WaveformTab(ttk.Frame):
             sashwidth=6,
             bd=0,
             relief="flat",
-            bg="#e2e8f0",
+            bg="#c7d6e5",
         )
         content_paned.grid(row=1, column=0, sticky="nsew")
 
@@ -213,9 +213,9 @@ class WaveformTab(ttk.Frame):
         ttk.Label(header, text="显示", width=5).grid(row=0, column=0, padx=(2, 8))
         ttk.Label(header, text="参数名").grid(row=0, column=1, sticky="w")
 
-        self.series_canvas = tk.Canvas(left, bg="#ffffff", highlightthickness=1, highlightbackground="#cbd5e1", relief="flat")
+        self.series_canvas = tk.Canvas(left, bg="#f8fbfe", highlightthickness=1, highlightbackground="#bfd0e3", relief="flat")
         self.series_canvas.grid(row=3, column=0, sticky="nsew")
-        self.series_list_frame = tk.Frame(self.series_canvas, bg="#ffffff")
+        self.series_list_frame = tk.Frame(self.series_canvas, bg="#f8fbfe")
         self.series_window = self.series_canvas.create_window((0, 0), window=self.series_list_frame, anchor="nw")
         self.series_list_frame.bind("<Configure>", self._on_series_frame_configure)
         self.series_canvas.bind("<Configure>", self._on_series_canvas_configure)
@@ -239,7 +239,7 @@ class WaveformTab(ttk.Frame):
             sashwidth=6,
             bd=0,
             relief="flat",
-            bg="#e2e8f0",
+            bg="#c7d6e5",
         )
         right_paned.grid(row=0, column=0, sticky="nsew")
 
@@ -248,7 +248,7 @@ class WaveformTab(ttk.Frame):
         plot_frame.rowconfigure(1, weight=0)
         plot_frame.columnconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(plot_frame, bg="#ffffff", highlightthickness=0, relief="flat")
+        self.canvas = tk.Canvas(plot_frame, bg="#f8fbfe", highlightthickness=0, relief="flat")
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Configure>", lambda _event: self._queue_redraw())
         self.canvas.bind("<Motion>", self._on_canvas_motion)
@@ -264,14 +264,14 @@ class WaveformTab(ttk.Frame):
 
         self.latest_canvas = tk.Canvas(
             latest_frame,
-            bg="#ffffff",
+            bg="#f8fbfe",
             highlightthickness=1,
-            highlightbackground="#cbd5e1",
+            highlightbackground="#bfd0e3",
             relief="flat",
             width=240,
         )
         self.latest_canvas.grid(row=0, column=0, sticky="nsew")
-        self.latest_list_frame = tk.Frame(self.latest_canvas, bg="#ffffff")
+        self.latest_list_frame = tk.Frame(self.latest_canvas, bg="#f8fbfe")
         self.latest_window = self.latest_canvas.create_window((0, 0), window=self.latest_list_frame, anchor="nw")
         self.latest_list_frame.bind("<Configure>", self._on_latest_frame_configure)
         self.latest_canvas.bind("<Configure>", self._on_latest_canvas_configure)
@@ -306,19 +306,19 @@ class WaveformTab(ttk.Frame):
             self.series_data.setdefault(name, [])
             if name not in self._row_widgets:
                 row_var = tk.BooleanVar(value=name in self.visible_names)
-                row = tk.Frame(self.series_list_frame, bg="#ffffff", highlightthickness=0, bd=0)
+                row = tk.Frame(self.series_list_frame, bg="#f8fbfe", highlightthickness=0, bd=0)
                 checkbox = tk.Checkbutton(
                     row,
                     variable=row_var,
-                    bg="#ffffff",
-                    activebackground="#ffffff",
+                    bg="#f8fbfe",
+                    activebackground="#f8fbfe",
                     highlightthickness=0,
                     bd=0,
                     relief="flat",
                     command=lambda item=name: self._on_row_toggle(item),
                 )
                 checkbox.grid(row=0, column=0, padx=(4, 8))
-                label = tk.Label(row, text=name, anchor="w", bg="#ffffff", fg="#0f172a")
+                label = tk.Label(row, text=name, anchor="w", bg="#f8fbfe", fg="#112033")
                 label.grid(row=0, column=1, sticky="w", padx=(0, 6))
                 row.columnconfigure(1, weight=1)
                 row.pack(fill="x", padx=2, pady=1)
@@ -350,9 +350,8 @@ class WaveformTab(ttk.Frame):
 
     def append_batch(self, batch: dict[str, float], batch_time: float | None = None) -> None:
         timestamp = batch_time if batch_time is not None else datetime.now().timestamp()
-        for name in self.selected_names:
-            self.series_data.setdefault(name, []).append((timestamp, batch.get(name)))
         for name, value in batch.items():
+            self.series_data.setdefault(name, []).append((timestamp, value))
             self.latest_values[name] = self._format_numeric(value)
         self._queue_list_refresh()
         self._queue_latest_refresh()
@@ -674,7 +673,7 @@ class WaveformTab(ttk.Frame):
                     text="当前没有勾选显示的参数。",
                     anchor="w",
                     justify="left",
-                    bg="#ffffff",
+                    bg="#f8fbfe",
                     fg="#64748b",
                 )
                 self._latest_empty_label.pack(fill="x", padx=8, pady=8)
@@ -688,16 +687,16 @@ class WaveformTab(ttk.Frame):
             value_text = self.latest_values.get(name, "-")
             widgets = self._latest_widgets.get(name)
             if widgets is None:
-                row = tk.Frame(self.latest_list_frame, bg="#ffffff", highlightthickness=0, bd=0)
-                swatch = tk.Canvas(row, width=12, height=12, bg="#ffffff", highlightthickness=0, bd=0)
+                row = tk.Frame(self.latest_list_frame, bg="#f8fbfe", highlightthickness=0, bd=0)
+                swatch = tk.Canvas(row, width=12, height=12, bg="#f8fbfe", highlightthickness=0, bd=0)
                 swatch.grid(row=0, column=0, padx=(0, 6), sticky="n")
                 name_label = tk.Label(
                     row,
                     text=name,
                     anchor="w",
                     justify="left",
-                    bg="#ffffff",
-                    fg="#0f172a",
+                    bg="#f8fbfe",
+                    fg="#112033",
                     wraplength=130,
                 )
                 name_label.grid(row=0, column=1, sticky="w")
@@ -706,7 +705,7 @@ class WaveformTab(ttk.Frame):
                     text=value_text,
                     anchor="e",
                     justify="right",
-                    bg="#ffffff",
+                    bg="#f8fbfe",
                     fg="#334155",
                     font=("Consolas", 10),
                 )
@@ -742,8 +741,8 @@ class WaveformTab(ttk.Frame):
             return
         row, checkbox, label = widgets
         visible = name in self.visible_names
-        bg = "#eaf2ff" if visible else "#ffffff"
-        fg = "#0f172a" if visible else "#334155"
+        bg = "#e3eefb" if visible else "#f8fbfe"
+        fg = "#112033" if visible else "#4c5f73"
         row.configure(bg=bg)
         checkbox.configure(bg=bg, activebackground=bg, selectcolor=bg)
         label.configure(bg=bg, fg=fg)

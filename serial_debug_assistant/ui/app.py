@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 import time
 import tkinter as tk
@@ -51,10 +52,45 @@ from serial_debug_assistant.protocol import (
     value_to_u32,
 )
 from serial_debug_assistant.services.serial_service import SerialService
+from serial_debug_assistant.ui.home_tab import HomeTab
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
+
+FAULT_MESSAGES = {
+    0: "MPPT输入过压",
+    1: "MPPT输入硬件过流",
+    2: "MPPT输入软件过流",
+    3: "AC输出短路",
+    4: "AC输出过流",
+    5: "AC输出有功功率过载",
+    6: "AC输出视在功率过载",
+    7: "PFC充电市电软启动失败",
+    8: "PFC充电PFC软启动失败",
+    9: "LLC放电软启动失败",
+    10: "采样错误",
+    11: "电池单体欠压",
+    12: "母线过压",
+    13: "母线欠压",
+    14: "PFC故障",
+    15: "电池过流",
+    16: "电池硬件过流",
+    17: "电池单体过压",
+    18: "BMS温度异常",
+    19: "电池充电过流",
+    20: "电池放电过流",
+    21: "电网异常",
+    22: "PCS温度异常",
+    23: "参数配置错误",
+}
+
+WARNING_MESSAGES = {
+    0: "市电过压",
+    1: "市电欠压",
+    2: "市电过频",
+    3: "市电欠频",
+}
 
 
 class SerialDebugAssistant(tk.Tk):
@@ -63,7 +99,7 @@ class SerialDebugAssistant(tk.Tk):
         self.title(APP_TITLE)
         self.geometry(APP_GEOMETRY)
         self.minsize(APP_MIN_WIDTH, APP_MIN_HEIGHT)
-        self.configure(bg="#eef2f7")
+        self.configure(bg="#edf3f8")
 
         self.paths = get_app_paths()
         ensure_runtime_dirs(self.paths)
@@ -81,8 +117,12 @@ class SerialDebugAssistant(tk.Tk):
         self.parameters: dict[str, ParameterEntry] = {}
         self.wave_running = False
         self.wave_report_period_ms = 300
+        self.pending_rx_hex_bytes = bytearray()
         self.pending_wave_batch: dict[str, float] = {}
         self.wave_batch_open = False
+        self.wave_batch_counter = 0
+        self.wave_debug_batches_remaining = 0
+        self.wave_debug_frame_budget = 0
         self.last_wave_table_sync = 0.0
         self.parameter_list_request_job: str | None = None
         self.ignore_wave_frames_until = 0.0
@@ -108,6 +148,7 @@ class SerialDebugAssistant(tk.Tk):
         self.auto_send_var = tk.BooleanVar(value=False)
         self.line_mode_var = tk.BooleanVar(value=True)
         self.display_send_string_var = tk.BooleanVar(value=True)
+        self.parameter_status_var = tk.StringVar(value="参数提示: 参数页就绪")
 
         self._configure_styles()
         self._build_ui()
@@ -121,64 +162,172 @@ class SerialDebugAssistant(tk.Tk):
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("App.TFrame", background="#eef2f7")
-        style.configure("Panel.TFrame", background="#f8fafc", relief="flat")
-        style.configure("Section.TLabelframe", background="#f8fafc", borderwidth=1, relief="solid")
+        app_bg = "#edf3f8"
+        panel_bg = "#fbfdff"
+        sidebar_bg = "#e3ebf4"
+        border = "#bfd0e3"
+        accent = "#1f6feb"
+        accent_active = "#1557b5"
+        muted_text = "#5b6b7f"
+        text = "#112033"
+
+        self.configure(bg=app_bg)
+
+        style.configure("App.TFrame", background=app_bg)
+        style.configure("Panel.TFrame", background=panel_bg, relief="flat")
+        style.configure("Sidebar.TFrame", background=sidebar_bg, relief="flat")
+        style.configure("Section.TLabelframe", background=panel_bg, borderwidth=1, relief="solid", bordercolor=border)
+        style.configure("Sidebar.Section.TLabelframe", background=sidebar_bg, borderwidth=1, relief="solid", bordercolor=border)
         style.configure(
             "Section.TLabelframe.Label",
-            background="#f8fafc",
-            foreground="#374151",
-            font=("Segoe UI", 10, "bold"),
+            background=panel_bg,
+            foreground="#36506b",
+            font=("Segoe UI Semibold", 10),
         )
-        style.configure("TLabel", background="#f8fafc", foreground="#1f2937", font=("Segoe UI", 10))
-        style.configure("Status.TLabel", background="#eef2f7", foreground="#475569", font=("Segoe UI", 10))
-        style.configure("ErrorStatus.TLabel", background="#eef2f7", foreground="#dc2626", font=("Segoe UI", 10))
+        style.configure(
+            "Sidebar.Section.TLabelframe.Label",
+            background=sidebar_bg,
+            foreground="#36506b",
+            font=("Segoe UI Semibold", 10),
+        )
+        style.configure("TLabel", background=panel_bg, foreground=text, font=("Segoe UI", 10))
+        style.configure("Status.TLabel", background=app_bg, foreground=muted_text, font=("Segoe UI", 10))
+        style.configure("ErrorStatus.TLabel", background=app_bg, foreground="#c23b3b", font=("Segoe UI", 10))
         style.configure(
             "Header.TLabel",
-            background="#eef2f7",
-            foreground="#0f172a",
+            background=app_bg,
+            foreground=text,
             font=("Segoe UI Semibold", 11),
         )
-        style.configure("TButton", font=("Segoe UI", 10), padding=(10, 6))
+        style.configure(
+            "SidebarHeader.TLabel",
+            background=sidebar_bg,
+            foreground=text,
+            font=("Segoe UI Semibold", 11),
+        )
+        style.configure("Sidebar.TLabel", background=sidebar_bg, foreground=text, font=("Segoe UI", 10))
+        style.configure(
+            "TButton",
+            font=("Segoe UI", 10),
+            padding=(10, 6),
+            background="#f6f9fc",
+            foreground=text,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=border,
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#e8f0f8"), ("pressed", "#dde8f5")],
+            bordercolor=[("focus", accent)],
+        )
         style.configure(
             "Accent.TButton",
             foreground="#ffffff",
-            background="#2563eb",
+            background=accent,
             borderwidth=0,
             font=("Segoe UI Semibold", 10),
             padding=(12, 8),
         )
-        style.map("Accent.TButton", background=[("active", "#1d4ed8"), ("disabled", "#93c5fd")])
-        style.configure("TCheckbutton", background="#f8fafc", font=("Segoe UI", 10))
-        style.configure("TCombobox", padding=4)
+        style.map("Accent.TButton", background=[("active", accent_active), ("disabled", "#8fb8f2")])
+        style.configure("TCheckbutton", background=panel_bg, foreground=text, font=("Segoe UI", 10))
+        style.configure("Sidebar.TCheckbutton", background=sidebar_bg, foreground=text, font=("Segoe UI", 10))
+        style.configure("TRadiobutton", background=panel_bg, foreground=text, font=("Segoe UI", 10))
+        style.configure(
+            "TEntry",
+            fieldbackground="#ffffff",
+            foreground=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            insertcolor=accent,
+            padding=5,
+        )
+        style.configure(
+            "TCombobox",
+            padding=5,
+            fieldbackground="#f4f8fc",
+            foreground=text,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            arrowsize=14,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#f4f8fc"), ("focus", "#f4f8fc")],
+            selectbackground=[("readonly", "#dce9f7")],
+            selectforeground=[("readonly", text)],
+        )
+        style.configure("Horizontal.TProgressbar", background=accent, troughcolor="#dce6f1", bordercolor="#dce6f1", lightcolor=accent, darkcolor=accent)
+        style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground=text, bordercolor=border, rowheight=28)
+        style.configure("Treeview.Heading", background="#edf4fb", foreground="#36506b", relief="flat", font=("Segoe UI Semibold", 10))
+        style.map("Treeview.Heading", background=[("active", "#dfeaf6")])
+        style.configure("TNotebook", background=panel_bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure(
+            "TNotebook.Tab",
+            background="#e7eef6",
+            foreground="#4a5d73",
+            padding=(14, 7),
+            font=("Segoe UI Semibold", 10),
+            borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", panel_bg), ("active", "#dbe6f2")],
+            foreground=[("selected", text), ("active", text)],
+            padding=[("selected", (16, 11, 16, 9)), ("!selected", (14, 6, 14, 6))],
+        )
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, style="App.TFrame", padding=14)
+        root = ttk.Frame(self, style="App.TFrame", padding=16)
         root.pack(fill="both", expand=True)
-        root.columnconfigure(0, weight=0, minsize=300)
-        root.columnconfigure(1, weight=1)
-        root.rowconfigure(0, weight=1)
-        root.rowconfigure(1, weight=0)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=0)
+        root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=0)
 
-        self.sidebar = ttk.Frame(root, style="Panel.TFrame", padding=12)
-        self.sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        serial_bar = ttk.Frame(root, style="Sidebar.TFrame", padding=(16, 14))
+        serial_bar.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        self._build_serial_bar(serial_bar)
 
-        content = ttk.Frame(root, style="Panel.TFrame", padding=0)
-        content.grid(row=0, column=1, sticky="nsew")
+        content = ttk.Frame(root, style="Panel.TFrame", padding=2)
+        content.grid(row=1, column=0, sticky="nsew")
         content.rowconfigure(0, weight=1)
         content.columnconfigure(0, weight=1)
 
         self.notebook = ttk.Notebook(content)
         self.notebook.grid(row=0, column=0, sticky="nsew")
 
+        monitor_page = ttk.Frame(self.notebook, style="App.TFrame", padding=0)
+        monitor_page.columnconfigure(0, weight=0, minsize=300)
+        monitor_page.columnconfigure(1, weight=1)
+        monitor_page.rowconfigure(0, weight=1)
+
+        monitor_settings = ttk.Frame(monitor_page, style="Sidebar.TFrame", padding=16)
+        monitor_settings.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        self._build_monitor_settings(monitor_settings)
+
+        self.home_tab = HomeTab(self.notebook)
+        self.home_tab.bind_inv_cfg_actions(
+            on_enable=self.request_enable_ac_output,
+            on_disable=self.request_disable_ac_output,
+            on_send=self.send_home_inv_cfg,
+            on_read=self.request_home_inv_cfg,
+        )
+
         self.monitor_tab = SerialMonitorTab(
-            self.notebook,
+            monitor_page,
             on_send=self.send_payload,
             on_send_preset=self.send_preset_payload,
             on_reset_count=self.reset_counters,
             config_path=self.paths.quick_send_config,
             on_layout_change=self._log_monitor_layout,
+            receive_hex_var=self.recv_hex_var,
+            send_hex_var=self.send_hex_var,
         )
+        self.monitor_tab.grid(row=0, column=1, sticky="nsew")
+
         self.parameter_tab = ParameterReadWriteTab(
             self.notebook,
             on_read_list=self.request_parameter_list,
@@ -186,6 +335,7 @@ class SerialDebugAssistant(tk.Tk):
             on_write_param=self.write_single_parameter,
             on_toggle_wave=self.toggle_auto_report,
         )
+        self.parameter_tab.message_var.trace_add("write", self._on_parameter_message_changed)
         self.wave_tab = WaveformTab(
             self.notebook,
             on_apply_period=self.apply_wave_period,
@@ -200,27 +350,29 @@ class SerialDebugAssistant(tk.Tk):
             on_start_stop=self.toggle_upgrade,
         )
 
-        self.notebook.add(self.monitor_tab, text="串口调试")
+        self.notebook.add(self.home_tab, text="主页")
+        self.notebook.add(monitor_page, text="串口调试")
         self.notebook.add(self.parameter_tab, text="参数读写")
         self.notebook.add(self.wave_tab, text="参数波形")
         self.notebook.add(self.upgrade_tab, text="固件升级")
-        self.notebook.select(self.monitor_tab)
+        self.notebook.select(self.home_tab)
 
         footer = ttk.Frame(root, style="App.TFrame")
-        footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        footer.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         footer.columnconfigure(0, weight=1)
         footer.columnconfigure(1, weight=1)
         footer.columnconfigure(2, weight=1)
+        footer.columnconfigure(3, weight=1)
         ttk.Label(footer, textvariable=self.tx_count_var, style="Status.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(footer, textvariable=self.rx_count_var, style="Status.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Label(footer, textvariable=self.parameter_status_var, style="Status.TLabel").grid(row=0, column=2, sticky="w")
         self.status_label = ttk.Label(footer, textvariable=self.status_var, style="Status.TLabel")
-        self.status_label.grid(row=0, column=2, sticky="e")
+        self.status_label.grid(row=0, column=3, sticky="e")
 
-        self._build_sidebar()
-
-    def _build_sidebar(self) -> None:
-        self.sidebar.columnconfigure(1, weight=1)
-        ttk.Label(self.sidebar, text="Serial Port", style="Header.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+    def _build_serial_bar(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(2, weight=1)
+        parent.columnconfigure(12, weight=1)
+        ttk.Label(parent, text="Serial Port", style="SidebarHeader.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 16))
 
         controls = [
             ("Port Name", self._build_port_selector),
@@ -229,57 +381,64 @@ class SerialDebugAssistant(tk.Tk):
             ("Parity", self._build_parity_selector),
             ("Stop Bits", self._build_stop_bits_selector),
         ]
-        row = 1
+        col = 1
         for label, builder in controls:
-            ttk.Label(self.sidebar, text=f"{label} :").grid(row=row, column=0, sticky="w", pady=4)
-            builder(row)
-            row += 1
+            ttk.Label(parent, text=f"{label} :", style="Sidebar.TLabel").grid(row=0, column=col, sticky="w", padx=(0, 6))
+            builder(parent, 0, col + 1)
+            col += 2
 
-        self.open_button = ttk.Button(self.sidebar, text="Open", command=self.toggle_connection, style="Accent.TButton")
-        self.open_button.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 12))
-        row += 1
+        self.open_button = ttk.Button(parent, text="Open", command=self.toggle_connection, style="Accent.TButton")
+        self.open_button.grid(row=0, column=11, sticky="w", padx=(12, 0))
 
-        receive_frame = ttk.LabelFrame(self.sidebar, text="Receive Settings", style="Section.TLabelframe", padding=10)
+    def _build_monitor_settings(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        ttk.Label(parent, text="Debug Settings", style="SidebarHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 12))
+
+        row = 1
+        receive_frame = ttk.LabelFrame(parent, text="Receive Settings", style="Sidebar.Section.TLabelframe", padding=12)
         receive_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         receive_frame.columnconfigure(0, weight=1)
         receive_frame.columnconfigure(1, weight=1)
         row += 1
 
-        ttk.Checkbutton(receive_frame, text="Save receiving to file", variable=self.save_to_file_var, command=self.on_toggle_save_to_file).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(receive_frame, text="HEX display", variable=self.recv_hex_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(receive_frame, text="Auto break frame", variable=self.auto_break_var).grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(receive_frame, text="Save receiving to file", variable=self.save_to_file_var, command=self.on_toggle_save_to_file, style="Sidebar.TCheckbutton").grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(receive_frame, text="HEX display", variable=self.recv_hex_var, style="Sidebar.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(receive_frame, text="Auto break frame", variable=self.auto_break_var, style="Sidebar.TCheckbutton").grid(row=2, column=0, sticky="w", pady=2)
         ttk.Entry(receive_frame, textvariable=self.break_ms_var, width=8).grid(row=2, column=1, sticky="e", pady=2)
-        ttk.Checkbutton(receive_frame, text="Add timestamp", variable=self.timestamp_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(receive_frame, text="Add timestamp", variable=self.timestamp_var, style="Sidebar.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Button(receive_frame, text="Clear data", command=self.clear_receive_area).grid(row=4, column=0, sticky="ew", pady=(8, 0), padx=(0, 6))
         ttk.Button(receive_frame, text="Save data", command=self.save_receive_snapshot).grid(row=4, column=1, sticky="ew", pady=(8, 0))
 
-        send_frame = ttk.LabelFrame(self.sidebar, text="Send Settings", style="Section.TLabelframe", padding=10)
+        send_frame = ttk.LabelFrame(parent, text="Send Settings", style="Sidebar.Section.TLabelframe", padding=12)
         send_frame.grid(row=row, column=0, columnspan=3, sticky="ew")
         send_frame.columnconfigure(0, weight=1)
         send_frame.columnconfigure(1, weight=1)
-        ttk.Checkbutton(send_frame, text="HEX send", variable=self.send_hex_var).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(send_frame, text="Timing send", variable=self.auto_send_var, command=self.on_toggle_auto_send).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(send_frame, text="HEX send", variable=self.send_hex_var, style="Sidebar.TCheckbutton").grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(send_frame, text="Timing send", variable=self.auto_send_var, command=self.on_toggle_auto_send, style="Sidebar.TCheckbutton").grid(row=1, column=0, sticky="w", pady=2)
         ttk.Entry(send_frame, textvariable=self.auto_send_seconds_var, width=8).grid(row=1, column=1, sticky="e", pady=2)
-        ttk.Checkbutton(send_frame, text="Send line ending (CRLF)", variable=self.line_mode_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(send_frame, text="Display send string", variable=self.display_send_string_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(send_frame, text="Send line ending (CRLF)", variable=self.line_mode_var, style="Sidebar.TCheckbutton").grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(send_frame, text="Display send string", variable=self.display_send_string_var, style="Sidebar.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Button(send_frame, text="Refresh Ports", command=self.refresh_ports).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
-    def _build_port_selector(self, row: int) -> None:
-        self.port_combo = ttk.Combobox(self.sidebar, textvariable=self.port_var, state="readonly", width=18)
-        self.port_combo.grid(row=row, column=1, sticky="ew", pady=4)
-        ttk.Button(self.sidebar, text="R", command=self.refresh_ports, width=3).grid(row=row, column=2, padx=(6, 0), pady=4)
+    def _build_port_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        holder = ttk.Frame(parent, style="Sidebar.TFrame")
+        holder.grid(row=row, column=column, sticky="ew", padx=(0, 12))
+        holder.columnconfigure(0, weight=1)
+        self.port_combo = ttk.Combobox(holder, textvariable=self.port_var, state="readonly", width=18)
+        self.port_combo.grid(row=0, column=0, sticky="ew")
+        ttk.Button(holder, text="刷新", command=self.refresh_ports, width=5).grid(row=0, column=1, padx=(6, 0))
 
-    def _build_baud_selector(self, row: int) -> None:
-        ttk.Combobox(self.sidebar, textvariable=self.baud_var, values=BAUD_RATES, width=22).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+    def _build_baud_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        ttk.Combobox(parent, textvariable=self.baud_var, values=BAUD_RATES, width=10).grid(row=row, column=column, sticky="w", padx=(0, 12))
 
-    def _build_data_bits_selector(self, row: int) -> None:
-        ttk.Combobox(self.sidebar, textvariable=self.data_bits_var, values=tuple(BYTE_SIZES.keys()), state="readonly", width=22).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+    def _build_data_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        ttk.Combobox(parent, textvariable=self.data_bits_var, values=tuple(BYTE_SIZES.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
 
-    def _build_parity_selector(self, row: int) -> None:
-        ttk.Combobox(self.sidebar, textvariable=self.parity_var, values=tuple(PARITY_OPTIONS.keys()), state="readonly", width=22).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+    def _build_parity_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        ttk.Combobox(parent, textvariable=self.parity_var, values=tuple(PARITY_OPTIONS.keys()), state="readonly", width=9).grid(row=row, column=column, sticky="w", padx=(0, 12))
 
-    def _build_stop_bits_selector(self, row: int) -> None:
-        ttk.Combobox(self.sidebar, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=22).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+    def _build_stop_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        ttk.Combobox(parent, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
 
     def _log_monitor_layout(self, layout: dict[str, int | str]) -> None:
         self.logger.log(
@@ -349,6 +508,7 @@ class SerialDebugAssistant(tk.Tk):
         self.frame_parser = FrameParser()
         self.wave_running = False
         self.wave_tab.set_running(False)
+        self.pending_rx_hex_bytes.clear()
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
         self.set_status(f"Connected to {selected_port}")
@@ -365,6 +525,7 @@ class SerialDebugAssistant(tk.Tk):
         self.cancel_auto_send()
         self.stop_upgrade("串口已断开，升级已停止。", user_initiated=False)
         self.serial_service.close()
+        self.pending_rx_hex_bytes.clear()
         self.upgrade_tab.set_connection_state(False)
         self.set_status("Disconnected")
         self.parameter_tab.set_message("串口已断开")
@@ -373,6 +534,9 @@ class SerialDebugAssistant(tk.Tk):
 
     def _set_open_button_text(self, text: str) -> None:
         self.open_button.configure(text=text)
+
+    def _on_parameter_message_changed(self, *_args) -> None:
+        self.parameter_status_var.set(f"参数提示: {self.parameter_tab.message_var.get()}")
 
     def set_status(self, message: str, *, error: bool = False) -> None:
         self.status_var.set(message)
@@ -635,7 +799,7 @@ class SerialDebugAssistant(tk.Tk):
             self.monitor_tab.append_receive(
                 self.format_incoming(chunk.timestamp, chunk.data),
                 "rx",
-                ensure_separate_line=self.recv_hex_var.get(),
+                ensure_separate_line=self.monitor_tab.receive_hex_enabled(),
             )
             for frame in self.frame_parser.feed(chunk.data):
                 self._log_protocol_frame(frame)
@@ -659,6 +823,13 @@ class SerialDebugAssistant(tk.Tk):
                     self.logger.log("FRAME", "wave batch start")
                 elif name_len == 0 and type_id == 0 and data_raw == 0xAAAAAAAA:
                     self.logger.log("FRAME", "wave batch end")
+                elif self.wave_debug_frame_budget > 0 and len(payload) >= 6 + name_len:
+                    name = payload[6 : 6 + name_len].decode("utf-8", errors="replace")
+                    self.logger.log(
+                        "FRAME",
+                        f"wave sample name={name} type={type_id} raw=0x{data_raw:08X} len={len(payload)}",
+                    )
+                    self.wave_debug_frame_budget -= 1
             return
         self.logger.log(
             "FRAME",
@@ -666,7 +837,30 @@ class SerialDebugAssistant(tk.Tk):
             f"src=0x{frame.src:02X} dst=0x{frame.dst:02X} len={len(frame.payload)} payload={frame.payload.hex(' ').upper()}",
         )
 
+    def _log_wave_batch_summary(self, reason: str, batch: dict[str, float]) -> None:
+        self.wave_batch_counter += 1
+        if self.wave_debug_batches_remaining <= 0:
+            return
+        names = sorted(batch.keys(), key=str.lower)
+        selected_names = list(self.wave_tab.selected_names)
+        missing_selected = [name for name in selected_names if name not in batch]
+        names_preview = ", ".join(names[:10])
+        missing_preview = ", ".join(missing_selected[:10]) if missing_selected else "-"
+        if len(names) > 10:
+            names_preview += f", ...(+{len(names) - 10})"
+        if len(missing_selected) > 10:
+            missing_preview += f", ...(+{len(missing_selected) - 10})"
+        self.logger.log(
+            "WAVE",
+            f"batch#{self.wave_batch_counter} {reason} size={len(batch)} "
+            f"selected={len(selected_names)} missing_selected={len(missing_selected)} "
+            f"names=[{names_preview}] missing=[{missing_preview}]",
+        )
+        self.wave_debug_batches_remaining -= 1
+
     def handle_protocol_frame(self, frame: ProtocolFrame) -> None:
+        if self._handle_home_protocol_frame(frame):
+            return
         if frame.cmd_set != 0x01:
             return
         if self._handle_upgrade_protocol_frame(frame):
@@ -744,6 +938,143 @@ class SerialDebugAssistant(tk.Tk):
             if time.monotonic() < self.ignore_wave_frames_until:
                 return
             self._handle_wave_report_payload(frame.payload)
+
+    def _handle_home_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_set != 0x02:
+            return False
+        if frame.cmd_word == 0x02 and frame.is_ack == 0:
+            info = self._parse_pcs_home_payload(frame.payload)
+            if info is None:
+                self.logger.log("WARN", f"pcs home payload invalid len={len(frame.payload)}")
+                return True
+            self.home_tab.update_pcs_info(**info)
+            self.home_tab.set_fault_log(self._format_fault_log(info["fault"]))
+            self.home_tab.set_warning_log(self._format_warning_log(info["warning"]))
+            self.logger.log(
+                "HOME",
+                "pcs update "
+                f"pv={info['mppt_pwr']:.3f}W grid={info['ac_pwr_grid']:.3f}W inv={info['ac_pwr_inv']:.3f}W "
+                f"bat={info['bat_pwr']:.3f}W fault=0x{info['fault']:08X} warning=0x{info['warning']:08X}",
+            )
+            return True
+        if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
+            ac_out_enable_trig, ac_out_disable_trig, ac_out_rms, ac_out_freq = frame.payload[:4]
+            self.home_tab.apply_inv_cfg_ack(
+                ac_out_enable_trig=ac_out_enable_trig,
+                ac_out_disable_trig=ac_out_disable_trig,
+                ac_out_rms=ac_out_rms,
+                ac_out_freq=ac_out_freq,
+            )
+            self.logger.log(
+                "HOME",
+                "inv cfg ack "
+                f"enable=0x{ac_out_enable_trig:02X} disable=0x{ac_out_disable_trig:02X} "
+                f"rms=0x{ac_out_rms:02X} freq=0x{ac_out_freq:02X}",
+            )
+            return True
+        return False
+
+    def _parse_pcs_home_payload(self, payload: bytes) -> dict[str, float | int] | None:
+        expected_size = struct.calcsize("<15fBBIII5f")
+        if len(payload) == 0:
+            return None
+
+        offset = 0
+
+        def read(fmt: str):
+            nonlocal offset
+            size = struct.calcsize(fmt)
+            if offset + size > min(len(payload), expected_size):
+                return None
+            value = struct.unpack_from(fmt, payload, offset)[0]
+            offset += size
+            return value
+
+        return {
+            "mppt_vin": read("<f"),
+            "mppt_iin": read("<f"),
+            "mppt_pwr": read("<f"),
+            "ac_v_grid": read("<f"),
+            "ac_i_grid": read("<f"),
+            "ac_freq_grid": read("<f"),
+            "ac_pwr_grid": read("<f"),
+            "ac_v_inv": read("<f"),
+            "ac_i_inv": read("<f"),
+            "ac_pwr_inv": read("<f"),
+            "ac_freq_inv": read("<f"),
+            "pfc_temp": read("<f"),
+            "llc_temp1": read("<f"),
+            "llc_temp2": read("<f"),
+            "mppt_temp": read("<f"),
+            "fan_sta": read("<B"),
+            "rly_sta": read("<B"),
+            "protect": read("<I"),
+            "fault": read("<I"),
+            "warning": read("<I"),
+            "bat_volt": read("<f"),
+            "bat_curr": read("<f"),
+            "bat_pwr": read("<f"),
+            "bat_temp": read("<f"),
+            "soc": read("<f"),
+        }
+
+    def _format_fault_log(self, fault: int | None) -> str:
+        fault_text = f"0x{fault:08X}" if fault is not None else "--"
+        lines = [f"故障信息: {fault_text}"]
+        active = self._active_bits(fault, FAULT_MESSAGES)
+        if active:
+            lines.append("")
+            lines.extend(active)
+        else:
+            lines.append("")
+            lines.append("当前无故障" if fault is not None else "故障数据未上报")
+        return "\n".join(lines)
+
+    def _format_warning_log(self, warning: int | None) -> str:
+        warning_text = f"0x{warning:08X}" if warning is not None else "--"
+        lines = [f"告警信息: {warning_text}"]
+        active = self._active_bits(warning, WARNING_MESSAGES)
+        if active:
+            lines.append("")
+            lines.extend(active)
+        else:
+            lines.append("")
+            lines.append("当前无告警" if warning is not None else "告警数据未上报")
+        return "\n".join(lines)
+
+    def _active_bits(self, value: int | None, mapping: dict[int, str]) -> list[str]:
+        if value is None:
+            return []
+        lines: list[str] = []
+        for bit, message in mapping.items():
+            if value & (1 << bit):
+                lines.append(f"代码{bit}: {message}")
+        return lines
+
+    def request_enable_ac_output(self) -> None:
+        self._send_home_inv_cfg(ac_out_enable_trig=1, ac_out_disable_trig=0xFF, ac_out_rms=0xFF, ac_out_freq=0xFF)
+
+    def request_disable_ac_output(self) -> None:
+        self._send_home_inv_cfg(ac_out_enable_trig=0xFF, ac_out_disable_trig=1, ac_out_rms=0xFF, ac_out_freq=0xFF)
+
+    def send_home_inv_cfg(self) -> None:
+        rms, freq = self.home_tab.get_selected_inv_cfg()
+        self._send_home_inv_cfg(ac_out_enable_trig=0xFF, ac_out_disable_trig=0xFF, ac_out_rms=rms, ac_out_freq=freq)
+
+    def request_home_inv_cfg(self) -> None:
+        self._send_home_inv_cfg(ac_out_enable_trig=0xFF, ac_out_disable_trig=0xFF, ac_out_rms=0xFF, ac_out_freq=0xFF)
+
+    def _send_home_inv_cfg(self, *, ac_out_enable_trig: int, ac_out_disable_trig: int, ac_out_rms: int, ac_out_freq: int) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            return
+        payload = bytes([ac_out_enable_trig, ac_out_disable_trig, ac_out_rms, ac_out_freq])
+        self.send_protocol_frame(cmd_set=0x02, cmd_word=0x01, payload=payload)
+        self.logger.log(
+            "HOME",
+            "send inv cfg "
+            f"payload={payload.hex(' ').upper()}",
+        )
 
     def _handle_upgrade_protocol_frame(self, frame: ProtocolFrame) -> bool:
         session = self.update_session
@@ -853,6 +1184,10 @@ class SerialDebugAssistant(tk.Tk):
         type_id = payload[1]
         data_raw = int.from_bytes(payload[2:6], "little")
         if name_len == 0 and type_id == 0 and data_raw == 0x55555555:
+            if self.wave_batch_open and self.pending_wave_batch:
+                self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
+                self._log_wave_batch_summary("flushed-before-nested-start", dict(self.pending_wave_batch))
+                self.logger.log("WAVE", f"nested batch start, flushed partial batch size={len(self.pending_wave_batch)}")
             self.pending_wave_batch = {}
             self.wave_batch_open = True
             self.logger.log("WAVE", "batch start")
@@ -860,8 +1195,11 @@ class SerialDebugAssistant(tk.Tk):
         if name_len == 0 and type_id == 0 and data_raw == 0xAAAAAAAA:
             if self.pending_wave_batch:
                 self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
+                self._log_wave_batch_summary("batch-end", dict(self.pending_wave_batch))
                 self.logger.log("WAVE", f"batch end size={len(self.pending_wave_batch)}")
                 self.pending_wave_batch.clear()
+            elif not self.wave_batch_open:
+                self.logger.log("WAVE", "stray batch end ignored")
             self.wave_batch_open = False
             return
         if len(payload) < 6 + name_len:
@@ -877,7 +1215,12 @@ class SerialDebugAssistant(tk.Tk):
             return
         value = u32_to_value(data_raw, type_id)
         if isinstance(value, (int, float)):
-            self.pending_wave_batch[name] = float(value)
+            numeric_value = float(value)
+            if self.wave_batch_open:
+                self.pending_wave_batch[name] = numeric_value
+            else:
+                self.wave_tab.append_batch({name: numeric_value}, batch_time=time.time())
+                self.logger.log("WAVE", f"single sample name={name} value={numeric_value}")
 
     def _parse_parameter_list_item(self, payload: bytes) -> ParameterEntry | None:
         name_len = payload[0]
@@ -1077,6 +1420,11 @@ class SerialDebugAssistant(tk.Tk):
         self.wave_tab.set_running(start)
         if start:
             self.pending_wave_batch.clear()
+            self.wave_batch_open = False
+            self.wave_batch_counter = 0
+            self.wave_debug_batches_remaining = 8
+            self.wave_debug_frame_budget = 120
+            self.logger.log("WAVE", "armed detailed batch capture for first 8 batches")
         self.logger.log("WAVE", f"send run toggle start={start}")
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x0C, payload=bytes([1 if start else 0]))
 
@@ -1122,14 +1470,86 @@ class SerialDebugAssistant(tk.Tk):
             return
         self.total_tx_bytes += sent
         self.tx_count_var.set(f"Send: {self.total_tx_bytes} bytes")
+        self._echo_sent_payload(frame, hex_mode=self.monitor_tab.send_hex_enabled())
 
     def format_incoming(self, timestamp: float, data: bytes) -> str:
         prefix = time.strftime("[%H:%M:%S] ", time.localtime(timestamp)) if self.timestamp_var.get() else ""
-        body = " ".join(f"{byte:02X}" for byte in data) if self.recv_hex_var.get() else data.decode("utf-8", errors="replace")
-        formatted = f"{prefix}{body}"
-        if self.recv_hex_var.get() and not formatted.endswith("\n"):
-            formatted += "\n"
-        return formatted
+        display_text = self._format_display_payload(
+            data,
+            prefix=prefix,
+            hex_mode=self.monitor_tab.receive_hex_enabled(),
+            pending_hex_bytes=self.pending_rx_hex_bytes,
+            repeat_prefix_after_newline=True,
+        )
+        if not self.monitor_tab.receive_hex_enabled():
+            self.pending_rx_hex_bytes.clear()
+        return display_text
+
+    def _format_display_payload(
+        self,
+        payload: bytes,
+        *,
+        prefix: str,
+        hex_mode: bool,
+        append_trailing_newline: bool = False,
+        pending_hex_bytes: bytearray | None = None,
+        repeat_prefix_after_newline: bool = False,
+    ) -> str:
+        if not payload and not pending_hex_bytes:
+            return ""
+        if not hex_mode:
+            text = f"{prefix}{payload.decode('utf-8', errors='replace')}"
+            if append_trailing_newline and text and not text.endswith("\n"):
+                text += "\n"
+            return text
+        return self._format_hex_display_payload(
+            payload,
+            prefix=prefix,
+            append_trailing_newline=append_trailing_newline,
+            pending_hex_bytes=pending_hex_bytes,
+            repeat_prefix_after_newline=repeat_prefix_after_newline,
+        )
+
+    def _format_hex_display_payload(
+        self,
+        payload: bytes,
+        *,
+        prefix: str,
+        append_trailing_newline: bool,
+        pending_hex_bytes: bytearray | None,
+        repeat_prefix_after_newline: bool,
+    ) -> str:
+        if pending_hex_bytes is not None:
+            buffered = bytes(pending_hex_bytes) + payload
+            pending_hex_bytes.clear()
+        else:
+            buffered = payload
+
+        if not buffered:
+            return ""
+
+        parts: list[str] = [prefix] if prefix else []
+        index = 0
+        while index < len(buffered):
+            byte = buffered[index]
+            if byte == 0x0D:
+                if index + 1 >= len(buffered):
+                    if pending_hex_bytes is not None:
+                        pending_hex_bytes.append(byte)
+                    break
+                if buffered[index + 1] == 0x0A:
+                    parts.append("0D 0A\n")
+                    if repeat_prefix_after_newline and prefix and index + 2 < len(buffered):
+                        parts.append(prefix)
+                    index += 2
+                    continue
+            parts.append(f"{byte:02X} ")
+            index += 1
+
+        text = "".join(parts)
+        if append_trailing_newline and text and not text.endswith("\n"):
+            text += "\n"
+        return text
 
     def clear_receive_area(self) -> None:
         self.monitor_tab.clear_receive()
@@ -1181,7 +1601,7 @@ class SerialDebugAssistant(tk.Tk):
         if not raw_text.strip():
             return
         try:
-            payload = self.build_send_bytes(raw_text, hex_mode=self.send_hex_var.get(), append_crlf=self.line_mode_var.get())
+            payload = self.build_send_bytes(raw_text, hex_mode=self.monitor_tab.send_hex_enabled(), append_crlf=self.line_mode_var.get())
             self.logger.log("TX", f"manual send frame={payload.hex(' ').upper()}")
             sent = self.serial_service.write(payload)
         except ValueError as exc:
@@ -1193,7 +1613,7 @@ class SerialDebugAssistant(tk.Tk):
             return
         self.total_tx_bytes += sent
         self.tx_count_var.set(f"Send: {self.total_tx_bytes} bytes")
-        self._echo_sent_payload(payload, hex_mode=self.send_hex_var.get())
+        self._echo_sent_payload(payload, hex_mode=self.monitor_tab.send_hex_enabled())
         self.set_status(f"Sent {sent} byte(s)")
 
     def send_preset_payload(self, index: int, raw_text: str, hex_mode: bool, append_crlf: bool) -> None:
@@ -1237,13 +1657,12 @@ class SerialDebugAssistant(tk.Tk):
         if not self.display_send_string_var.get() or not payload:
             return
         prefix = time.strftime("[%H:%M:%S] ", time.localtime(time.time())) if self.timestamp_var.get() else ""
-        if hex_mode:
-            body = " ".join(f"{byte:02X}" for byte in payload)
-        else:
-            body = payload.decode("utf-8", errors="replace")
-        display_text = f"{prefix}{body}"
-        if not display_text.endswith("\n"):
-            display_text += "\n"
+        display_text = self._format_display_payload(
+            payload,
+            prefix=prefix,
+            hex_mode=hex_mode,
+            append_trailing_newline=True,
+        )
         self.monitor_tab.append_receive(display_text, "tx", ensure_separate_line=True)
 
     def on_toggle_auto_send(self) -> None:

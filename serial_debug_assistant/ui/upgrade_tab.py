@@ -41,6 +41,7 @@ class UpgradeTab(ttk.Frame):
         left = ttk.Frame(self, style="Panel.TFrame")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(1, weight=1)
+        left.rowconfigure(3, weight=1)
 
         right = ttk.Frame(self, style="Panel.TFrame")
         right.grid(row=0, column=1, sticky="nsew")
@@ -112,8 +113,8 @@ class UpgradeTab(ttk.Frame):
             relief="flat",
             borderwidth=0,
             font=("Consolas", 10),
-            bg="#ffffff",
-            fg="#111827",
+            bg="#f8fbfe",
+            fg="#122033",
             padx=10,
             pady=10,
         )
