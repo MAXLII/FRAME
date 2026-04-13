@@ -7,7 +7,8 @@ FRAME/
 ├─ bl_llc/
 ├─ docs/
 │  ├─ AI_WORK_RULES.md
-│  └─ ENGINEERING_DESIGN.md
+│  ├─ ENGINEERING_DESIGN.md
+│  └─ homepage_ui_redesign_brief_for_codex.md
 ├─ installer/
 │  └─ frame_installer.iss
 ├─ llc/
@@ -27,6 +28,7 @@ FRAME/
 │     ├─ __init__.py
 │     ├─ app.py
 │     ├─ debug_tab.py
+│     ├─ home_tab.py
 │     ├─ monitor_tab.py
 │     ├─ parameter_tab.py
 │     ├─ upgrade_tab.py
@@ -37,9 +39,7 @@ FRAME/
 ├─ main.py
 ├─ README.md
 ├─ requirements.txt
-├─ run_serial_debug_assistant.bat
-├─ 上位机.pdf
-└─ 通信.pdf
+└─ run_serial_debug_assistant.bat
 ```
 
 ## 工程分层
@@ -52,14 +52,14 @@ FRAME/
 
 ### 构建发布层
 
-- `build_frame_exe.bat` 负责准备虚拟环境、安装 `PyInstaller`、清理应用输出目录并生成 `dist/frame/frame.exe`。
-- `build_frame_installer.bat` 负责调用目录版构建，并继续执行安装包编译流程。
+- `build_frame_exe.bat` 负责准备虚拟环境、安装 `PyInstaller`、清理构建输出目录并生成 `dist/frame/frame.exe`。
+- `build_frame_installer.bat` 负责串联目录版构建和安装包编译流程。
 - `installer/frame_installer.iss` 定义 Windows 安装包的安装目录、快捷方式、卸载入口和覆盖升级行为。
 - `clean_build_artifacts.bat` 负责清理构建目录、缓存目录和 Python 编译产物。
 
 ### 应用包层
 
-- `serial_debug_assistant/` 目录承载串口调试助手的运行时路径、协议处理、固件升级、串口服务和界面组件。
+- `serial_debug_assistant/` 承载串口调试助手的运行时路径、协议处理、固件升级、串口服务和界面组件。
 
 ## 顶层文件与目录职责
 
@@ -67,11 +67,12 @@ FRAME/
 
 - `docs/AI_WORK_RULES.md` 定义本仓库的 AI 执行规则、Git 提交规则和工程设计文档编写规则。
 - `docs/ENGINEERING_DESIGN.md` 说明本工程当前目录和模块设计。
+- `docs/homepage_ui_redesign_brief_for_codex.md` 记录主页 UI 重设计的目标、输入来源和界面原则。
 
 ### 参考资料
 
 - `README.md` 说明工程用途、运行方式和打包方式。
-- `上位机.pdf` 与 `通信.pdf` 作为仓库中的参考资料文件。
+- 仓库根目录中的 PDF 文件作为协议和界面设计参考资料。
 
 ## `serial_debug_assistant` 包设计
 
@@ -98,16 +99,24 @@ FRAME/
 
 ### 界面层总控
 
-- `ui/app.py` 负责创建主窗口、侧边栏和标签页，并组织串口连接、协议处理、参数管理、波形显示和固件升级流程。
-- `ui/app.py` 负责将串口接收数据分发到监视区、协议解析器、参数页、波形页和升级页。
+- `ui/app.py` 负责创建主窗口、顶部串口连接栏和各标签页，并组织串口连接、协议处理、参数管理、波形显示和固件升级流程。
+- `ui/app.py` 负责创建主页页签、串口收发页签、参数页签、波形页签和固件升级页签，并管理这些页面之间的状态同步。
+- `ui/app.py` 负责将串口接收数据分发到监视区、协议解析器、主页页签、参数页、波形页和升级页。
 - `ui/app.py` 负责运行状态显示、计数统计、接收保存和发送控制。
+- `ui/app.py` 负责统一收发显示字符串的格式化，发送回显与接收数据显示共享公共显示函数，并在 HEX 模式下处理 `0D 0A` 换行显示。
 
 ## `serial_debug_assistant.ui` 组件设计
+
+### 主页页
+
+- `ui/home_tab.py` 定义主页页签布局，展示电网、逆变器、电池、MPPT、温度、风扇与继电器状态、故障信息和告警信息。
+- `ui/home_tab.py` 负责逆变输出配置的读取、写入、使能和关闭操作入口，并维护主页状态文本与日志文本框显示。
 
 ### 串口收发页
 
 - `ui/monitor_tab.py` 定义串口监视页布局。
-- `ui/monitor_tab.py` 负责接收区显示、手动发送区、快捷发送区和快捷发送配置持久化。
+- `ui/monitor_tab.py` 负责发送日志区、接收显示区、手动发送区、快捷发送区和快捷发送配置持久化。
+- `ui/monitor_tab.py` 负责发送日志区与接收显示区共用的文本框样式配置，接收区使用黑色文本标签，发送区使用绿色文本标签。
 - `ui/monitor_tab.py` 负责主分栏位置记录和界面布局信息回传。
 
 ### 参数读写页
@@ -141,6 +150,8 @@ FRAME/
 
 - 启动入口层负责启动 `ui/app.py` 中的主窗口。
 - 主窗口负责调用 `SerialService` 完成串口收发，并通过 `FrameParser` 解析协议帧。
-- 协议层输出的参数数据进入 `ParameterReadWriteTab` 和 `WaveformTab`。
+- 串口监视页负责展示发送日志、接收显示、手动发送和快捷发送配置。
+- 主页页负责汇总协议解析后的设备状态、告警与故障信息，并提供逆变配置操作入口。
+- 参数页输出的波形勾选结果进入 `WaveformTab`，波形页负责绘制和管理参数曲线。
 - 固件文件解析与升级载荷构造由 `firmware_update.py` 提供，升级界面和升级状态流转由 `ui/app.py` 与 `UpgradeTab` 共同组织。
 - 构建发布层负责将应用包转换为目录版可执行程序和 Windows 安装包。
