@@ -12,6 +12,8 @@ class SerialMonitorTab(ttk.Frame):
     PRESET_HEX_WIDTH = 52
     PRESET_CRLF_WIDTH = 64
     PRESET_SEND_WIDTH = 76
+    LOG_TEXT_LIMIT = 200_000
+    LOG_TEXT_TRIM_TO = 160_000
 
     def __init__(
         self,
@@ -289,13 +291,26 @@ class SerialMonitorTab(ttk.Frame):
         self.after(80, self._restore_or_set_default_pane_ratio)
 
     def append_receive(self, text: str, source: str = "rx", ensure_separate_line: bool = False) -> None:
+        self.append_receive_batch([text], source=source, ensure_separate_line=ensure_separate_line)
+
+    def append_receive_batch(
+        self,
+        chunks: list[str],
+        *,
+        source: str = "rx",
+        ensure_separate_line: bool = False,
+    ) -> None:
+        if not chunks:
+            return
         target = self.send_log_text if source == "tx" else self.receive_text
         tag = "tx" if source == "tx" else "rx"
+        text = "".join(chunks)
         if ensure_separate_line and text and not text.startswith("\n"):
             last_char = target.get("end-2c", "end-1c")
             if last_char and last_char != "\n":
-                target.insert("end", "\n")
+                text = "\n" + text
         target.insert("end", text, tag)
+        self._trim_log_text(target)
         target.see("end")
 
     def clear_receive(self) -> None:
@@ -319,6 +334,13 @@ class SerialMonitorTab(ttk.Frame):
 
     def _update_receive_wrap(self) -> None:
         self.receive_text.configure(wrap="char")
+
+    def _trim_log_text(self, target: tk.Text) -> None:
+        current_length = int(target.count("1.0", "end-1c", "chars")[0])
+        if current_length <= self.LOG_TEXT_LIMIT:
+            return
+        trim_chars = current_length - self.LOG_TEXT_TRIM_TO
+        target.delete("1.0", f"1.0 + {trim_chars} chars")
 
     def _send_preset(self, index: int) -> None:
         raw_text = self.preset_text_vars[index].get()

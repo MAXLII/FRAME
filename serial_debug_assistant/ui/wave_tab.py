@@ -99,6 +99,7 @@ class WaveformTab(ttk.Frame):
         self._cached_visible_series: dict[str, list[tuple[float, float | None]]] = {}
         self._pending_reference_line: str | None = None
         self._preview_reference_value: float | tuple[float, float] | None = None
+        self._has_unsaved_changes = False
 
         self._build()
         self.window_var.trace_add("write", self._on_window_changed)
@@ -353,6 +354,8 @@ class WaveformTab(ttk.Frame):
         for name, value in batch.items():
             self.series_data.setdefault(name, []).append((timestamp, value))
             self.latest_values[name] = self._format_numeric(value)
+        if batch:
+            self._has_unsaved_changes = True
         self._queue_list_refresh()
         self._queue_latest_refresh()
         self._queue_redraw()
@@ -379,6 +382,7 @@ class WaveformTab(ttk.Frame):
         self._drag_start_y_range = None
         self._zoom_rect_start = None
         self._zoom_rect_end = None
+        self._has_unsaved_changes = False
         self.pause_button_text.set("暂停显示")
         self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
         self._queue_list_refresh()
@@ -432,6 +436,7 @@ class WaveformTab(ttk.Frame):
             return
         label = self.marker_var.get().strip() or f"标记{len(self.markers) + 1}"
         self.markers.append((timestamp, label))
+        self._has_unsaved_changes = True
         self.marker_var.set("")
         self.on_status(f"已添加标记: {label}", False)
         self._queue_redraw()
@@ -462,6 +467,8 @@ class WaveformTab(ttk.Frame):
         self.reference_lines.clear()
         self._pending_reference_line = None
         self._preview_reference_value = None
+        if had_lines and any(self.series_data.values()):
+            self._has_unsaved_changes = True
         if had_lines:
             self.on_status("已清除所有参考线", False)
         else:
@@ -477,25 +484,18 @@ class WaveformTab(ttk.Frame):
         self._queue_redraw()
         return True
 
-    def export_waveform_file(self) -> None:
-        if not any(self.series_data.values()):
-            self.on_status("当前没有可导出的波形数据", True)
-            return
-        self.export_dir.mkdir(parents=True, exist_ok=True)
-        default_path = self.export_dir / f"waveform_{datetime.now():%Y%m%d_%H%M%S}{WAVE_FILE_EXTENSION}"
-        path = filedialog.asksaveasfilename(
-            title="导出波形文件",
-            initialdir=str(self.export_dir),
-            initialfile=default_path.name,
-            defaultextension=WAVE_FILE_EXTENSION,
-            filetypes=[("波形数据文件", f"*{WAVE_FILE_EXTENSION}"), ("所有文件", "*.*")],
-        )
-        if not path:
-            self.on_status("已取消导出波形文件", False)
-            return
+    def has_waveform_data(self) -> bool:
+        return any(self.series_data.values())
 
-        file_path = Path(path)
-        payload = {
+    def has_unsaved_waveform_changes(self) -> bool:
+        return self._has_unsaved_changes
+
+    def _default_export_path(self) -> Path:
+        self.export_dir.mkdir(parents=True, exist_ok=True)
+        return self.export_dir / f"waveform_{datetime.now():%Y%m%d_%H%M%S}{WAVE_FILE_EXTENSION}"
+
+    def _build_export_payload(self) -> dict[str, object]:
+        return {
             "format": WAVE_FILE_FORMAT,
             "version": WAVE_FILE_VERSION,
             "exported_at": datetime.now().isoformat(timespec="seconds"),
@@ -515,7 +515,39 @@ class WaveformTab(ttk.Frame):
                 for name in self.selected_names
             },
         }
+
+    def save_waveform_file(self, file_path: Path) -> Path:
+        payload = self._build_export_payload()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._has_unsaved_changes = False
+        return file_path
+
+    def auto_save_waveform_file(self, *, reason: str) -> Path | None:
+        if not self.has_waveform_data() or not self._has_unsaved_changes:
+            return None
+        file_path = self.save_waveform_file(self._default_export_path())
+        self.on_status(f"已自动保存波形文件（{reason}）: {file_path}", False)
+        return file_path
+
+    def export_waveform_file(self) -> None:
+        if not self.has_waveform_data():
+            self.on_status("当前没有可导出的波形数据", True)
+            return
+        default_path = self._default_export_path()
+        path = filedialog.asksaveasfilename(
+            title="导出波形文件",
+            initialdir=str(self.export_dir),
+            initialfile=default_path.name,
+            defaultextension=WAVE_FILE_EXTENSION,
+            filetypes=[("波形数据文件", f"*{WAVE_FILE_EXTENSION}"), ("所有文件", "*.*")],
+        )
+        if not path:
+            self.on_status("已取消导出波形文件", False)
+            return
+
+        file_path = Path(path)
+        self.save_waveform_file(file_path)
         self.on_status(f"已导出波形文件: {file_path}", False)
 
     def import_waveform_file(self) -> None:
@@ -613,6 +645,7 @@ class WaveformTab(ttk.Frame):
         self._queue_list_refresh()
         self._queue_latest_refresh()
         self._queue_redraw()
+        self._has_unsaved_changes = False
         self.on_status(f"已导入波形文件: {file_path}", False)
 
     def _marker_map(self) -> dict[float, str]:
@@ -1389,6 +1422,7 @@ class WaveformTab(ttk.Frame):
             if isinstance(value, tuple):
                 return
             self.reference_lines.append((orientation, value))
+        self._has_unsaved_changes = True
         self._pending_reference_line = None
         self._preview_reference_value = None
         if orientation == "vertical":

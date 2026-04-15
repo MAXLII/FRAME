@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import struct
 from pathlib import Path
 import time
@@ -92,6 +93,10 @@ WARNING_MESSAGES = {
     3: "市电欠频",
 }
 
+MAX_RX_CHUNKS_PER_POLL = 200
+MAX_RX_BYTES_PER_POLL = 262_144
+SAVE_FLUSH_INTERVAL_SECONDS = 0.4
+
 
 class SerialDebugAssistant(tk.Tk):
     def __init__(self) -> None:
@@ -113,6 +118,7 @@ class SerialDebugAssistant(tk.Tk):
         self.auto_send_job: str | None = None
         self.save_handle = None
         self.save_path: Path | None = None
+        self.last_save_flush_at = 0.0
         self.expected_param_count = 0
         self.parameters: dict[str, ParameterEntry] = {}
         self.wave_running = False
@@ -788,29 +794,46 @@ class SerialDebugAssistant(tk.Tk):
 
     def process_incoming_data(self) -> None:
         updated = False
-        while not self.serial_service.rx_queue.empty():
-            chunk = self.serial_service.rx_queue.get()
+        processed_chunks = 0
+        processed_bytes = 0
+        receive_fragments: list[str] = []
+        save_buffer = bytearray()
+        while processed_chunks < MAX_RX_CHUNKS_PER_POLL and processed_bytes < MAX_RX_BYTES_PER_POLL:
+            try:
+                chunk = self.serial_service.rx_queue.get_nowait()
+            except queue.Empty:
+                break
             if chunk.data == b"\n":
-                self.monitor_tab.append_receive("\n", "rx")
+                receive_fragments.append("\n")
                 continue
             self.total_rx_bytes += len(chunk.data)
+            processed_bytes += len(chunk.data)
+            processed_chunks += 1
             if not self.wave_running:
                 self.logger.log("RX", chunk.data.hex(" ").upper())
-            self.monitor_tab.append_receive(
-                self.format_incoming(chunk.timestamp, chunk.data),
-                "rx",
-                ensure_separate_line=self.monitor_tab.receive_hex_enabled(),
-            )
+            receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
             for frame in self.frame_parser.feed(chunk.data):
                 self._log_protocol_frame(frame)
                 self.handle_protocol_frame(frame)
             updated = True
             if self.save_handle:
-                self.save_handle.write(chunk.data)
+                save_buffer.extend(chunk.data)
+        if receive_fragments:
+            self.monitor_tab.append_receive_batch(
+                receive_fragments,
+                source="rx",
+                ensure_separate_line=self.monitor_tab.receive_hex_enabled(),
+            )
+        if save_buffer and self.save_handle:
+            self.save_handle.write(save_buffer)
+            now = time.monotonic()
+            if now - self.last_save_flush_at >= SAVE_FLUSH_INTERVAL_SECONDS:
                 self.save_handle.flush()
+                self.last_save_flush_at = now
         if updated:
             self.rx_count_var.set(f"Receive: {self.total_rx_bytes} bytes")
-        self.after(POLL_INTERVAL_MS, self.process_incoming_data)
+        next_delay = 1 if not self.serial_service.rx_queue.empty() else POLL_INTERVAL_MS
+        self.after(next_delay, self.process_incoming_data)
 
     def _log_protocol_frame(self, frame: ProtocolFrame) -> None:
         if frame.cmd_set == 0x01 and frame.cmd_word == 0x07:
@@ -1187,18 +1210,21 @@ class SerialDebugAssistant(tk.Tk):
             if self.wave_batch_open and self.pending_wave_batch:
                 self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
                 self._log_wave_batch_summary("flushed-before-nested-start", dict(self.pending_wave_batch))
-                self.logger.log("WAVE", f"nested batch start, flushed partial batch size={len(self.pending_wave_batch)}")
+                if self.wave_debug_batches_remaining > 0:
+                    self.logger.log("WAVE", f"nested batch start, flushed partial batch size={len(self.pending_wave_batch)}")
             self.pending_wave_batch = {}
             self.wave_batch_open = True
-            self.logger.log("WAVE", "batch start")
+            if self.wave_debug_batches_remaining > 0:
+                self.logger.log("WAVE", "batch start")
             return
         if name_len == 0 and type_id == 0 and data_raw == 0xAAAAAAAA:
             if self.pending_wave_batch:
                 self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
                 self._log_wave_batch_summary("batch-end", dict(self.pending_wave_batch))
-                self.logger.log("WAVE", f"batch end size={len(self.pending_wave_batch)}")
+                if self.wave_debug_batches_remaining > 0:
+                    self.logger.log("WAVE", f"batch end size={len(self.pending_wave_batch)}")
                 self.pending_wave_batch.clear()
-            elif not self.wave_batch_open:
+            elif not self.wave_batch_open and self.wave_debug_batches_remaining > 0:
                 self.logger.log("WAVE", "stray batch end ignored")
             self.wave_batch_open = False
             return
@@ -1220,7 +1246,8 @@ class SerialDebugAssistant(tk.Tk):
                 self.pending_wave_batch[name] = numeric_value
             else:
                 self.wave_tab.append_batch({name: numeric_value}, batch_time=time.time())
-                self.logger.log("WAVE", f"single sample name={name} value={numeric_value}")
+                if self.wave_debug_frame_budget > 0:
+                    self.logger.log("WAVE", f"single sample name={name} value={numeric_value}")
 
     def _parse_parameter_list_item(self, payload: bytes) -> ParameterEntry | None:
         name_len = payload[0]
@@ -1425,6 +1452,10 @@ class SerialDebugAssistant(tk.Tk):
             self.wave_debug_batches_remaining = 8
             self.wave_debug_frame_budget = 120
             self.logger.log("WAVE", "armed detailed batch capture for first 8 batches")
+        else:
+            saved_path = self.wave_tab.auto_save_waveform_file(reason="停止发波")
+            if saved_path is not None:
+                self.logger.log("WAVE", f"auto save on stop -> {saved_path}")
         self.logger.log("WAVE", f"send run toggle start={start}")
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x0C, payload=bytes([1 if start else 0]))
 
@@ -1583,10 +1614,12 @@ class SerialDebugAssistant(tk.Tk):
                 return
             self.save_path = Path(path)
             self.save_handle = self.save_path.open("ab")
+            self.last_save_flush_at = time.monotonic()
             self.set_status(f"Saving receive data to {self.save_path}")
             self.logger.log("UI", f"start save receive stream -> {self.save_path}")
             return
         if self.save_handle:
+            self.save_handle.flush()
             self.save_handle.close()
         self.save_handle = None
         self.save_path = None
@@ -1711,10 +1744,15 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("APP", "shutdown")
         self.cancel_auto_send()
         self.stop_upgrade("应用关闭，升级已停止。", user_initiated=False)
+        saved_path = self.wave_tab.auto_save_waveform_file(reason="软件关闭")
+        if saved_path is not None:
+            self.logger.log("WAVE", f"auto save on app close -> {saved_path}")
         self.serial_service.close()
         if self.save_handle:
+            self.save_handle.flush()
             self.save_handle.close()
             self.save_handle = None
+        self.logger.close()
         self.destroy()
 
 
