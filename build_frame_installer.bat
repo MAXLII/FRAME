@@ -45,8 +45,10 @@ if not errorlevel 1 (
 )
 
 echo [ERROR] Inno Setup compiler was not found.
-echo [INFO] Please install Inno Setup 6, then rerun this script.
+echo [INFO] This script needs Inno Setup 6 to build the installer package.
+echo [INFO] Please install Inno Setup 6 first, then rerun this script.
 echo [INFO] Download: https://jrsoftware.org/isdl.php
+echo [INFO] After installation, make sure ISCC.exe is available in one of the default install locations or in PATH.
 echo [INFO] The application bundle is already available at: "%DIST_APP_DIR%"
 exit /b 1
 

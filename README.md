@@ -38,6 +38,7 @@
 - 操作系统：`Windows 10` / `Windows 11`
 - Python：推荐 `Python 3.12`
 - 开发方式：推荐使用项目内 `.venv` 虚拟环境
+- 安装包构建环境：`Inno Setup 6`
 
 说明：
 
@@ -159,6 +160,11 @@ build_frame_installer.bat
 3. 调用 `installer/frame_installer.iss`
 4. 生成安装包
 
+前置条件：
+
+- 本机已安装 `Inno Setup 6`
+- 安装完成后可以找到 `ISCC.exe`
+
 输出目录：
 
 ```text
@@ -268,6 +274,11 @@ dist/frame/frame.exe
 ```bat
 build_frame_installer.bat
 ```
+
+如果这是第一次在这台机器上打安装包，请先安装：
+
+- `Python 3.12`
+- `Inno Setup 6`
 
 构建完成后安装包位于：
 
