@@ -93,7 +93,67 @@ FRAME/
 - `firmware_update.py` 定义固件尾部解析、CRC32 校验、版本格式化、模块名称映射和升级报文载荷构造。
 - `debug_logger.py` 定义应用日志写入器，并提供日志订阅回调分发能力。
 
-### `cmd_set = 0x01` 指令集
+### PDF 参考协议补充
+
+仓库根目录中的 `通信.pdf` 与 `上位机.pdf` 目前仍是理解本工程协议来源的重要参考资料。当前代码实现与工程设计文档应以源码为准，但下面这些协议结构体和字段定义仍然值得保留，便于后续联调、扩展和与下位机文档核对。
+
+#### 总帧格式（来自 `通信.pdf`）
+
+`通信.pdf` 定义了一个以 `0xE8` 为起始符、以 `0x0A0D` 为结束符的轻量级通信帧，等价结构如下：
+
+```c
+#pragma pack(1)
+typedef struct
+{
+    uint8_t sop;      // 固定 0xE8
+    uint8_t version;  // 协议版本
+    uint8_t src;      // 源地址
+    uint8_t d_src;    // 动态源地址
+    uint8_t dst;      // 目的地址
+    uint8_t d_dst;    // 动态目的地址
+    uint8_t cmd_set;  // 命令集
+    uint8_t cmd_word; // 命令字
+    uint8_t is_ack;   // 是否为响应帧
+    uint16_t len;     // payload 长度
+    uint8_t *p_data;  // payload 起始地址
+    uint16_t crc;     // 从 sop 到 p_data 的 CRC16
+    uint16_t eop;     // 固定 0x0A0D
+} section_packform_t;
+```
+
+字段约定如下：
+
+| 字段 | 长度 | 含义 | 备注 |
+| --- | --- | --- | --- |
+| `sop` | 1B | 起始符 | 固定为 `0xE8` |
+| `version` | 1B | 协议版本号 | 当前 PDF 示例为 `0x01` |
+| `src` | 1B | 源设备地址 | 例如上位机地址 |
+| `d_src` | 1B | 动态源地址 | 用于地址扩展 |
+| `dst` | 1B | 目的设备地址 | 例如下位机模块地址 |
+| `d_dst` | 1B | 动态目的地址 | 用于地址扩展 |
+| `cmd_set` | 1B | 命令集分类 | `0x01/0x02/0x03` 等 |
+| `cmd_word` | 1B | 具体命令字 | 同一命令集下的子命令 |
+| `is_ack` | 1B | 请求/响应标记 | `0` 为请求，`1` 为响应 |
+| `len` | 2B | 数据长度 | 仅表示 payload 字节数 |
+| `p_data` | 变长 | 数据载荷 | 必须按 1 字节对齐理解 |
+| `crc` | 2B | 帧内 CRC16 | 覆盖范围为 `sop..payload` |
+| `eop` | 2B | 结束符 | 固定为 `0x0A0D` |
+
+PDF 中给出的示例帧如下：
+
+```text
+E8 01 10 00 20 00 01 02 04 00 01 02 03 04 A3 C4 0D 0A
+```
+
+#### CRC 约定（来自 `通信.pdf`）
+
+- 通信帧校验采用 `CRC-16-CCITT`。
+- 多项式为 `0x1021`。
+- 初始值为 `0xFFFF`。
+- 计算范围为从 `sop` 开始到 payload 最后一个字节结束，不包含帧尾 `crc` 和 `eop`。
+- 当前代码中的 `protocol.py` 已按同类思路实现 CRC16 计算与验帧流程。
+
+## `cmd_set = 0x01` 指令集
 
 当前工程中，`cmd_set = 0x01` 主要承载参数读写、波形配置与波形上报相关协议，收发逻辑集中在 `serial_debug_assistant/ui/app.py`。
 
@@ -134,6 +194,321 @@ FRAME/
 - 参数页勾选波形显示使用 `0x05`。
 - 波形页应用上报周期使用 `0x06`。
 - 串口连接成功、读取参数列表前、以及波形页开始/停止运行时，都会用到 `0x0C` 控制设备侧波形上传。
+
+#### `cmd_set = 0x01` 结构体级载荷定义（来自 `上位机.pdf`）
+
+`上位机.pdf` 对 `cmd_set = 0x01` 的 payload 结构定义比当前代码注释更完整，整理如下。
+
+##### 通用数据类型
+
+```c
+typedef enum
+{
+    SHELL_INT8,
+    SHELL_UINT8,
+    SHELL_INT16,
+    SHELL_UINT16,
+    SHELL_INT32,
+    SHELL_UINT32,
+    SHELL_FP32,
+    SHELL_CMD,
+} SHELL_TYPE_E;
+```
+
+- PDF 明确说明：参数数据统一按固定 4 字节 `uint32_t` 传输。
+- 当参数类型是 `FP32` 时，`data` 字段传输的是浮点数的原始位模式，例如 `0.01f` 对应 `0x3C23D70A`。
+
+##### `0x01 / 0x01` 读取参数列表总数
+
+```c
+// request payload: NULL
+typedef struct
+{
+    uint32_t data_num;
+} cmd_0101_ack_t;
+```
+
+- 上位机发送空载荷请求。
+- 下位机返回参数总数 `data_num`。
+
+##### `0x01 / 0x04` 参数列表项
+
+```c
+typedef struct
+{
+    uint8_t name_len;
+    uint8_t type;
+    uint32_t data;
+    uint32_t data_max;
+    uint32_t data_min;
+    uint8_t status;
+    char name[];
+} cmd_0104_item_t;
+```
+
+- 每个参数占一帧。
+- `status.bit0` 表示自动上报/周期打印波形标志。
+- `status.bit1` 表示重要参数标志。
+
+##### `0x01 / 0x02` 读取单参数
+
+```c
+typedef struct
+{
+    uint8_t name_len;
+    char name[];
+} cmd_0102_req_t;
+
+typedef struct
+{
+    uint8_t name_len;
+    uint8_t type;
+    uint32_t data;
+    char name[];
+} cmd_0102_ack_t;
+```
+
+- 请求中只携带参数名。
+- 响应中返回参数类型、参数值和参数名。
+
+##### `0x01 / 0x03` 写入单参数
+
+```c
+typedef struct
+{
+    uint8_t name_len;
+    uint32_t data;
+    uint32_t data_max;
+    uint32_t data_min;
+    char name[];
+} cmd_0103_req_t;
+
+typedef struct
+{
+    uint8_t name_len;
+    uint8_t type;
+    uint32_t data;
+    uint32_t data_max;
+    uint32_t data_min;
+    char name[];
+} cmd_0103_ack_t;
+```
+
+- 请求中携带参数名、当前待写值及上下限。
+- 对命令型参数，界面表现为“执行”，但协议层仍复用该结构。
+- 响应返回下位机侧最终生效的值和范围。
+
+##### `0x01 / 0x05` 波形勾选
+
+```c
+typedef struct
+{
+    uint8_t name_len;
+    uint8_t auto_report;
+    char name[];
+} cmd_0105_req_t;
+
+typedef struct
+{
+    uint8_t ok;
+} cmd_0105_ack_t;
+```
+
+- `auto_report = 1` 表示开启该参数自动上报。
+- `auto_report = 0` 表示关闭该参数自动上报。
+
+##### `0x01 / 0x06` 波形上报周期
+
+```c
+typedef struct
+{
+    uint32_t reprot_period;
+} cmd_0106_req_t;
+```
+
+- 请求与响应结构相同，字段单位均为毫秒。
+- PDF 原文字段名为 `reprot_period`，当前文档保留该拼写以便与原资料核对。
+
+##### `0x01 / 0x07` 自动上报波形点
+
+```c
+typedef struct
+{
+    uint8_t name_len;
+    uint8_t type;
+    uint32_t data;
+    char name[];
+} cmd_0107_report_t;
+```
+
+- 正常数据帧表示一个参数的当前值。
+- 当 `name_len = 0x00`、`type = 0x00`、`data = 0x55555555` 时，表示一组波形数据开始。
+- 当 `name_len = 0x00`、`type = 0x00`、`data = 0xAAAAAAAA` 时，表示一组波形数据结束。
+- 当前代码已按该哨兵约定将一整组波形点收敛为单批次处理。
+
+##### `0x01 / 0x0C` 周期打印使能
+
+```c
+typedef struct
+{
+    uint8_t start_report;
+} cmd_010C_req_t;
+```
+
+- `start_report = 1` 表示开始自动上报。
+- `start_report = 0` 表示停止自动上报。
+- ACK 按 PDF 定义为空载荷。
+
+##### `0x01 / 0x08 ~ 0x0B` 在线升级协议
+
+```c
+typedef struct
+{
+    uint8_t module_id;
+    uint32_t version;
+    uint32_t file_size;
+    uint8_t update_type;
+} cmd_0108_req_t;
+
+typedef struct
+{
+    uint8_t allow_update;
+    uint16_t reject_reason;
+} cmd_0108_ack_t;
+
+// 0x01 / 0x09 request payload: NULL
+typedef struct
+{
+    uint8_t ready;
+} cmd_0109_ack_t;
+
+typedef struct
+{
+    uint32_t offset;
+    uint8_t module_id;
+    uint16_t data_length;
+    uint8_t packet_data[256];
+    uint16_t packet_crc;
+} cmd_010A_req_t;
+
+typedef struct
+{
+    uint8_t data_is_ok;
+} cmd_010A_ack_t;
+
+typedef struct
+{
+    uint16_t fw_crc;
+} cmd_010B_req_t;
+
+typedef struct
+{
+    uint8_t success_flg;
+} cmd_010B_ack_t;
+```
+
+- `0x08` 用于发送升级意图和固件概要，`update_type` 中 `1` 为正常升级，`2` 为强制升级。
+- `0x09` 用于轮询 bootloader 是否已准备完成。
+- `0x0A` 用于按 256 字节小包发送固件，其中 `packet_crc` 是单包 CRC16。
+- `0x0B` 用于发送整包结束帧，`fw_crc` 表示包含 footer 的整包固件 CRC16。
+
+##### 固件尾信息 footer（来自 `上位机.pdf`）
+
+```c
+typedef struct
+{
+    uint32_t unix_time;
+    uint8_t fw_type;
+    uint32_t version;
+    uint32_t file_size;
+    uint8_t commit_id[16];
+    uint8_t module_id;
+    uint32_t crc32;
+} footer_t;
+```
+
+- PDF 说明 footer 位于固件最后 `34` 字节。
+- `fw_type` 中 `0` 表示 `ISP`，`1` 表示 `IAP`，只有 `IAP` 固件允许在线升级。
+- `version` 采用打包整型表达，例如 `1.2.0.13 = (1<<24) | (2<<16) | (0<<8) | 13`。
+- `commit_id[16]` 以 ASCII 方式显示。
+- footer 的 CRC32 使用多项式 `0xEDB88320`，计算时不包含 `crc32` 字段本身。
+
+## 主页与配置协议
+
+`上位机.pdf` 除了参数页与升级页协议，还定义了主页广播数据和逆变配置数据。当前代码中的主页页签与设置区就是围绕这些结构展开的。
+
+### `cmd_set = 0x02`，`cmd_word = 0x02` 主页广播
+
+PDF 定义下位机周期广播 `pcs_info_t`，主界面据此刷新电网、逆变、电池、MPPT、温度、风扇、继电器、故障、保护与告警区域。
+
+```c
+typedef struct
+{
+    float mppt_vin;
+    float mppt_iin;
+    float mppt_pwr;
+    float ac_v_grid;
+    float ac_i_grid;
+    float ac_freq_grid;
+    float ac_pwr_grid;
+    float ac_v_inv;
+    float ac_i_inv;
+    float ac_pwr_inv;
+    float ac_freq_inv;
+    float pfc_temp;
+    float llc_temp1;
+    float llc_temp2;
+    uint8_t fan_sta;
+    union
+    {
+        uint8_t raw;
+        struct
+        {
+            unsigned char grid_rly : 1;
+            unsigned char inv_rly : 1;
+            unsigned char prechg_mos : 1;
+            unsigned char chg_mos : 1;
+            unsigned char pv_mos : 1;
+            unsigned char reserved : 3;
+        };
+    } rly_sta;
+    uint32_t protect;
+    uint32_t fault;
+    uint32_t warning;
+    float bat_volt;
+    float bat_curr;
+    float bat_pwr;
+    float bat_temp;
+    float soc;
+} pcs_info_t;
+```
+
+### `cmd_set = 0x03`，`cmd_word = 0x01` 逆变配置
+
+主页设置区中的 AC 输出使能、关闭以及电压频率组合设置，对应 PDF 中的 `inv_cfg_t`：
+
+```c
+typedef struct
+{
+    uint8_t ac_out_enable_trig;
+    uint8_t ac_out_disable_trig;
+    uint8_t ac_out_rms;
+    uint8_t ac_out_freq;
+} inv_cfg_t;
+```
+
+- 上位机发送和下位机响应复用同一结构。
+- `ac_out_enable_trig = 1` 表示触发打开 AC 输出。
+- `ac_out_disable_trig = 1` 表示触发关闭 AC 输出。
+- `ac_out_rms` 有效值为 `220/230/240`。
+- `ac_out_freq` 有效值为 `50/60`。
+
+## PDF 需求与当前实现的对应关系
+
+- `上位机.pdf` 中的参数读写、参数波形、主页广播和在线升级，当前工程都已有对应页面与协议处理逻辑。
+- `上位机.pdf` 中提到的“通信抓包管理”“历史数据”“固件库管理”“软件示波器”等能力，当前仓库中仍以基础串口监视、波形导入导出和升级页的形式部分覆盖，尚未形成独立完整子系统。
+- `CMD_SET = 0x01 / CMD_WORD = 0x10` 校准信息下发与 `0x11` 保存命令在 PDF 中已有协议定义，但当前桌面程序还没有独立校准模式页面。
+- 后续若扩展新页面，建议优先沿用本文档中整理出的结构体定义，并在源码实现与 PDF 定义出现偏差时及时在此文档中标注差异。
 
 ### 服务层
 
