@@ -3,7 +3,7 @@ from __future__ import annotations
 import serial
 
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.1.0"
 APP_TITLE = f"Serial Debug Assistant v{APP_VERSION}"
 APP_GEOMETRY = "1240x962"
 APP_MIN_WIDTH = 1080
