@@ -13,12 +13,42 @@ CMD_WORD_UPDATE_INFO = 0x08
 CMD_WORD_UPDATE_READY = 0x09
 CMD_WORD_UPDATE_FW = 0x0A
 CMD_WORD_UPDATE_END = 0x0B
+CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY = 0x0D
 
 UPDATE_TYPE_NORMAL = 1
 UPDATE_TYPE_FORCE = 2
 UPDATE_PACKET_SIZE = 1024
 FOOTER_SIZE = 34
 FW_TYPE_IAP = 1
+
+LLC_PFC_UPGRADE_STAGE_NAMES = {
+    0: "idle",
+    1: "queued",
+    2: "enter_boot",
+    3: "erasing",
+    4: "forwarding",
+    5: "verifying",
+    6: "switching_app",
+    7: "done",
+    8: "failed",
+}
+
+LLC_PFC_UPGRADE_RESULT_NAMES = {
+    0: "in_progress",
+    1: "success",
+    2: "failed",
+}
+
+LLC_PFC_UPGRADE_ERROR_NAMES = {
+    0x0000: "none",
+    0x0001: "busy",
+    0x0002: "invalid_state",
+    0x0004: "offset_mismatch",
+    0x0008: "write_fail",
+    0x0010: "crc_fail",
+    0x0020: "timeout",
+    0x0040: "jump_fail",
+}
 
 MODULE_NAMES = {
     0x01: "HOST",
@@ -74,7 +104,7 @@ def load_firmware_image(path: str | Path) -> FirmwareImage:
     file_path = Path(path)
     data = file_path.read_bytes()
     if len(data) < FOOTER_SIZE:
-        raise ValueError("固件文件长度不足，无法解析尾部 footer。")
+        raise ValueError("Firmware file is too short to parse the footer.")
 
     footer_raw = data[-FOOTER_SIZE:]
     unix_time, fw_type, version, file_size, commit_raw, module_id, crc32 = struct.unpack(
@@ -94,11 +124,11 @@ def load_firmware_image(path: str | Path) -> FirmwareImage:
     footer_crc = calculate_crc32(footer_raw[:-4])
     warnings: list[str] = []
     if footer.fw_type != FW_TYPE_IAP:
-        warnings.append(f"fw_type={footer.fw_type}，仅 fw_type=1 的 IAP 固件支持在线升级。")
+        warnings.append(f"fw_type={footer.fw_type}; only fw_type=1 IAP firmware supports online upgrade.")
     expected_body_size = max(len(data) - FOOTER_SIZE, 0)
     if footer.file_size not in {expected_body_size, len(data)}:
         warnings.append(
-            f"footer.file_size={footer.file_size} 与实际文件长度 {len(data)} 不一致。"
+            f"footer.file_size={footer.file_size} does not match the actual file length {len(data)}."
         )
 
     return FirmwareImage(
@@ -135,3 +165,62 @@ def build_update_packet_payload(image: FirmwareImage, offset: int, packet_size: 
 
 def build_update_end_payload(image: FirmwareImage) -> bytes:
     return struct.pack("<H", image.payload_crc16)
+
+
+def build_llc_pfc_upgrade_progress_query_payload() -> bytes:
+    return b""
+
+
+def llc_pfc_upgrade_stage_name(stage: int) -> str:
+    return LLC_PFC_UPGRADE_STAGE_NAMES.get(stage, f"unknown_stage_{stage}")
+
+
+def llc_pfc_upgrade_result_name(result: int) -> str:
+    return LLC_PFC_UPGRADE_RESULT_NAMES.get(result, f"unknown_result_{result}")
+
+
+def describe_llc_pfc_upgrade_error(error_code: int) -> str:
+    if error_code == 0:
+        return "none"
+    errors = [
+        name
+        for bit, name in LLC_PFC_UPGRADE_ERROR_NAMES.items()
+        if bit != 0 and (error_code & bit)
+    ]
+    if errors:
+        return "|".join(errors)
+    return f"0x{error_code:04X}"
+
+
+def parse_llc_pfc_upgrade_progress_ack(payload: bytes) -> dict[str, int | str]:
+    if len(payload) < struct.calcsize("<BBBBIIIHHH"):
+        raise ValueError(f"Invalid LLC->PFC progress ACK length: {len(payload)}")
+
+    (
+        source_module_id,
+        target_module_id,
+        stage,
+        result,
+        forwarded_bytes,
+        total_bytes,
+        packet_offset,
+        packet_length,
+        progress_permille,
+        error_code,
+    ) = struct.unpack("<BBBBIIIHHH", payload[: struct.calcsize("<BBBBIIIHHH")])
+
+    return {
+        "source_module_id": source_module_id,
+        "target_module_id": target_module_id,
+        "stage": stage,
+        "result": result,
+        "forwarded_bytes": forwarded_bytes,
+        "total_bytes": total_bytes,
+        "packet_offset": packet_offset,
+        "packet_length": packet_length,
+        "progress_permille": progress_permille,
+        "error_code": error_code,
+        "stage_name": llc_pfc_upgrade_stage_name(stage),
+        "result_name": llc_pfc_upgrade_result_name(result),
+        "error_name": describe_llc_pfc_upgrade_error(error_code),
+    }

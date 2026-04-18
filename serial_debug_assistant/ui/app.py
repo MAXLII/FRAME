@@ -9,6 +9,40 @@ from tkinter import filedialog, ttk
 
 import serial
 from serial_debug_assistant.app_paths import ensure_runtime_dirs, get_app_paths, migrate_legacy_data
+from serial_debug_assistant.black_box_protocol import (
+    CMD_SET_BLACK_BOX,
+    CMD_WORD_BLACK_BOX_COMPLETE,
+    CMD_WORD_BLACK_BOX_HEADER,
+    CMD_WORD_BLACK_BOX_RANGE_QUERY,
+    CMD_WORD_BLACK_BOX_ROW,
+    build_black_box_range_query_payload,
+    parse_black_box_complete_payload,
+    parse_black_box_header_payload,
+    parse_black_box_range_query_ack,
+    parse_black_box_row_payload,
+)
+from serial_debug_assistant.factory_mode import (
+    CMD_SET_FACTORY_CALI_READ,
+    CMD_SET_FACTORY_CALI_SAVE,
+    CMD_SET_FACTORY_CALI_WRITE,
+    CMD_SET_FACTORY_TIME_QUERY,
+    CMD_SET_FACTORY_TIME_WRITE,
+    CMD_WORD_FACTORY_CALI_READ,
+    CMD_WORD_FACTORY_CALI_SAVE,
+    CMD_WORD_FACTORY_CALI_WRITE,
+    CMD_WORD_FACTORY_TIME_QUERY,
+    CMD_WORD_FACTORY_TIME_WRITE,
+    build_factory_cali_read_payload,
+    build_factory_cali_save_payload,
+    build_factory_cali_write_payload,
+    parse_factory_cali_payload,
+    build_factory_time_query_payload,
+    build_factory_time_write_payload,
+    format_factory_time_string,
+    format_timezone_label,
+    parse_factory_time_payload,
+    parse_timezone_input,
+)
 
 from serial_debug_assistant.constants import (
     APP_GEOMETRY,
@@ -30,19 +64,23 @@ from serial_debug_assistant.constants import (
 from serial_debug_assistant.debug_logger import DebugLogger
 from serial_debug_assistant.firmware_update import (
     CMD_SET_UPDATE,
+    CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
     CMD_WORD_UPDATE_END,
     CMD_WORD_UPDATE_FW,
     CMD_WORD_UPDATE_INFO,
     CMD_WORD_UPDATE_READY,
+    build_llc_pfc_upgrade_progress_query_payload,
     build_update_end_payload,
     build_update_info_payload,
     build_update_packet_payload,
     build_update_ready_payload,
+    describe_llc_pfc_upgrade_error,
     describe_reject_reason,
     format_unix_time,
     format_version,
     load_firmware_image,
     module_name,
+    parse_llc_pfc_upgrade_progress_ack,
 )
 from serial_debug_assistant.models import FirmwareImage, FirmwareUpdateSession, ParameterEntry, ProtocolFrame
 from serial_debug_assistant.protocol import (
@@ -53,6 +91,8 @@ from serial_debug_assistant.protocol import (
     value_to_u32,
 )
 from serial_debug_assistant.services.serial_service import SerialService
+from serial_debug_assistant.ui.black_box_tab import BlackBoxTab
+from serial_debug_assistant.ui.factory_mode_tab import FactoryModeTab
 from serial_debug_assistant.ui.home_tab import HomeTab
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
@@ -96,6 +136,7 @@ WARNING_MESSAGES = {
 MAX_RX_CHUNKS_PER_POLL = 200
 MAX_RX_BYTES_PER_POLL = 262_144
 SAVE_FLUSH_INTERVAL_SECONDS = 0.4
+HOME_REFRESH_INTERVAL_MS = 120
 
 
 class SerialDebugAssistant(tk.Tk):
@@ -135,6 +176,12 @@ class SerialDebugAssistant(tk.Tk):
         self.loaded_firmware: FirmwareImage | None = None
         self.update_session: FirmwareUpdateSession | None = None
         self.update_tick_job: str | None = None
+        self.home_refresh_job: str | None = None
+        self.pending_home_info: dict[str, float | int] | None = None
+        self.pending_home_fault_log: str | None = None
+        self.pending_home_warning_log: str | None = None
+        self.factory_time_snapshot: dict[str, int] | None = None
+        self.factory_cali_snapshot: dict[str, float | int] | None = None
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD_RATE)
@@ -355,12 +402,27 @@ class SerialDebugAssistant(tk.Tk):
             on_browse=self.load_upgrade_firmware,
             on_start_stop=self.toggle_upgrade,
         )
+        self.black_box_tab = BlackBoxTab(
+            self.notebook,
+            on_query=self.request_black_box_range_query,
+            export_dir=self.paths.exports_dir,
+        )
+        self.factory_mode_tab = FactoryModeTab(
+            self.notebook,
+            on_read_time=self.request_factory_time_read,
+            on_set_current_time=self.send_factory_current_pc_time,
+            on_read_cali=self.request_factory_cali_read,
+            on_write_cali=self.send_factory_cali_write,
+            on_save_cali=self.send_factory_cali_save,
+        )
 
         self.notebook.add(self.home_tab, text="主页")
         self.notebook.add(monitor_page, text="串口调试")
         self.notebook.add(self.parameter_tab, text="参数读写")
         self.notebook.add(self.wave_tab, text="参数波形")
         self.notebook.add(self.upgrade_tab, text="固件升级")
+        self.notebook.add(self.black_box_tab, text="Black Box")
+        self.notebook.add(self.factory_mode_tab, text="Factory Mode")
         self.notebook.select(self.home_tab)
 
         footer = ttk.Frame(root, style="App.TFrame")
@@ -556,7 +618,7 @@ class SerialDebugAssistant(tk.Tk):
 
     def load_upgrade_firmware(self) -> None:
         path = filedialog.askopenfilename(
-            title="选择升级固件",
+            title="Select Firmware Image",
             filetypes=[("Binary Files", "*.bin"), ("All Files", "*.*")],
         )
         if not path:
@@ -564,7 +626,7 @@ class SerialDebugAssistant(tk.Tk):
         try:
             image = load_firmware_image(path)
         except (OSError, ValueError) as exc:
-            self.upgrade_tab.set_status("固件加载失败", str(exc), error_code="LOAD")
+            self.upgrade_tab.set_status("Failed to load firmware", str(exc), error_code="LOAD")
             self.set_status(f"Load firmware failed: {exc}", error=True)
             return
 
@@ -581,47 +643,52 @@ class SerialDebugAssistant(tk.Tk):
         }
         self.upgrade_tab.set_firmware(image, summary=summary)
         self.upgrade_tab.clear_log()
-        self.upgrade_tab.append_log(f"已加载固件: {image.path}")
-        self.upgrade_tab.append_log(f"版本: {summary['version']}")
-        self.upgrade_tab.append_log(f"编译时间: {summary['compile_time']}")
-        self.upgrade_tab.append_log(f"模块: {summary['module']}")
+        self.upgrade_tab.reset_forward_progress(
+            "PFC forwarding progress will appear here after the main upgrade is accepted by LLC."
+            if image.footer.module_id == 0x03
+            else "This firmware image does not require LLC -> PFC forward-progress tracking."
+        )
+        self.upgrade_tab.append_log(f"Loaded firmware: {image.path}")
+        self.upgrade_tab.append_log(f"Version: {summary['version']}")
+        self.upgrade_tab.append_log(f"Build Time: {summary['compile_time']}")
+        self.upgrade_tab.append_log(f"Module: {summary['module']}")
         self.upgrade_tab.append_log(f"Footer CRC32: {summary['footer_crc']}")
         if image.footer.module_id == 0x03:
-            self.upgrade_tab.append_log("PFC 固件默认下发到 0x02，由 LLC 负责接收并转发升级。")
+            self.upgrade_tab.append_log("PFC firmware is sent to 0x02 by default. LLC receives it first and forwards it to PFC.")
         for warning in image.warnings:
-            self.upgrade_tab.append_log(f"警告: {warning}")
+            self.upgrade_tab.append_log(f"Warning: {warning}")
 
         if not image.footer_crc_ok:
-            self.upgrade_tab.set_status("固件已加载，但 footer CRC 校验失败", "请确认打包结果。", error_code="CRC32")
+            self.upgrade_tab.set_status("Firmware loaded, but footer CRC check failed", "Please verify the package output.", error_code="CRC32")
         elif image.warnings:
-            self.upgrade_tab.set_status("固件已加载", image.warnings[0], error_code="-")
+            self.upgrade_tab.set_status("Firmware loaded", image.warnings[0], error_code="-")
         else:
-            self.upgrade_tab.set_status("固件已加载", "可以开始升级。", error_code="-")
+            self.upgrade_tab.set_status("Firmware loaded", "Ready to start the upgrade.", error_code="-")
 
     def toggle_upgrade(self) -> None:
         if self.update_session is not None:
-            self.stop_upgrade("用户手动停止升级。", user_initiated=True)
+            self.stop_upgrade("Upgrade stopped by the user.", user_initiated=True)
             return
         self.start_upgrade()
 
     def start_upgrade(self) -> None:
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
-            self.upgrade_tab.set_status("无法开始升级", "请先连接串口。", error_code="SERIAL")
+            self.upgrade_tab.set_status("Cannot start upgrade", "Connect the serial port first.", error_code="SERIAL")
             return
         if self.loaded_firmware is None:
-            self.upgrade_tab.set_status("无法开始升级", "请先加载 .bin 固件。", error_code="FILE")
+            self.upgrade_tab.set_status("Cannot start upgrade", "Load a .bin firmware file first.", error_code="FILE")
             return
         if not self.loaded_firmware.footer_crc_ok:
-            self.upgrade_tab.set_status("无法开始升级", "footer CRC32 校验失败。", error_code="CRC32")
+            self.upgrade_tab.set_status("Cannot start upgrade", "Footer CRC32 validation failed.", error_code="CRC32")
             return
         if self.loaded_firmware.footer.fw_type != 1:
-            self.upgrade_tab.set_status("无法开始升级", "仅支持 fw_type=1 的 IAP 固件。", error_code="FW_TYPE")
+            self.upgrade_tab.set_status("Cannot start upgrade", "Only fw_type=1 IAP firmware is supported.", error_code="FW_TYPE")
             return
         try:
             target_addr, target_dynamic_addr = self.upgrade_tab.get_target_address()
         except ValueError:
-            self.upgrade_tab.set_status("无法开始升级", "下载地址和动态地址必须是整数。", error_code="ADDR")
+            self.upgrade_tab.set_status("Cannot start upgrade", "Target and dynamic addresses must be integers.", error_code="ADDR")
             return
 
         self.update_session = FirmwareUpdateSession(
@@ -633,11 +700,16 @@ class SerialDebugAssistant(tk.Tk):
         self.upgrade_tab.clear_log()
         self.upgrade_tab.set_running(True)
         self.upgrade_tab.set_progress(0, len(self.loaded_firmware.data))
+        self.upgrade_tab.reset_forward_progress(
+            "Waiting for LLC -> PFC forward-progress polling to begin after 0x0B."
+            if self.loaded_firmware.footer.module_id == 0x03
+            else "This firmware image does not require LLC -> PFC forward-progress tracking."
+        )
         self.upgrade_tab.append_log(
-            f"开始升级 -> module={module_name(self.loaded_firmware.footer.module_id)} target=0x{target_addr:02X} d_target=0x{target_dynamic_addr:02X}"
+            f"Start upgrade -> module={module_name(self.loaded_firmware.footer.module_id)} target=0x{target_addr:02X} d_target=0x{target_dynamic_addr:02X}"
         )
         if self.loaded_firmware.footer.module_id == 0x03 and target_addr != 0x02:
-            self.upgrade_tab.append_log("注意: 你说明当前 PFC 固件应发往 0x02，由 LLC 接收。")
+            self.upgrade_tab.append_log("Note: current PFC firmware should normally be sent to 0x02 so LLC can receive it first.")
         self._send_upgrade_info()
 
     def stop_upgrade(self, message: str, *, user_initiated: bool) -> None:
@@ -648,7 +720,7 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_running(False)
             return
         self.upgrade_tab.append_log(message)
-        self.upgrade_tab.set_status("升级已停止", message, error_code="STOP" if user_initiated else "-")
+        self.upgrade_tab.set_status("Upgrade stopped", message, error_code="STOP" if user_initiated else "-")
         self.upgrade_tab.set_running(False)
         self.update_session = None
 
@@ -663,30 +735,38 @@ class SerialDebugAssistant(tk.Tk):
         if session is None:
             return
         now = time.monotonic()
-        if session.stage in {"wait_info_ack", "wait_ready_ack", "wait_packet_ack", "wait_end_ack"}:
+        if session.stage in {"wait_info_ack", "wait_ready_ack", "wait_packet_ack", "wait_end_ack", "wait_forward_progress_ack"}:
             if now - session.last_tx_at >= 1.0:
                 if session.timeout_error_since is None:
                     session.timeout_error_since = now
                 elif now - session.timeout_error_since >= 10.0:
-                    self._fail_upgrade("升级失败", "持续通信超时超过 10 秒。", "TIMEOUT")
+                    self._fail_upgrade("Upgrade failed", "Communication timeout persisted for more than 10 seconds.", "TIMEOUT")
                     return
 
                 if session.stage == "wait_info_ack":
-                    self.upgrade_tab.append_log("0x08 超时，重发升级信息")
+                    self.upgrade_tab.append_log("0x08 timeout, resend upgrade info")
                     self._send_upgrade_info()
                     return
                 if session.stage == "wait_ready_ack":
-                    self.upgrade_tab.append_log("0x09 超时，重试查询升级准备状态")
+                    self.upgrade_tab.append_log("0x09 timeout, retry upgrade-ready query")
                     self._send_upgrade_ready()
                     return
                 if session.stage == "wait_packet_ack":
-                    self.upgrade_tab.append_log(f"0x0A 超时，重发 offset={session.current_packet_offset}")
+                    self.upgrade_tab.append_log(f"0x0A timeout, resend offset={session.current_packet_offset}")
                     self._send_upgrade_packet(retry=True)
                     return
                 if session.stage == "wait_end_ack":
-                    self.upgrade_tab.append_log("0x0B 超时，重发结束帧")
+                    self.upgrade_tab.append_log("0x0B timeout, resend end packet")
                     self._send_upgrade_end()
                     return
+                if session.stage == "wait_forward_progress_ack":
+                    self.upgrade_tab.append_log("0x0D timeout, retry LLC -> PFC forward-progress query")
+                    self._send_llc_pfc_upgrade_progress_query()
+                    return
+        elif session.stage == "poll_forward_progress":
+            if now - session.last_tx_at >= session.llc_forward_query_interval_seconds:
+                self._send_llc_pfc_upgrade_progress_query()
+                return
         self._schedule_update_tick()
 
     def _send_upgrade_info(self) -> None:
@@ -696,7 +776,7 @@ class SerialDebugAssistant(tk.Tk):
         payload = build_update_info_payload(session.image, session.update_type)
         session.stage = "wait_info_ack"
         session.last_tx_at = time.monotonic()
-        self.upgrade_tab.set_status("升级中", "发送升级信息 (0x01 0x08)", error_code="-")
+        self.upgrade_tab.set_status("Upgrade in progress", "Send upgrade info (0x01 0x08)", error_code="-")
         self.upgrade_tab.append_log(
             f"TX 0x08 -> module=0x{session.image.footer.module_id:02X} version={format_version(session.image.footer.version)} size={len(session.image.data)} update_type={session.update_type}"
         )
@@ -715,8 +795,8 @@ class SerialDebugAssistant(tk.Tk):
             return
         session.stage = "wait_ready_ack"
         session.last_tx_at = time.monotonic()
-        self.upgrade_tab.set_status("升级中", "查询升级准备状态 (0x01 0x09)", error_code="-")
-        self.upgrade_tab.append_log("TX 0x09 -> 查询 Bootloader 是否准备完成")
+        self.upgrade_tab.set_status("Upgrade in progress", "Query upgrade-ready state (0x01 0x09)", error_code="-")
+        self.upgrade_tab.append_log("TX 0x09 -> query whether the bootloader is ready")
         self.send_protocol_frame(
             dst=session.target_addr,
             d_dst=session.target_dynamic_addr,
@@ -738,12 +818,12 @@ class SerialDebugAssistant(tk.Tk):
         session.last_tx_at = time.monotonic()
         self.upgrade_tab.set_progress(session.sent_bytes, len(session.image.data))
         self.upgrade_tab.set_status(
-            "升级中",
-            f"{'重发' if retry else '发送'}固件分包 (0x01 0x0A), offset={session.offset}",
+            "Upgrade in progress",
+            f"{'Resend' if retry else 'Send'} firmware packet (0x01 0x0A), offset={session.offset}",
             error_code="-",
         )
         self.upgrade_tab.append_log(
-            f"TX 0x0A -> {'重发' if retry else '发送'} offset={session.offset} len={actual_len} progress={session.sent_bytes}/{len(session.image.data)}"
+            f"TX 0x0A -> {'resend' if retry else 'send'} offset={session.offset} len={actual_len} progress={session.sent_bytes}/{len(session.image.data)}"
         )
         self.send_protocol_frame(
             dst=session.target_addr,
@@ -761,7 +841,7 @@ class SerialDebugAssistant(tk.Tk):
         session.stage = "wait_end_ack"
         session.last_tx_at = time.monotonic()
         self.upgrade_tab.set_progress(len(session.image.data), len(session.image.data))
-        self.upgrade_tab.set_status("升级中", "发送结束帧 (0x01 0x0B)", error_code="-")
+        self.upgrade_tab.set_status("Upgrade in progress", "Send end packet (0x01 0x0B)", error_code="-")
         self.upgrade_tab.append_log(
             f"TX 0x0B -> fw_crc16=0x{session.image.payload_crc16:04X} total={len(session.image.data)}"
         )
@@ -771,6 +851,27 @@ class SerialDebugAssistant(tk.Tk):
             cmd_set=CMD_SET_UPDATE,
             cmd_word=CMD_WORD_UPDATE_END,
             payload=build_update_end_payload(session.image),
+        )
+        self._schedule_update_tick()
+
+    def _send_llc_pfc_upgrade_progress_query(self) -> None:
+        session = self.update_session
+        if session is None:
+            return
+        session.stage = "wait_forward_progress_ack"
+        session.last_tx_at = time.monotonic()
+        self.upgrade_tab.set_status(
+            "Upgrade in progress",
+            "Query current LLC -> PFC forward progress (0x01 0x0D)",
+            error_code="-",
+        )
+        self.upgrade_tab.append_log("TX 0x0D -> query current LLC -> PFC upgrade forward progress")
+        self.send_protocol_frame(
+            dst=session.target_addr,
+            d_dst=session.target_dynamic_addr,
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
+            payload=build_llc_pfc_upgrade_progress_query_payload(),
         )
         self._schedule_update_tick()
 
@@ -793,47 +894,67 @@ class SerialDebugAssistant(tk.Tk):
             self.update_tick_job = None
 
     def process_incoming_data(self) -> None:
-        updated = False
-        processed_chunks = 0
-        processed_bytes = 0
-        receive_fragments: list[str] = []
-        save_buffer = bytearray()
-        while processed_chunks < MAX_RX_CHUNKS_PER_POLL and processed_bytes < MAX_RX_BYTES_PER_POLL:
-            try:
-                chunk = self.serial_service.rx_queue.get_nowait()
-            except queue.Empty:
-                break
-            if chunk.data == b"\n":
-                receive_fragments.append("\n")
-                continue
-            self.total_rx_bytes += len(chunk.data)
-            processed_bytes += len(chunk.data)
-            processed_chunks += 1
-            if not self.wave_running:
-                self.logger.log("RX", chunk.data.hex(" ").upper())
-            receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
-            for frame in self.frame_parser.feed(chunk.data):
-                self._log_protocol_frame(frame)
-                self.handle_protocol_frame(frame)
-            updated = True
-            if self.save_handle:
-                save_buffer.extend(chunk.data)
-        if receive_fragments:
-            self.monitor_tab.append_receive_batch(
-                receive_fragments,
-                source="rx",
-                ensure_separate_line=self.monitor_tab.receive_hex_enabled(),
-            )
-        if save_buffer and self.save_handle:
-            self.save_handle.write(save_buffer)
-            now = time.monotonic()
-            if now - self.last_save_flush_at >= SAVE_FLUSH_INTERVAL_SECONDS:
-                self.save_handle.flush()
-                self.last_save_flush_at = now
-        if updated:
-            self.rx_count_var.set(f"Receive: {self.total_rx_bytes} bytes")
-        next_delay = 1 if not self.serial_service.rx_queue.empty() else POLL_INTERVAL_MS
-        self.after(next_delay, self.process_incoming_data)
+        next_delay = POLL_INTERVAL_MS
+        try:
+            updated = False
+            processed_chunks = 0
+            processed_bytes = 0
+            receive_fragments: list[str] = []
+            save_buffer = bytearray()
+            while processed_chunks < MAX_RX_CHUNKS_PER_POLL and processed_bytes < MAX_RX_BYTES_PER_POLL:
+                try:
+                    chunk = self.serial_service.rx_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if chunk.data == b"\n":
+                    receive_fragments.append("\n")
+                    continue
+                self.total_rx_bytes += len(chunk.data)
+                processed_bytes += len(chunk.data)
+                processed_chunks += 1
+                if not self.wave_running:
+                    self.logger.log("RX", chunk.data.hex(" ").upper())
+                receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
+                try:
+                    frames = self.frame_parser.feed(chunk.data)
+                except Exception as exc:
+                    self.logger.log("ERROR", f"frame parser error: {exc}")
+                    self.frame_parser = FrameParser()
+                    frames = []
+                for frame in frames:
+                    self._log_protocol_frame(frame)
+                    try:
+                        self.handle_protocol_frame(frame)
+                    except Exception as exc:
+                        self.logger.log(
+                            "ERROR",
+                            "handle frame failed "
+                            f"cmd_set=0x{frame.cmd_set:02X} cmd_word=0x{frame.cmd_word:02X} "
+                            f"is_ack={frame.is_ack} err={exc}",
+                        )
+                updated = True
+                if self.save_handle:
+                    save_buffer.extend(chunk.data)
+            if receive_fragments:
+                self.monitor_tab.append_receive_batch(
+                    receive_fragments,
+                    source="rx",
+                    ensure_separate_line=self.monitor_tab.receive_hex_enabled(),
+                )
+            if save_buffer and self.save_handle:
+                self.save_handle.write(save_buffer)
+                now = time.monotonic()
+                if now - self.last_save_flush_at >= SAVE_FLUSH_INTERVAL_SECONDS:
+                    self.save_handle.flush()
+                    self.last_save_flush_at = now
+            if updated:
+                self.rx_count_var.set(f"Receive: {self.total_rx_bytes} bytes")
+            next_delay = 1 if not self.serial_service.rx_queue.empty() else POLL_INTERVAL_MS
+        except Exception as exc:
+            self.logger.log("ERROR", f"process incoming loop failed: {exc}")
+            next_delay = POLL_INTERVAL_MS
+        finally:
+            self.after(next_delay, self.process_incoming_data)
 
     def _log_protocol_frame(self, frame: ProtocolFrame) -> None:
         if frame.cmd_set == 0x01 and frame.cmd_word == 0x07:
@@ -887,6 +1008,10 @@ class SerialDebugAssistant(tk.Tk):
         if frame.cmd_set != 0x01:
             return
         if self._handle_upgrade_protocol_frame(frame):
+            return
+        if self._handle_factory_mode_protocol_frame(frame):
+            return
+        if self._handle_black_box_protocol_frame(frame):
             return
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
@@ -970,9 +1095,10 @@ class SerialDebugAssistant(tk.Tk):
             if info is None:
                 self.logger.log("WARN", f"pcs home payload invalid len={len(frame.payload)}")
                 return True
-            self.home_tab.update_pcs_info(**info)
-            self.home_tab.set_fault_log(self._format_fault_log(info["fault"]))
-            self.home_tab.set_warning_log(self._format_warning_log(info["warning"]))
+            self.pending_home_info = info
+            self.pending_home_fault_log = self._format_fault_log(info["fault"])
+            self.pending_home_warning_log = self._format_warning_log(info["warning"])
+            self._schedule_home_refresh()
             self.logger.log(
                 "HOME",
                 "pcs update "
@@ -996,6 +1122,152 @@ class SerialDebugAssistant(tk.Tk):
             )
             return True
         return False
+
+    def _handle_black_box_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_set != CMD_SET_BLACK_BOX:
+            return False
+
+        if frame.cmd_word == CMD_WORD_BLACK_BOX_RANGE_QUERY and frame.is_ack == 1:
+            ack = parse_black_box_range_query_ack(frame.payload)
+            self.black_box_tab.set_query_ack(
+                accepted=int(ack["accepted"]),
+                start_offset=int(ack["start_offset"]),
+                read_length=int(ack["read_length"]),
+            )
+            self.logger.log(
+                "BLACKBOX",
+                "query ack "
+                f"accepted={ack['accepted']} start=0x{int(ack['start_offset']):06X} "
+                f"length=0x{int(ack['read_length']):X}",
+            )
+            return True
+
+        if frame.cmd_word == CMD_WORD_BLACK_BOX_HEADER and frame.is_ack == 0:
+            header_text = parse_black_box_header_payload(frame.payload)
+            self.black_box_tab.set_header(header_text)
+            self.logger.log("BLACKBOX", f"header {header_text!r}")
+            return True
+
+        if frame.cmd_word == CMD_WORD_BLACK_BOX_ROW and frame.is_ack == 0:
+            row = parse_black_box_row_payload(frame.payload)
+            self.black_box_tab.add_row(
+                row_text=str(row["row_text"]),
+                record_offset=int(row["record_offset"]),
+            )
+            self.logger.log(
+                "BLACKBOX",
+                f"row offset=0x{int(row['record_offset']):06X} text={str(row['row_text'])!r}",
+            )
+            return True
+
+        if frame.cmd_word == CMD_WORD_BLACK_BOX_COMPLETE and frame.is_ack == 0:
+            summary = parse_black_box_complete_payload(frame.payload)
+            self.black_box_tab.finish_query(
+                start_offset=int(summary["start_offset"]),
+                end_offset=int(summary["end_offset"]),
+                scanned_bytes=int(summary["scanned_bytes"]),
+                row_count=int(summary["row_count"]),
+                has_more=int(summary["has_more"]),
+            )
+            self.logger.log(
+                "BLACKBOX",
+                "complete "
+                f"start=0x{int(summary['start_offset']):06X} end=0x{int(summary['end_offset']):06X} "
+                f"scanned={summary['scanned_bytes']} rows={summary['row_count']} has_more={summary['has_more']}",
+            )
+            return True
+
+        return False
+
+    def _handle_factory_mode_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_word in {CMD_WORD_FACTORY_CALI_READ, CMD_WORD_FACTORY_CALI_WRITE} and frame.is_ack == 1:
+            try:
+                cali_info = parse_factory_cali_payload(frame.payload)
+            except ValueError as exc:
+                self.logger.log("ERROR", f"factory calibration payload parse failed: {exc}")
+                self.factory_mode_tab.set_cali_status("Calibration response error", str(exc))
+                return True
+
+            self.factory_cali_snapshot = cali_info
+            cali_id = int(cali_info["cali_id"])
+            gain = float(cali_info["gain"])
+            bias = float(cali_info["bias"])
+            self.factory_mode_tab.set_cali_values(cali_id=cali_id, gain=gain, bias=bias)
+            if frame.cmd_word == CMD_WORD_FACTORY_CALI_READ:
+                status = "Calibration read successfully"
+                detail = f"Device returned ID={cali_id}, gain={gain:.6g}, offset={bias:.6g}."
+            else:
+                status = "Calibration written successfully"
+                detail = f"Device acknowledged ID={cali_id}, gain={gain:.6g}, offset={bias:.6g}."
+            self.factory_mode_tab.set_cali_status(status, detail)
+            self.logger.log(
+                "FACTORY",
+                f"rx cali cmd_word=0x{frame.cmd_word:02X} id={cali_id} gain={gain:.6g} bias={bias:.6g}",
+            )
+            return True
+
+        if frame.cmd_word == CMD_WORD_FACTORY_CALI_SAVE and frame.is_ack == 1:
+            self.factory_mode_tab.set_cali_status("Calibration save acknowledged", "The device acknowledged the calibration save command.")
+            self.logger.log("FACTORY", "rx calibration save ack")
+            return True
+
+        if frame.cmd_word not in {CMD_WORD_FACTORY_TIME_QUERY, CMD_WORD_FACTORY_TIME_WRITE}:
+            return False
+        if frame.is_ack != 1:
+            return False
+
+        try:
+            factory_time = parse_factory_time_payload(frame.payload)
+        except ValueError as exc:
+            self.logger.log("ERROR", f"factory mode payload parse failed: {exc}")
+            self.factory_mode_tab.set_status("Factory mode response error", str(exc))
+            return True
+
+        self.factory_time_snapshot = factory_time
+        unix_time_utc = int(factory_time["unix_time_utc"])
+        timezone_half_hour = int(factory_time["timezone_half_hour"])
+        timezone_text = format_timezone_label(timezone_half_hour)
+        formatted_time = format_factory_time_string(unix_time_utc, timezone_half_hour)
+
+        self.factory_mode_tab.set_device_time(
+            formatted_time=formatted_time,
+            unix_time_utc=unix_time_utc,
+            timezone_text=timezone_text,
+        )
+        self.factory_mode_tab.set_timezone_input(timezone_text)
+
+        if frame.cmd_word == CMD_WORD_FACTORY_TIME_QUERY:
+            status = "Device time read successfully"
+            detail = "The device returned its current Unix UTC time and timezone."
+        else:
+            status = "Factory time settings applied"
+            detail = "The device acknowledged the new Unix UTC time and timezone."
+
+        self.factory_mode_tab.set_status(status, detail)
+        self.logger.log(
+            "FACTORY",
+            f"rx cmd_word=0x{frame.cmd_word:02X} unix={unix_time_utc} timezone_half_hour={timezone_half_hour} formatted={formatted_time}",
+        )
+        return True
+
+    def _schedule_home_refresh(self) -> None:
+        if self.home_refresh_job is not None:
+            return
+        self.home_refresh_job = self.after(HOME_REFRESH_INTERVAL_MS, self._flush_home_refresh)
+
+    def _flush_home_refresh(self) -> None:
+        self.home_refresh_job = None
+        info = self.pending_home_info
+        if info is None:
+            return
+        fault_log = self.pending_home_fault_log or self._format_fault_log(None)
+        warning_log = self.pending_home_warning_log or self._format_warning_log(None)
+        self.pending_home_info = None
+        self.pending_home_fault_log = None
+        self.pending_home_warning_log = None
+        self.home_tab.update_pcs_info(**info)
+        self.home_tab.set_fault_log(fault_log)
+        self.home_tab.set_warning_log(warning_log)
 
     def _parse_pcs_home_payload(self, payload: bytes) -> dict[str, float | int] | None:
         expected_size = struct.calcsize("<15fBBIII5f")
@@ -1103,14 +1375,20 @@ class SerialDebugAssistant(tk.Tk):
         session = self.update_session
         if session is None or frame.is_ack != 1:
             return False
-        if frame.cmd_word not in {CMD_WORD_UPDATE_INFO, CMD_WORD_UPDATE_READY, CMD_WORD_UPDATE_FW, CMD_WORD_UPDATE_END}:
+        if frame.cmd_word not in {
+            CMD_WORD_UPDATE_INFO,
+            CMD_WORD_UPDATE_READY,
+            CMD_WORD_UPDATE_FW,
+            CMD_WORD_UPDATE_END,
+            CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
+        }:
             return False
 
         session.timeout_error_since = None
 
         if frame.cmd_word == CMD_WORD_UPDATE_INFO and session.stage == "wait_info_ack":
             if len(frame.payload) < 3:
-                self._fail_upgrade("升级失败", "0x08 应答长度无效。", "0x08_LEN")
+                self._fail_upgrade("Upgrade failed", "Invalid 0x08 ACK length.", "0x08_LEN")
                 return True
             allow_update = frame.payload[0]
             reject_reason = int.from_bytes(frame.payload[1:3], "little")
@@ -1118,35 +1396,35 @@ class SerialDebugAssistant(tk.Tk):
                 f"RX 0x08 ACK <- allow_update={allow_update} reject_reason=0x{reject_reason:04X}"
             )
             if allow_update == 1:
-                self.upgrade_tab.append_log("0x08 应答允许升级")
+                self.upgrade_tab.append_log("0x08 ACK allows the upgrade")
                 self._send_upgrade_ready()
             elif allow_update == 2:
                 self._fail_upgrade(
-                    "升级失败",
-                    f"0x08 拒绝升级: {describe_reject_reason(reject_reason)}",
+                    "Upgrade failed",
+                    f"0x08 rejected the upgrade: {describe_reject_reason(reject_reason)}",
                     f"0x08:{reject_reason:04X}",
                 )
             else:
-                self._fail_upgrade("升级失败", "0x08 返回 allow_update 非法。", "0x08_ACK")
+                self._fail_upgrade("Upgrade failed", "0x08 returned an invalid allow_update value.", "0x08_ACK")
             return True
 
         if frame.cmd_word == CMD_WORD_UPDATE_READY and session.stage == "wait_ready_ack":
             if len(frame.payload) < 1:
-                self._fail_upgrade("升级失败", "0x09 应答长度无效。", "0x09_LEN")
+                self._fail_upgrade("Upgrade failed", "Invalid 0x09 ACK length.", "0x09_LEN")
                 return True
             self.upgrade_tab.append_log(f"RX 0x09 ACK <- ready={frame.payload[0]}")
             if frame.payload[0] == 1:
-                self.upgrade_tab.append_log("0x09 返回 ready=1，开始发送固件")
+                self.upgrade_tab.append_log("0x09 returned ready=1, start sending firmware packets")
                 self._send_upgrade_packet()
             else:
-                self.upgrade_tab.append_log("0x09 返回 ready=0，继续等待 Bootloader 准备完成")
+                self.upgrade_tab.append_log("0x09 returned ready=0, keep waiting for the bootloader")
                 session.last_tx_at = time.monotonic()
                 self._schedule_update_tick()
             return True
 
         if frame.cmd_word == CMD_WORD_UPDATE_FW and session.stage == "wait_packet_ack":
             if len(frame.payload) < 1:
-                self._fail_upgrade("升级失败", "0x0A 应答长度无效。", "0x0A_LEN")
+                self._fail_upgrade("Upgrade failed", "Invalid 0x0A ACK length.", "0x0A_LEN")
                 return True
             ack_offset = int.from_bytes(frame.payload[1:5], "little") if len(frame.payload) >= 5 else session.current_packet_offset
             self.upgrade_tab.append_log(
@@ -1156,7 +1434,7 @@ class SerialDebugAssistant(tk.Tk):
                 packet_offset = ack_offset
                 if packet_offset != session.current_packet_offset:
                     self.upgrade_tab.append_log(
-                        f"忽略 offset 不匹配的 0x0A 应答: ack={packet_offset}, expect={session.current_packet_offset}"
+                        f"Ignore 0x0A ACK with offset mismatch: ack={packet_offset}, expect={session.current_packet_offset}"
                     )
                     return True
             if frame.payload[0] == 1:
@@ -1164,10 +1442,10 @@ class SerialDebugAssistant(tk.Tk):
                 actual_len = min(session.packet_size, len(session.image.data) - session.current_packet_offset)
                 session.offset = session.current_packet_offset + actual_len
                 self.upgrade_tab.append_log(
-                    f"分包完成 offset={session.current_packet_offset} len={actual_len} -> 已确认 {session.offset}/{len(session.image.data)}"
+                    f"Packet confirmed offset={session.current_packet_offset} len={actual_len} -> acked {session.offset}/{len(session.image.data)}"
                 )
                 if session.offset >= len(session.image.data):
-                    self.upgrade_tab.append_log("最后一个分包确认完成，开始发送结束帧")
+                    self.upgrade_tab.append_log("Last firmware packet confirmed, send the end packet")
                     self._send_upgrade_end()
                 else:
                     self._send_upgrade_packet()
@@ -1176,26 +1454,91 @@ class SerialDebugAssistant(tk.Tk):
                 if session.data_error_since is None:
                     session.data_error_since = now
                 elif now - session.data_error_since >= 10.0:
-                    self._fail_upgrade("升级失败", "持续数据错误超过 10 秒。", "0x0A_DATA")
+                    self._fail_upgrade("Upgrade failed", "Data errors persisted for more than 10 seconds.", "0x0A_DATA")
                     return True
-                self.upgrade_tab.append_log(f"0x0A 返回 data_is_ok=0，重发 offset={session.current_packet_offset}")
+                self.upgrade_tab.append_log(f"0x0A returned data_is_ok=0, resend offset={session.current_packet_offset}")
                 session.offset = session.current_packet_offset
                 self._send_upgrade_packet(retry=True)
             return True
 
         if frame.cmd_word == CMD_WORD_UPDATE_END and session.stage == "wait_end_ack":
             if len(frame.payload) < 1:
-                self._fail_upgrade("升级失败", "0x0B 应答长度无效。", "0x0B_LEN")
+                self._fail_upgrade("Upgrade failed", "Invalid 0x0B ACK length.", "0x0B_LEN")
                 return True
             self.upgrade_tab.append_log(f"RX 0x0B ACK <- success_flg={frame.payload[0]}")
             if frame.payload[0] == 1:
-                if session.image.footer.module_id == 0x01:
-                    detail = "升级成功，LLC 将复位并按 APP 流程继续转发 PFC 固件。"
+                if session.image.footer.module_id == 0x03:
+                    self.upgrade_tab.append_log("0x0B ACK accepted. Switch to LLC -> PFC forward-progress polling.")
+                    self.upgrade_tab.set_forward_progress(
+                        status="Waiting for LLC -> PFC forward progress",
+                        detail="The main download to LLC has finished. Polling 0x01/0x0D now.",
+                        forwarded_bytes=0,
+                        total_bytes=len(session.image.data),
+                        progress_permille=0,
+                    )
+                    self._send_llc_pfc_upgrade_progress_query()
+                elif session.image.footer.module_id == 0x01:
+                    detail = "Upgrade completed. LLC will reboot and continue the APP flow."
+                    self._complete_upgrade(detail)
                 else:
-                    detail = "升级成功，设备将复位并跳转到新的 APP。"
-                self._complete_upgrade(detail)
+                    detail = "Upgrade completed. The device will reboot and jump to the new APP."
+                    self._complete_upgrade(detail)
             else:
-                self._fail_upgrade("升级失败", "0x0B 返回 success_flg=0。", "0x0B_FAIL")
+                self._fail_upgrade("Upgrade failed", "0x0B returned success_flg=0.", "0x0B_FAIL")
+            return True
+
+        if frame.cmd_word == CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY and session.stage in {"wait_forward_progress_ack", "poll_forward_progress"}:
+            try:
+                progress = parse_llc_pfc_upgrade_progress_ack(frame.payload)
+            except ValueError as exc:
+                self._fail_upgrade("Upgrade failed", str(exc), "0x0D_LEN")
+                return True
+
+            session.llc_forward_progress_sent_bytes = int(progress["forwarded_bytes"])
+            session.llc_forward_progress_total_bytes = int(progress["total_bytes"])
+            session.llc_forward_progress_permille = int(progress["progress_permille"])
+
+            source_module = module_name(int(progress["source_module_id"]))
+            target_module = module_name(int(progress["target_module_id"]))
+            detail = (
+                f"stage={progress['stage_name']} result={progress['result_name']} "
+                f"offset={progress['packet_offset']} len={progress['packet_length']} "
+                f"error={progress['error_name']}"
+            )
+            self.upgrade_tab.append_log(
+                f"RX 0x0D <- {source_module} -> {target_module} "
+                f"stage={progress['stage_name']} result={progress['result_name']} "
+                f"forwarded={progress['forwarded_bytes']}/{progress['total_bytes']} "
+                f"offset={progress['packet_offset']} len={progress['packet_length']} "
+                f"error={progress['error_name']}"
+            )
+            self.upgrade_tab.set_forward_progress(
+                status=f"LLC -> PFC: {progress['stage_name']}",
+                detail=detail,
+                forwarded_bytes=int(progress["forwarded_bytes"]),
+                total_bytes=int(progress["total_bytes"]),
+                progress_permille=int(progress["progress_permille"]),
+            )
+            result_name = str(progress["result_name"])
+            stage_name = str(progress["stage_name"])
+            error_name = describe_llc_pfc_upgrade_error(int(progress["error_code"]))
+            if result_name == "success" or stage_name == "done":
+                self._complete_upgrade("Upgrade completed. LLC finished forwarding the PFC firmware.")
+            elif result_name == "failed" or stage_name == "failed":
+                self._fail_upgrade(
+                    "Upgrade failed",
+                    f"LLC reported PFC forwarding failure: {error_name}",
+                    f"0x0D:{int(progress['error_code']):04X}",
+                )
+            else:
+                session.stage = "poll_forward_progress"
+                session.last_tx_at = time.monotonic()
+                self.upgrade_tab.set_status(
+                    "Upgrade in progress",
+                    "Waiting for the next LLC -> PFC forward-progress poll.",
+                    error_code="-",
+                )
+                self._schedule_update_tick()
             return True
 
         return False
@@ -1311,6 +1654,193 @@ class SerialDebugAssistant(tk.Tk):
         self.parameter_tab.set_message("已发送读取参数列表命令")
         self.logger.log("PARAM", "send read parameter list request")
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x01, payload=b"")
+
+    def request_black_box_range_query(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.black_box_tab.set_status("Cannot start black box query", "Connect the serial port first.")
+            return
+        try:
+            start_offset, read_length = self.black_box_tab.get_query_range()
+        except ValueError:
+            self.set_status("Black box query range must be an integer.", error=True)
+            self.black_box_tab.set_status("Invalid black box query", "Start offset and read length must be valid integers.")
+            return
+        if start_offset < 0 or read_length <= 0:
+            self.set_status("Black box query range is invalid.", error=True)
+            self.black_box_tab.set_status("Invalid black box query", "Start offset must be >= 0 and read length must be > 0.")
+            return
+
+        self.black_box_tab.begin_query(start_offset=start_offset, read_length=read_length)
+        payload = build_black_box_range_query_payload(start_offset, read_length)
+        self.logger.log(
+            "BLACKBOX",
+            f"send range query dst=0x02 d_dst=0x00 start=0x{start_offset:06X} length=0x{read_length:X}",
+        )
+        self.send_protocol_frame(
+            dst=0x02,
+            d_dst=0x00,
+            cmd_set=CMD_SET_BLACK_BOX,
+            cmd_word=CMD_WORD_BLACK_BOX_RANGE_QUERY,
+            payload=payload,
+        )
+
+    def request_factory_time_read(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.factory_mode_tab.set_status("Cannot read device time", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.factory_mode_tab.get_target_address()
+        except ValueError:
+            self.set_status("Factory Mode target address must be an integer.", error=True)
+            self.factory_mode_tab.set_status("Invalid target address", "Target address and dynamic address must be integers.")
+            return
+
+        self.factory_mode_tab.set_status("Reading device time", "Waiting for the device time and timezone response.")
+        self.logger.log("FACTORY", f"send time query dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_FACTORY_TIME_QUERY,
+            cmd_word=CMD_WORD_FACTORY_TIME_QUERY,
+            payload=build_factory_time_query_payload(),
+        )
+
+    def _send_factory_time_write(self, *, unix_time_utc: int, timezone_half_hour: int, detail: str) -> None:
+        try:
+            dst, d_dst = self.factory_mode_tab.get_target_address()
+        except ValueError:
+            self.set_status("Factory Mode target address must be an integer.", error=True)
+            self.factory_mode_tab.set_status("Invalid target address", "Target address and dynamic address must be integers.")
+            return
+
+        payload = build_factory_time_write_payload(unix_time_utc, timezone_half_hour)
+        self.factory_mode_tab.set_status("Applying factory time settings", detail)
+        self.logger.log(
+            "FACTORY",
+            f"send time write dst=0x{dst:02X} d_dst=0x{d_dst:02X} unix={unix_time_utc} timezone_half_hour={timezone_half_hour}",
+        )
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_FACTORY_TIME_WRITE,
+            cmd_word=CMD_WORD_FACTORY_TIME_WRITE,
+            payload=payload,
+        )
+
+    def send_factory_current_pc_time(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.factory_mode_tab.set_status("Cannot set device time", "Connect the serial port first.")
+            return
+        try:
+            timezone_half_hour = parse_timezone_input(self.factory_mode_tab.get_timezone_text())
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.factory_mode_tab.set_status("Invalid timezone", str(exc))
+            return
+
+        self._send_factory_time_write(
+            unix_time_utc=int(time.time()),
+            timezone_half_hour=timezone_half_hour,
+            detail="Send the current PC UTC Unix time and timezone to the device.",
+        )
+
+    def apply_factory_timezone(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.factory_mode_tab.set_status("Cannot apply timezone", "Connect the serial port first.")
+            return
+        try:
+            timezone_half_hour = parse_timezone_input(self.factory_mode_tab.get_timezone_text())
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.factory_mode_tab.set_status("Invalid timezone", str(exc))
+            return
+
+        unix_time_utc = int(time.time())
+        if self.factory_time_snapshot is not None:
+            unix_time_utc = int(self.factory_time_snapshot["unix_time_utc"])
+        self._send_factory_time_write(
+            unix_time_utc=unix_time_utc,
+            timezone_half_hour=timezone_half_hour,
+            detail="Apply the requested timezone on the device while keeping the current Unix UTC time.",
+        )
+
+    def request_factory_cali_read(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.factory_mode_tab.set_cali_status("Cannot read calibration", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.factory_mode_tab.get_cali_target_address()
+            cali_id, _, _ = self.factory_mode_tab.get_cali_values()
+        except ValueError:
+            self.set_status("Calibration destination, ID, gain, and offset must be numeric.", error=True)
+            self.factory_mode_tab.set_cali_status("Invalid calibration input", "Destination address and calibration ID must be valid numbers.")
+            return
+
+        self.factory_mode_tab.set_cali_status("Reading calibration", f"Requesting the current gain and offset for ID={cali_id}.")
+        self.logger.log("FACTORY", f"send cali read dst=0x{dst:02X} d_dst=0x{d_dst:02X} id={cali_id}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_FACTORY_CALI_READ,
+            cmd_word=CMD_WORD_FACTORY_CALI_READ,
+            payload=build_factory_cali_read_payload(cali_id),
+        )
+
+    def send_factory_cali_write(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.factory_mode_tab.set_cali_status("Cannot write calibration", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.factory_mode_tab.get_cali_target_address()
+            cali_id, gain, bias = self.factory_mode_tab.get_cali_values()
+        except ValueError:
+            self.set_status("Calibration destination, ID, gain, and offset must be numeric.", error=True)
+            self.factory_mode_tab.set_cali_status("Invalid calibration input", "Destination address, ID, gain, and offset must be valid numbers.")
+            return
+
+        self.factory_mode_tab.set_cali_status(
+            "Writing calibration",
+            f"Sending ID={cali_id}, gain={gain:.6g}, offset={bias:.6g} to the device.",
+        )
+        self.logger.log(
+            "FACTORY",
+            f"send cali write dst=0x{dst:02X} d_dst=0x{d_dst:02X} id={cali_id} gain={gain:.6g} bias={bias:.6g}",
+        )
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_FACTORY_CALI_WRITE,
+            cmd_word=CMD_WORD_FACTORY_CALI_WRITE,
+            payload=build_factory_cali_write_payload(cali_id, gain, bias),
+        )
+
+    def send_factory_cali_save(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.factory_mode_tab.set_cali_status("Cannot save calibration", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.factory_mode_tab.get_cali_target_address()
+        except ValueError:
+            self.set_status("Calibration destination address must be numeric.", error=True)
+            self.factory_mode_tab.set_cali_status("Invalid destination address", "Destination address and dynamic address must be valid integers.")
+            return
+
+        self.factory_mode_tab.set_cali_status("Saving calibration", "Requesting the device to store current calibration values.")
+        self.logger.log("FACTORY", f"send cali save dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_FACTORY_CALI_SAVE,
+            cmd_word=CMD_WORD_FACTORY_CALI_SAVE,
+            payload=build_factory_cali_save_payload(),
+        )
 
     def request_single_parameter(self, name: str) -> None:
         if not self.serial_service.is_open():
@@ -1453,7 +1983,7 @@ class SerialDebugAssistant(tk.Tk):
             self.wave_debug_frame_budget = 120
             self.logger.log("WAVE", "armed detailed batch capture for first 8 batches")
         else:
-            saved_path = self.wave_tab.auto_save_waveform_file(reason="停止发波")
+            saved_path = self.wave_tab.auto_save_waveform_file(reason="stop stream")
             if saved_path is not None:
                 self.logger.log("WAVE", f"auto save on stop -> {saved_path}")
         self.logger.log("WAVE", f"send run toggle start={start}")
@@ -1743,8 +2273,8 @@ class SerialDebugAssistant(tk.Tk):
     def on_close(self) -> None:
         self.logger.log("APP", "shutdown")
         self.cancel_auto_send()
-        self.stop_upgrade("应用关闭，升级已停止。", user_initiated=False)
-        saved_path = self.wave_tab.auto_save_waveform_file(reason="软件关闭")
+        self.stop_upgrade("Application closing, upgrade stopped.", user_initiated=False)
+        saved_path = self.wave_tab.auto_save_waveform_file(reason="application close")
         if saved_path is not None:
             self.logger.log("WAVE", f"auto save on app close -> {saved_path}")
         self.serial_service.close()

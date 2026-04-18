@@ -14,7 +14,7 @@ class UpgradeTab(ttk.Frame):
         self.on_browse = on_browse
         self.on_start_stop = on_start_stop
 
-        self.file_path_var = tk.StringVar(value="未加载固件")
+        self.file_path_var = tk.StringVar(value="No firmware loaded")
         self.version_var = tk.StringVar(value="-")
         self.compile_time_var = tk.StringVar(value="-")
         self.file_size_var = tk.StringVar(value="-")
@@ -23,13 +23,17 @@ class UpgradeTab(ttk.Frame):
         self.footer_crc_var = tk.StringVar(value="-")
         self.download_addr_var = tk.StringVar(value="2")
         self.download_dyn_addr_var = tk.StringVar(value="0")
-        self.update_type_var = tk.StringVar(value="正常升级")
-        self.status_var = tk.StringVar(value="等待加载固件")
-        self.detail_var = tk.StringVar(value="流程将按照 0x08 -> 0x09 -> 0x0A -> 0x0B 执行，固件按 1024 byte 分包")
+        self.update_type_var = tk.StringVar(value="Normal")
+        self.status_var = tk.StringVar(value="Waiting for firmware")
+        self.detail_var = tk.StringVar(value="Flow: 0x08 -> 0x09 -> 0x0A -> 0x0B, firmware packet size: 1024 bytes")
         self.error_var = tk.StringVar(value="-")
         self.progress_text_var = tk.StringVar(value="0 / 0 bytes")
         self.progress_percent_var = tk.StringVar(value="0%")
-        self.connection_var = tk.StringVar(value="串口未连接")
+        self.connection_var = tk.StringVar(value="Serial port disconnected")
+        self.forward_status_var = tk.StringVar(value="LLC -> PFC forward progress is idle")
+        self.forward_detail_var = tk.StringVar(value="Waiting for the main upgrade flow to start")
+        self.forward_text_var = tk.StringVar(value="0 / 0 bytes")
+        self.forward_percent_var = tk.StringVar(value="0%")
 
         self._build()
 
@@ -41,56 +45,58 @@ class UpgradeTab(ttk.Frame):
         left = ttk.Frame(self, style="Panel.TFrame")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(1, weight=1)
-        left.rowconfigure(3, weight=1)
+        left.rowconfigure(3, weight=0)
 
         right = ttk.Frame(self, style="Panel.TFrame")
         right.grid(row=0, column=1, sticky="nsew")
         right.rowconfigure(0, weight=1)
         right.columnconfigure(0, weight=1)
 
-        file_frame = ttk.LabelFrame(left, text="固件", style="Section.TLabelframe", padding=12)
+        file_frame = ttk.LabelFrame(left, text="Firmware", style="Section.TLabelframe", padding=12)
         file_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         file_frame.columnconfigure(0, weight=1)
         ttk.Entry(file_frame, textvariable=self.file_path_var, state="readonly").grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        ttk.Button(file_frame, text="加载固件", command=self.on_browse, style="Accent.TButton", width=12).grid(row=0, column=1)
+        ttk.Button(file_frame, text="Load Firmware", command=self.on_browse, style="Accent.TButton", width=12).grid(row=0, column=1)
 
-        control_frame = ttk.LabelFrame(left, text="升级控制", style="Section.TLabelframe", padding=12)
+        control_frame = ttk.LabelFrame(left, text="Upgrade Control", style="Section.TLabelframe", padding=12)
         control_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         for index in range(4):
             control_frame.columnconfigure(index, weight=1 if index % 2 == 1 else 0)
-        ttk.Label(control_frame, text="下载地址").grid(row=0, column=0, sticky="w")
+        ttk.Label(control_frame, text="Target Address").grid(row=0, column=0, sticky="w")
         ttk.Entry(control_frame, textvariable=self.download_addr_var, width=10).grid(row=0, column=1, sticky="ew", padx=(8, 16))
-        ttk.Label(control_frame, text="动态地址").grid(row=0, column=2, sticky="w")
+        ttk.Label(control_frame, text="Dynamic Address").grid(row=0, column=2, sticky="w")
         ttk.Entry(control_frame, textvariable=self.download_dyn_addr_var, width=10).grid(row=0, column=3, sticky="ew", padx=(8, 0))
-        ttk.Label(control_frame, text="升级类型").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(control_frame, text="Upgrade Type").grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Combobox(
             control_frame,
             textvariable=self.update_type_var,
             state="readonly",
-            values=("正常升级", "强制升级"),
+            values=("Normal", "Force"),
         ).grid(row=1, column=1, sticky="ew", padx=(8, 16), pady=(10, 0))
         ttk.Label(control_frame, textvariable=self.connection_var, style="Status.TLabel").grid(row=1, column=2, columnspan=2, sticky="e", pady=(10, 0))
-        self.start_button = ttk.Button(control_frame, text="下载", command=self.on_start_stop, style="Accent.TButton")
+        self.start_button = ttk.Button(control_frame, text="Start Upgrade", command=self.on_start_stop, style="Accent.TButton")
         self.start_button.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(12, 0))
 
-        info_frame = ttk.LabelFrame(left, text="固件信息", style="Section.TLabelframe", padding=12)
+        info_frame = ttk.LabelFrame(left, text="Firmware Info", style="Section.TLabelframe", padding=12)
         info_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         info_frame.columnconfigure(1, weight=1)
         rows = [
-            ("固件版本", self.version_var),
-            ("编译时间", self.compile_time_var),
-            ("文件大小", self.file_size_var),
-            ("commit id", self.commit_var),
-            ("模块", self.module_var),
-            ("footer CRC", self.footer_crc_var),
+            ("Version", self.version_var),
+            ("Build Time", self.compile_time_var),
+            ("File Size", self.file_size_var),
+            ("Commit ID", self.commit_var),
+            ("Module", self.module_var),
+            ("Footer CRC", self.footer_crc_var),
         ]
         for row, (label, variable) in enumerate(rows):
             ttk.Label(info_frame, text=label).grid(row=row, column=0, sticky="w", pady=4)
             ttk.Label(info_frame, textvariable=variable).grid(row=row, column=1, sticky="w", pady=4, padx=(10, 0))
 
-        status_frame = ttk.LabelFrame(left, text="下载状态", style="Section.TLabelframe", padding=12)
+        status_frame = ttk.LabelFrame(left, text="Download Status", style="Section.TLabelframe", padding=12)
         status_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         status_frame.columnconfigure(0, weight=1)
+        status_frame.grid_propagate(False)
+        status_frame.configure(height=170)
         ttk.Label(status_frame, textvariable=self.status_var, style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(status_frame, textvariable=self.detail_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Label(status_frame, textvariable=self.error_var).grid(row=2, column=0, sticky="w", pady=(6, 0))
@@ -102,7 +108,22 @@ class UpgradeTab(ttk.Frame):
         ttk.Label(progress_meta, textvariable=self.progress_text_var).grid(row=0, column=0, sticky="w")
         ttk.Label(progress_meta, textvariable=self.progress_percent_var).grid(row=0, column=1, sticky="e")
 
-        log_frame = ttk.LabelFrame(right, text="升级日志", style="Section.TLabelframe", padding=12)
+        forward_frame = ttk.LabelFrame(left, text="LLC -> PFC Forward Progress", style="Section.TLabelframe", padding=12)
+        forward_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        forward_frame.columnconfigure(0, weight=1)
+        forward_frame.grid_propagate(False)
+        forward_frame.configure(height=150)
+        ttk.Label(forward_frame, textvariable=self.forward_status_var, style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(forward_frame, textvariable=self.forward_detail_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.forward_progress = ttk.Progressbar(forward_frame, mode="determinate", maximum=100)
+        self.forward_progress.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        forward_meta = ttk.Frame(forward_frame, style="Panel.TFrame")
+        forward_meta.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        forward_meta.columnconfigure(0, weight=1)
+        ttk.Label(forward_meta, textvariable=self.forward_text_var).grid(row=0, column=0, sticky="w")
+        ttk.Label(forward_meta, textvariable=self.forward_percent_var).grid(row=0, column=1, sticky="e")
+
+        log_frame = ttk.LabelFrame(right, text="Upgrade Log", style="Section.TLabelframe", padding=12)
         log_frame.grid(row=0, column=0, sticky="nsew")
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
@@ -128,11 +149,11 @@ class UpgradeTab(ttk.Frame):
         return int(self.download_addr_var.get() or "0"), int(self.download_dyn_addr_var.get() or "0")
 
     def get_update_type(self) -> int:
-        return UPDATE_TYPE_FORCE if self.update_type_var.get() == "强制升级" else UPDATE_TYPE_NORMAL
+        return UPDATE_TYPE_FORCE if self.update_type_var.get() == "Force" else UPDATE_TYPE_NORMAL
 
     def set_firmware(self, image: FirmwareImage | None, *, summary: dict[str, str] | None = None) -> None:
         if image is None or summary is None:
-            self.file_path_var.set("未加载固件")
+            self.file_path_var.set("No firmware loaded")
             self.version_var.set("-")
             self.compile_time_var.set("-")
             self.file_size_var.set("-")
@@ -149,15 +170,17 @@ class UpgradeTab(ttk.Frame):
         self.footer_crc_var.set(summary["footer_crc"])
 
     def set_running(self, running: bool) -> None:
-        self.start_button.configure(text="停止" if running else "下载")
+        self.start_button.configure(text="Stop Upgrade" if running else "Start Upgrade")
 
     def set_connection_state(self, connected: bool, port_label: str = "") -> None:
-        self.connection_var.set(f"已连接 {port_label}" if connected and port_label else ("串口已连接" if connected else "串口未连接"))
+        self.connection_var.set(
+            f"Connected: {port_label}" if connected and port_label else ("Serial port connected" if connected else "Serial port disconnected")
+        )
 
     def set_status(self, status: str, detail: str = "", *, error_code: str = "-") -> None:
         self.status_var.set(status)
         self.detail_var.set(detail or "")
-        self.error_var.set(f"错误码: {error_code}" if error_code and error_code != "-" else "错误码: -")
+        self.error_var.set(f"Error Code: {error_code}" if error_code and error_code != "-" else "Error Code: -")
 
     def set_progress(self, sent_bytes: int, total_bytes: int) -> None:
         total = max(total_bytes, 0)
@@ -166,6 +189,26 @@ class UpgradeTab(ttk.Frame):
         self.progress["value"] = percent
         self.progress_text_var.set(f"{sent} / {total} bytes")
         self.progress_percent_var.set(f"{percent:.1f}%")
+
+    def reset_forward_progress(self, detail: str = "Waiting for the main upgrade flow to start") -> None:
+        self.forward_status_var.set("LLC -> PFC forward progress is idle")
+        self.forward_detail_var.set(detail)
+        self.forward_progress["value"] = 0
+        self.forward_text_var.set("0 / 0 bytes")
+        self.forward_percent_var.set("0%")
+
+    def set_forward_progress(self, *, status: str, detail: str, forwarded_bytes: int, total_bytes: int, progress_permille: int = 0) -> None:
+        total = max(total_bytes, 0)
+        forwarded = min(max(forwarded_bytes, 0), total) if total else max(forwarded_bytes, 0)
+        if total > 0:
+            percent = forwarded / total * 100.0
+        else:
+            percent = max(min(progress_permille, 1000), 0) / 10.0
+        self.forward_status_var.set(status)
+        self.forward_detail_var.set(detail)
+        self.forward_progress["value"] = percent
+        self.forward_text_var.set(f"{forwarded} / {total} bytes")
+        self.forward_percent_var.set(f"{percent:.1f}%")
 
     def append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")

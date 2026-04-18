@@ -527,7 +527,7 @@ class WaveformTab(ttk.Frame):
         if not self.has_waveform_data() or not self._has_unsaved_changes:
             return None
         file_path = self.save_waveform_file(self._default_export_path())
-        self.on_status(f"已自动保存波形文件（{reason}）: {file_path}", False)
+        self.on_status(f"Waveform file auto-saved ({reason}): {file_path}", False)
         return file_path
 
     def export_waveform_file(self) -> None:

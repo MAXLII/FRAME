@@ -42,6 +42,9 @@ class HomeTab(ttk.Frame):
         self._inv_cfg_choices = ("220V/50Hz", "230V/50Hz", "240V/50Hz")
 
         self.indicator_dots: dict[str, tk.Canvas] = {}
+        self._indicator_state_cache: dict[str, Optional[bool]] = {}
+        self._fault_log_cache: str | None = None
+        self._warning_log_cache: str | None = None
 
         body = ttk.Frame(self, style="Panel.TFrame")
         body.grid(row=0, column=0, sticky="nsew")
@@ -127,30 +130,30 @@ class HomeTab(ttk.Frame):
         bat_temp: Optional[float],
         soc: Optional[float],
     ) -> None:
-        self.grid_voltage_var.set(self._fmt(ac_v_grid, "V"))
-        self.grid_current_var.set(self._fmt(ac_i_grid, "A"))
-        self.grid_power_var.set(self._fmt(ac_pwr_grid, "W"))
-        self.grid_freq_var.set(self._fmt(ac_freq_grid, "Hz"))
+        self._set_var_if_changed(self.grid_voltage_var, self._fmt(ac_v_grid, "V"))
+        self._set_var_if_changed(self.grid_current_var, self._fmt(ac_i_grid, "A"))
+        self._set_var_if_changed(self.grid_power_var, self._fmt(ac_pwr_grid, "W"))
+        self._set_var_if_changed(self.grid_freq_var, self._fmt(ac_freq_grid, "Hz"))
 
-        self.inv_voltage_var.set(self._fmt(ac_v_inv, "V"))
-        self.inv_current_var.set(self._fmt(ac_i_inv, "A"))
-        self.inv_power_var.set(self._fmt(ac_pwr_inv, "W"))
-        self.inv_freq_var.set(self._fmt(ac_freq_inv, "Hz"))
+        self._set_var_if_changed(self.inv_voltage_var, self._fmt(ac_v_inv, "V"))
+        self._set_var_if_changed(self.inv_current_var, self._fmt(ac_i_inv, "A"))
+        self._set_var_if_changed(self.inv_power_var, self._fmt(ac_pwr_inv, "W"))
+        self._set_var_if_changed(self.inv_freq_var, self._fmt(ac_freq_inv, "Hz"))
 
-        self.battery_voltage_var.set(self._fmt(bat_volt, "V"))
-        self.battery_current_var.set(self._fmt(bat_curr, "A"))
-        self.battery_power_var.set(self._fmt(bat_pwr, "W"))
-        self.battery_temp_var.set(self._fmt(bat_temp, "C"))
-        self.battery_soc_var.set(self._fmt(soc, "%"))
+        self._set_var_if_changed(self.battery_voltage_var, self._fmt(bat_volt, "V"))
+        self._set_var_if_changed(self.battery_current_var, self._fmt(bat_curr, "A"))
+        self._set_var_if_changed(self.battery_power_var, self._fmt(bat_pwr, "W"))
+        self._set_var_if_changed(self.battery_temp_var, self._fmt(bat_temp, "C"))
+        self._set_var_if_changed(self.battery_soc_var, self._fmt(soc, "%"))
 
-        self.mppt_voltage_var.set(self._fmt(mppt_vin, "V"))
-        self.mppt_current_var.set(self._fmt(mppt_iin, "A"))
-        self.mppt_power_var.set(self._fmt(mppt_pwr, "W"))
-        self.mppt_temp_var.set(self._fmt(mppt_temp, "C"))
+        self._set_var_if_changed(self.mppt_voltage_var, self._fmt(mppt_vin, "V"))
+        self._set_var_if_changed(self.mppt_current_var, self._fmt(mppt_iin, "A"))
+        self._set_var_if_changed(self.mppt_power_var, self._fmt(mppt_pwr, "W"))
+        self._set_var_if_changed(self.mppt_temp_var, self._fmt(mppt_temp, "C"))
 
-        self.pfc_temp_var.set(self._fmt(pfc_temp, "C"))
-        self.llc_temp1_var.set(self._fmt(llc_temp1, "C"))
-        self.llc_temp2_var.set(self._fmt(llc_temp2, "C"))
+        self._set_var_if_changed(self.pfc_temp_var, self._fmt(pfc_temp, "C"))
+        self._set_var_if_changed(self.llc_temp1_var, self._fmt(llc_temp1, "C"))
+        self._set_var_if_changed(self.llc_temp2_var, self._fmt(llc_temp2, "C"))
 
         self._set_indicator("fan", None if fan_sta is None else fan_sta == 1)
         self._set_indicator("grid_rly", None if rly_sta is None else bool(rly_sta & 0x01))
@@ -447,9 +450,15 @@ class HomeTab(ttk.Frame):
         ttk.Label(item, text=title, style="TLabel").grid(row=0, column=1, sticky="w")
 
     def set_fault_log(self, message: str) -> None:
+        if message == self._fault_log_cache:
+            return
+        self._fault_log_cache = message
         self._replace_text(self.fault_text, message)
 
     def set_warning_log(self, message: str) -> None:
+        if message == self._warning_log_cache:
+            return
+        self._warning_log_cache = message
         self._replace_text(self.warning_text, message)
 
     def bind_inv_cfg_actions(self, *, on_enable, on_disable, on_send, on_read) -> None:
@@ -490,9 +499,17 @@ class HomeTab(ttk.Frame):
         dot = self.indicator_dots.get(key)
         if dot is None:
             return
+        if self._indicator_state_cache.get(key) is active:
+            return
+        self._indicator_state_cache[key] = active
         fill = "#c4c4c4" if active is None else ("#2fb36d" if active else "#c4c4c4")
         dot.delete("all")
         dot.create_oval(2, 2, 14, 14, fill=fill, outline="")
+
+    def _set_var_if_changed(self, var: tk.StringVar, value: str) -> None:
+        if var.get() == value:
+            return
+        var.set(value)
 
     def _fmt(self, value: Optional[float], unit: str) -> str:
         if value is None:
