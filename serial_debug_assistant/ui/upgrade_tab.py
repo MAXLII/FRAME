@@ -9,13 +9,15 @@ from serial_debug_assistant.models import FirmwareImage
 
 
 class UpgradeTab(ttk.Frame):
-    def __init__(self, master, *, on_browse, on_start_stop) -> None:
+    def __init__(self, master, *, on_browse, on_start_stop, on_read_version) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
         self.on_browse = on_browse
         self.on_start_stop = on_start_stop
+        self.on_read_version = on_read_version
 
         self.file_path_var = tk.StringVar(value="No firmware loaded")
         self.version_var = tk.StringVar(value="-")
+        self.device_version_var = tk.StringVar(value="-")
         self.compile_time_var = tk.StringVar(value="-")
         self.file_size_var = tk.StringVar(value="-")
         self.commit_var = tk.StringVar(value="-")
@@ -74,14 +76,16 @@ class UpgradeTab(ttk.Frame):
             values=("Normal", "Force"),
         ).grid(row=1, column=1, sticky="ew", padx=(8, 16), pady=(10, 0))
         ttk.Label(control_frame, textvariable=self.connection_var, style="Status.TLabel").grid(row=1, column=2, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(control_frame, text="Read Device Version", command=self.on_read_version).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0), padx=(0, 8))
         self.start_button = ttk.Button(control_frame, text="Start Upgrade", command=self.on_start_stop, style="Accent.TButton")
-        self.start_button.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+        self.start_button.grid(row=2, column=2, columnspan=2, sticky="ew", pady=(12, 0))
 
         info_frame = ttk.LabelFrame(left, text="Firmware Info", style="Section.TLabelframe", padding=12)
         info_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         info_frame.columnconfigure(1, weight=1)
         rows = [
-            ("Version", self.version_var),
+            ("File Version", self.version_var),
+            ("Device Version", self.device_version_var),
             ("Build Time", self.compile_time_var),
             ("File Size", self.file_size_var),
             ("Commit ID", self.commit_var),
@@ -155,6 +159,7 @@ class UpgradeTab(ttk.Frame):
         if image is None or summary is None:
             self.file_path_var.set("No firmware loaded")
             self.version_var.set("-")
+            self.device_version_var.set("-")
             self.compile_time_var.set("-")
             self.file_size_var.set("-")
             self.commit_var.set("-")
@@ -168,6 +173,9 @@ class UpgradeTab(ttk.Frame):
         self.commit_var.set(summary["commit"])
         self.module_var.set(summary["module"])
         self.footer_crc_var.set(summary["footer_crc"])
+
+    def set_device_version(self, version_text: str) -> None:
+        self.device_version_var.set(version_text or "-")
 
     def set_running(self, running: bool) -> None:
         self.start_button.configure(text="Stop Upgrade" if running else "Start Upgrade")

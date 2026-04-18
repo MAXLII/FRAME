@@ -14,6 +14,7 @@ CMD_WORD_UPDATE_READY = 0x09
 CMD_WORD_UPDATE_FW = 0x0A
 CMD_WORD_UPDATE_END = 0x0B
 CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY = 0x0D
+CMD_WORD_FIRMWARE_VERSION_QUERY = 0x17
 
 UPDATE_TYPE_NORMAL = 1
 UPDATE_TYPE_FORCE = 2
@@ -169,6 +170,21 @@ def build_update_end_payload(image: FirmwareImage) -> bytes:
 
 def build_llc_pfc_upgrade_progress_query_payload() -> bytes:
     return b""
+
+
+def build_firmware_version_query_payload() -> bytes:
+    return b""
+
+
+def parse_firmware_version_ack(payload: bytes) -> dict[str, int | str]:
+    if len(payload) < struct.calcsize("<I"):
+        raise ValueError(f"Invalid firmware version ACK length: {len(payload)}")
+
+    (version,) = struct.unpack("<I", payload[: struct.calcsize("<I")])
+    return {
+        "version": version,
+        "version_text": format_version(version),
+    }
 
 
 def llc_pfc_upgrade_stage_name(stage: int) -> str:

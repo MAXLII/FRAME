@@ -64,11 +64,13 @@ from serial_debug_assistant.constants import (
 from serial_debug_assistant.debug_logger import DebugLogger
 from serial_debug_assistant.firmware_update import (
     CMD_SET_UPDATE,
+    CMD_WORD_FIRMWARE_VERSION_QUERY,
     CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
     CMD_WORD_UPDATE_END,
     CMD_WORD_UPDATE_FW,
     CMD_WORD_UPDATE_INFO,
     CMD_WORD_UPDATE_READY,
+    build_firmware_version_query_payload,
     build_llc_pfc_upgrade_progress_query_payload,
     build_update_end_payload,
     build_update_info_payload,
@@ -80,6 +82,7 @@ from serial_debug_assistant.firmware_update import (
     format_version,
     load_firmware_image,
     module_name,
+    parse_firmware_version_ack,
     parse_llc_pfc_upgrade_progress_ack,
 )
 from serial_debug_assistant.models import FirmwareImage, FirmwareUpdateSession, ParameterEntry, ProtocolFrame
@@ -401,6 +404,7 @@ class SerialDebugAssistant(tk.Tk):
             self.notebook,
             on_browse=self.load_upgrade_firmware,
             on_start_stop=self.toggle_upgrade,
+            on_read_version=self.request_upgrade_device_version,
         )
         self.black_box_tab = BlackBoxTab(
             self.notebook,
@@ -664,6 +668,33 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_status("Firmware loaded", image.warnings[0], error_code="-")
         else:
             self.upgrade_tab.set_status("Firmware loaded", "Ready to start the upgrade.", error_code="-")
+
+    def request_upgrade_device_version(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.upgrade_tab.set_status("Cannot read device version", "Connect the serial port first.", error_code="SERIAL")
+            return
+        try:
+            target_addr, target_dynamic_addr = self.upgrade_tab.get_target_address()
+        except ValueError:
+            self.upgrade_tab.set_status("Cannot read device version", "Target and dynamic addresses must be integers.", error_code="ADDR")
+            return
+
+        self.send_protocol_frame(
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=CMD_WORD_FIRMWARE_VERSION_QUERY,
+            payload=build_firmware_version_query_payload(),
+            dst=target_addr,
+            d_dst=target_dynamic_addr,
+        )
+        self.upgrade_tab.set_status(
+            "Reading device version",
+            f"Query sent to {module_name(target_addr)}.",
+            error_code="-",
+        )
+        self.upgrade_tab.append_log(
+            f"TX 0x{CMD_WORD_FIRMWARE_VERSION_QUERY:02X} -> query firmware version from {module_name(target_addr)}"
+        )
 
     def toggle_upgrade(self) -> None:
         if self.update_session is not None:
@@ -1372,8 +1403,32 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def _handle_upgrade_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.is_ack != 1:
+            return False
+
+        if frame.cmd_word == CMD_WORD_FIRMWARE_VERSION_QUERY:
+            try:
+                version_info = parse_firmware_version_ack(frame.payload)
+            except ValueError as exc:
+                self.upgrade_tab.set_status("Device version query failed", str(exc), error_code="0x17_LEN")
+                self.upgrade_tab.append_log(f"RX 0x17 ACK error <- {exc}")
+                return True
+
+            source_module = module_name(frame.src)
+            version_text = str(version_info["version_text"])
+            self.upgrade_tab.set_device_version(version_text)
+            self.upgrade_tab.set_status(
+                "Device version received",
+                f"{source_module} firmware version: {version_text}",
+                error_code="-",
+            )
+            self.upgrade_tab.append_log(
+                f"RX 0x17 ACK <- {source_module} firmware version={version_text} raw=0x{int(version_info['version']):08X}"
+            )
+            return True
+
         session = self.update_session
-        if session is None or frame.is_ack != 1:
+        if session is None:
             return False
         if frame.cmd_word not in {
             CMD_WORD_UPDATE_INFO,
