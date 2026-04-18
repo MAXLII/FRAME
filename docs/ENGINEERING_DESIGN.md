@@ -445,6 +445,24 @@ typedef struct
 
 当前桌面程序中，若目标固件模块为 `PFC`，在收到 `0x0B ACK` 后不会直接判为升级完成，而是切换到该指令的轮询阶段；只有收到 LLC 返回的 `success / done` 才结束升级流程。
 
+##### `0x01 / 0x17` 固件版本查询协议
+
+为了在固件升级页中直接读取设备当前运行版本，当前设计新增 `0x01 / 0x17` 查询-应答协议。该协议同时在 `llc/update.c` 与 `pfc/update.c` 中实现，因此上位机只需要切换升级页中的目标地址，就可以分别读取 LLC 或 PFC 当前版本。
+
+```c
+// 0x01 / 0x17 request payload: NULL
+typedef struct
+{
+    uint32_t version;
+} firmware_version_ack_t;
+```
+
+- 请求 payload 为空，表示查询目标模块当前固件版本。
+- 应答 payload 只返回一个 `uint32_t version`。
+- 版本值来源于设备侧宏 `COMPOSE_VERSION(HARD_VER, DEVICE_VENDOR, RELEASE_VER, DEBUG_VER)`。
+- 上位机会把该 `uint32_t` 按 `major.minor.patch.build` 形式格式化显示，例如 `1.2.0.13`。
+- 该查询结果用于显示“设备当前版本”，不覆盖本地已加载固件文件 footer 中解析出的“文件版本”。
+
 ##### `0x01 / 0x0E ~ 0x11` 黑匣子范围查询协议
 
 黑匣子数据量可能达到数 MB，因此当前设计采用“按逻辑偏移范围查询”，而不是按记录页码分页。这样上位机可以只拉取指定 Flash 区间的数据，减少等待时间，并支持跨 sector 的完整记录读取。
@@ -699,8 +717,9 @@ typedef struct
 
 - `ui/upgrade_tab.py` 定义固件升级页布局。
 - `ui/upgrade_tab.py` 负责固件路径显示、升级地址输入、升级类型选择、进度显示和升级日志显示。
-- `ui/upgrade_tab.py` 负责呈现固件版本、编译时间、模块和校验结果。
+- `ui/upgrade_tab.py` 负责呈现文件版本、设备版本、编译时间、模块和校验结果。
 - `ui/upgrade_tab.py` 负责根据串口连接状态切换可操作控件，并展示升级阶段、错误码与详细结果。
+- `ui/upgrade_tab.py` 额外提供 `Read Device Version` 操作，用于向当前目标地址发送 `0x01 / 0x17` 查询。
 - `ui/upgrade_tab.py` 负责显示 `LLC -> PFC Forward Progress` 面板，用于展示 `0x01 / 0x0D` 返回的二级转发进度。
 
 ### 黑匣子页
@@ -738,7 +757,7 @@ typedef struct
 - 主页页负责汇总协议解析后的设备状态、告警与故障信息，并提供逆变配置操作入口。
 - 参数页负责发起参数列表读取、单参数读取、参数写入和波形勾选；参数结果进入 `ParameterEntry` 映射和参数表格。
 - 参数页输出的波形勾选结果进入 `WaveformTab`，波形页负责绘制和管理参数曲线，并支持保存、导入和交互分析。
-- 固件文件解析与升级载荷构造由 `firmware_update.py` 提供，升级界面和升级状态流转由 `ui/app.py` 与 `UpgradeTab` 共同组织；当目标为 `PFC` 固件时，升级流程还会切换到 LLC 二级转发进度轮询。
+- 固件文件解析、版本格式化与升级/版本查询载荷构造由 `firmware_update.py` 提供，升级界面和升级状态流转由 `ui/app.py` 与 `UpgradeTab` 共同组织；当目标为 `PFC` 固件时，升级流程还会切换到 LLC 二级转发进度轮询。
 - 黑匣子协议打包与解析由 `black_box_protocol.py` 提供，黑匣子页查询、表格展示与 CSV 导出由 `ui/app.py` 与 `BlackBoxTab` 共同组织。
 - 工厂模式时间协议与校准协议打包、解析与枚举名称映射由 `factory_mode.py` 提供，工厂模式页中的时间读取、UTC 时间下发、时区化显示以及校准读写保存由 `ui/app.py` 与 `FactoryModeTab` 共同组织。
 - `debug_logger.py` 负责把运行日志写入 `logs/app_debug.log`，同时把日志分发给订阅组件使用。
