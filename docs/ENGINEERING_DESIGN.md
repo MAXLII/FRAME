@@ -27,7 +27,9 @@ FRAME/
 │  └─ ui/
 │     ├─ __init__.py
 │     ├─ app.py
+│     ├─ black_box_tab.py
 │     ├─ debug_tab.py
+│     ├─ factory_mode_tab.py
 │     ├─ home_tab.py
 │     ├─ monitor_tab.py
 │     ├─ parameter_tab.py
@@ -412,6 +414,141 @@ typedef struct
 - `0x0A` 用于按 256 字节小包发送固件，其中 `packet_crc` 是单包 CRC16。
 - `0x0B` 用于发送整包结束帧，`fw_crc` 表示包含 footer 的整包固件 CRC16。
 
+##### `0x01 / 0x0D` LLC -> PFC 转发升级进度查询
+
+当上位机升级 `PFC` 固件时，实际链路为“上位机 -> LLC -> PFC”。因此在 `0x0B ACK` 之后，上位机还需要继续查询 LLC 当前向 PFC 转发固件的进度。当前设计新增 `0x01 / 0x0D` 查询-应答协议，上位机周期轮询，LLC 返回当前转发状态快照。
+
+```c
+// 0x01 / 0x0D request payload: NULL
+typedef struct
+{
+    uint8_t source_module_id;
+    uint8_t target_module_id;
+    uint8_t stage;
+    uint8_t result;
+    uint32_t forwarded_bytes;
+    uint32_t total_bytes;
+    uint32_t packet_offset;
+    uint16_t packet_length;
+    uint16_t progress_permille;
+    uint16_t error_code;
+} llc_pfc_upgrade_progress_ack_t;
+```
+
+- `source_module_id` 与 `target_module_id` 分别标识当前转发链路的起点与终点模块。
+- `stage` 用于表示 `queued / enter_boot / erasing / forwarding / verifying / done / failed` 等阶段。
+- `result` 用于表示 `in_progress / success / failed`。
+- `forwarded_bytes` 与 `total_bytes` 是上位机进度条的主数据源。
+- `packet_offset` 与 `packet_length` 用于显示最近一次处理分包的位置信息。
+- `progress_permille` 用于在特殊阶段维持连续进度显示。
+- `error_code` 用于回传 LLC 侧判定的失败原因。
+
+当前桌面程序中，若目标固件模块为 `PFC`，在收到 `0x0B ACK` 后不会直接判为升级完成，而是切换到该指令的轮询阶段；只有收到 LLC 返回的 `success / done` 才结束升级流程。
+
+##### `0x01 / 0x0E ~ 0x11` 黑匣子范围查询协议
+
+黑匣子数据量可能达到数 MB，因此当前设计采用“按逻辑偏移范围查询”，而不是按记录页码分页。这样上位机可以只拉取指定 Flash 区间的数据，减少等待时间，并支持跨 sector 的完整记录读取。
+
+```c
+typedef struct
+{
+    uint32_t start_offset;
+    uint32_t read_length;
+} black_box_range_query_req_t;
+
+typedef struct
+{
+    uint8_t accepted;
+    uint32_t start_offset;
+    uint32_t read_length;
+} black_box_range_query_ack_t;
+
+typedef struct
+{
+    char header_text[];
+} black_box_header_report_t;
+
+typedef struct
+{
+    uint32_t record_offset;
+    char row_text[];
+} black_box_row_report_t;
+
+typedef struct
+{
+    uint32_t start_offset;
+    uint32_t end_offset;
+    uint32_t scanned_bytes;
+    uint16_t row_count;
+    uint8_t has_more;
+} black_box_range_complete_report_t;
+```
+
+- `0x0E`：范围查询请求与 ACK。
+- `0x0F`：表头字符串上传。
+- `0x10`：数据行字符串上传。
+- `0x11`：本次范围查询完成通知。
+
+实现约束如下：
+
+- 查询单位为 `start_offset + read_length`，不是“第几页记录”。
+- 只要一条记录头落在查询区间内，就允许把整条记录完整上传，即使记录尾部超过查询区间末尾。
+- 如果下一条记录头已经超出查询区间末尾，则停止扫描并发送完成帧。
+- Flash sector 仅作为底层存储边界，不作为解析边界；跨 sector 记录由连续缓存读取完成。
+
+##### `0x01 / 0x12 ~ 0x13` 工厂模式时间协议
+
+为支持出厂时间配置，当前在 `time.c` 中新增工厂模式时间协议。通信内容仅包含 `UTC Unix time` 与半小时单位的时区值。
+
+```c
+// 0x01 / 0x12 request payload: NULL
+typedef struct
+{
+    uint32_t unix_time_utc;
+    int8_t timezone_half_hour;
+} factory_time_payload_t;
+```
+
+- `0x12`：读取设备当前 `UTC Unix time` 与 `timezone_half_hour`。
+- `0x13`：下发新的 `UTC Unix time` 与 `timezone_half_hour`，设备写入后返回当前生效值。
+- `timezone_half_hour` 以半小时为单位编码，例如 `UTC+8 = 16`，`UTC+5:30 = 11`。
+
+下位机实现中，`unix_time_utc` 直接写入 RTC，不叠加时区偏移；本地时区时间由 `unix_time_utc + timezone_half_hour * 1800` 推导。
+
+##### `0x01 / 0x14 ~ 0x16` 工厂模式校准协议
+
+为支持工厂模式下的增益与偏置校准，当前在 `cali.c / cali.h` 基础上新增一组独立于旧 `0x10 / 0x11` 的校准查询与保存协议，避免与现有上位机指令冲突。该协议同时适用于 LLC 与 PFC，因此工厂模式页需要单独填写校准目的地址。
+
+```c
+typedef struct
+{
+    uint8_t id;
+} cali_query_t;
+
+typedef struct
+{
+    uint8_t id;
+    float gain;
+    float bias;
+} cali_info_t;
+```
+
+- `0x14`：读取指定 `CALI_ID_E` 项当前的 `gain` 与 `bias`。
+- `0x15`：下发指定 `CALI_ID_E` 项新的 `gain` 与 `bias`，设备应用后返回当前生效值。
+- `0x16`：请求设备把当前校准值保存到 Flash，ACK payload 为空。
+
+当前工厂模式页中，校准项不再直接输入数字 ID，而是通过下拉框从 `CALI_ID_E` 枚举含义中选择自然语言名称，当前对应关系如下：
+
+- `CALI_ID_V_G_RMS` -> `Grid Voltage`
+- `CALI_ID_V_AC_OUT_RMS` -> `Inverter Voltage`
+- `CALI_ID_I_AC_OUT_RMS` -> `Inverter Current`
+- `CALI_ID_V_BAT` -> `Battery Voltage`
+- `CALI_ID_I_BAT` -> `Battery Current`
+- `CALI_ID_V_PV` -> `PV Voltage`
+- `CALI_ID_I_PV` -> `PV Current`
+
+设备侧仍然按枚举值处理，主机侧只负责把下拉框选择转换成对应的数值 ID。
+
 ##### 固件尾信息 footer（来自 `上位机.pdf`）
 
 ```c
@@ -507,7 +644,7 @@ typedef struct
 
 - `上位机.pdf` 中的参数读写、参数波形、主页广播和在线升级，当前工程都已有对应页面与协议处理逻辑。
 - `上位机.pdf` 中提到的“通信抓包管理”“历史数据”“固件库管理”“软件示波器”等能力，当前仓库中仍以基础串口监视、波形导入导出和升级页的形式部分覆盖，尚未形成独立完整子系统。
-- `CMD_SET = 0x01 / CMD_WORD = 0x10` 校准信息下发与 `0x11` 保存命令在 PDF 中已有协议定义，但当前桌面程序还没有独立校准模式页面。
+- `CMD_SET = 0x01 / CMD_WORD = 0x10` 校准信息下发与 `0x11` 保存命令在 PDF 中已有协议定义；当前实现为了避免与已有桌面程序指令冲突，改为在工厂模式页中使用 `0x14 / 0x15 / 0x16` 完成校准读写与保存。
 - 后续若扩展新页面，建议优先沿用本文档中整理出的结构体定义，并在源码实现与 PDF 定义出现偏差时及时在此文档中标注差异。
 
 ### 服务层
@@ -519,12 +656,13 @@ typedef struct
 ### 界面层总控
 
 - `ui/app.py` 负责创建主窗口、顶部串口连接栏、底部状态栏和五个主功能页签，并组织串口连接、协议处理、参数管理、波形显示和固件升级流程。
-- `ui/app.py` 负责创建主页页签、串口调试页签、参数读写页签、参数波形页签和固件升级页签，并管理这些页面之间的状态同步。
+- `ui/app.py` 负责创建主页页签、串口调试页签、参数读写页签、参数波形页签、固件升级页签、黑匣子页签和工厂模式页签，并管理这些页面之间的状态同步。
 - `ui/app.py` 负责为串口调试页签补充左侧调试设置区，包括接收时间戳、HEX 接收、自动分帧换行、接收持续保存、HEX 发送、定时发送和发送回显控制。
-- `ui/app.py` 负责将串口接收数据分发到监视区、协议解析器、主页页签、参数页、波形页和升级页，并在主线程中执行批量 UI 刷新。
+- `ui/app.py` 负责将串口接收数据分发到监视区、协议解析器、主页页签、参数页、波形页、升级页、黑匣子页和工厂模式页，并在主线程中执行批量 UI 刷新。
 - `ui/app.py` 负责运行状态显示、参数提示栏、收发字节计数、接收保存和发送控制。
 - `ui/app.py` 负责统一收发显示字符串的格式化，发送回显与接收数据显示共享公共显示函数，并在 HEX 模式下处理 `0D 0A` 换行显示。
 - `ui/app.py` 负责在连接建立后向广播地址发送停止发波命令，避免旧设备状态影响参数读取与波形显示。
+- `ui/app.py` 负责主页刷新容错与限频，包括错包异常隔离、主页数据暂存和合并刷新，避免坏包导致首页卡死。
 
 ## `serial_debug_assistant.ui` 组件设计
 
@@ -554,7 +692,7 @@ typedef struct
 
 - `ui/wave_tab.py` 定义波形页布局。
 - `ui/wave_tab.py` 负责已选参数列表、最新值列表、实时曲线绘制、窗口时间切换、暂停查看和回到实时视图。
-- `ui/wave_tab.py` 负责波形导入导出、停止发波自动保存、标记线、参考线和鼠标交互。
+- `ui/wave_tab.py` 负责波形导入导出、停止发波自动保存、软件关闭自动保存、标记线、参考线和鼠标交互。
 - `ui/wave_tab.py` 支持显示全部、时间窗口查看、矩形缩放、横向/纵向缩放与平移、悬停读数和快捷键操作。
 
 ### 固件升级页
@@ -563,6 +701,24 @@ typedef struct
 - `ui/upgrade_tab.py` 负责固件路径显示、升级地址输入、升级类型选择、进度显示和升级日志显示。
 - `ui/upgrade_tab.py` 负责呈现固件版本、编译时间、模块和校验结果。
 - `ui/upgrade_tab.py` 负责根据串口连接状态切换可操作控件，并展示升级阶段、错误码与详细结果。
+- `ui/upgrade_tab.py` 负责显示 `LLC -> PFC Forward Progress` 面板，用于展示 `0x01 / 0x0D` 返回的二级转发进度。
+
+### 黑匣子页
+
+- `ui/black_box_tab.py` 定义黑匣子页布局。
+- `ui/black_box_tab.py` 负责 `start_offset` 与 `read_length` 的范围输入、查询发送和完成状态显示。
+- `ui/black_box_tab.py` 负责把表头字符串和数据行字符串解析成接近 Excel 的表格展示。
+- `ui/black_box_tab.py` 固定显示 `No.` 与 `Time` 列，并根据设备上传的表头动态扩展其余参数列。
+- `ui/black_box_tab.py` 会把记录首列中的 Unix 时间自动转换为 UTC 时间字符串，并以居中方式显示表格中的数值列。
+- `ui/black_box_tab.py` 支持将当前表格结果导出为 `.csv`。
+
+### 工厂模式页
+
+- `ui/factory_mode_tab.py` 定义工厂模式页布局。
+- `ui/factory_mode_tab.py` 负责设备地址输入、设备时间读取、当前 PC UTC 时间下发和时区输入。
+- `ui/factory_mode_tab.py` 负责将设备返回的 `UTC Unix time + timezone_half_hour` 自动转换为带时区的字符串显示，例如 `YYYY-MM-DD HH:MM:SS UTC+8`。
+- `ui/factory_mode_tab.py` 额外提供校准区，支持单独输入校准目的地址、读取当前 `gain / bias`、下发新校准值以及请求保存到 Flash。
+- `ui/factory_mode_tab.py` 使用自然语言下拉框展示校准项，而不是让用户直接输入 `CALI_ID_E` 数字。
 
 ### 日志页组件
 
@@ -582,7 +738,9 @@ typedef struct
 - 主页页负责汇总协议解析后的设备状态、告警与故障信息，并提供逆变配置操作入口。
 - 参数页负责发起参数列表读取、单参数读取、参数写入和波形勾选；参数结果进入 `ParameterEntry` 映射和参数表格。
 - 参数页输出的波形勾选结果进入 `WaveformTab`，波形页负责绘制和管理参数曲线，并支持保存、导入和交互分析。
-- 固件文件解析与升级载荷构造由 `firmware_update.py` 提供，升级界面和升级状态流转由 `ui/app.py` 与 `UpgradeTab` 共同组织。
+- 固件文件解析与升级载荷构造由 `firmware_update.py` 提供，升级界面和升级状态流转由 `ui/app.py` 与 `UpgradeTab` 共同组织；当目标为 `PFC` 固件时，升级流程还会切换到 LLC 二级转发进度轮询。
+- 黑匣子协议打包与解析由 `black_box_protocol.py` 提供，黑匣子页查询、表格展示与 CSV 导出由 `ui/app.py` 与 `BlackBoxTab` 共同组织。
+- 工厂模式时间协议与校准协议打包、解析与枚举名称映射由 `factory_mode.py` 提供，工厂模式页中的时间读取、UTC 时间下发、时区化显示以及校准读写保存由 `ui/app.py` 与 `FactoryModeTab` 共同组织。
 - `debug_logger.py` 负责把运行日志写入 `logs/app_debug.log`，同时把日志分发给订阅组件使用。
 - `app_paths.py` 负责统一数据目录定位和旧数据迁移，使安装版覆盖升级后保留配置、导出文件和日志。
 - 构建发布层负责将应用包转换为目录版可执行程序和 Windows 安装包。
