@@ -1,5 +1,7 @@
 # FRAME
 
+Current release: `v1.2.1`
+
 一个面向 Windows 的串口调试上位机项目，使用 `Python + tkinter + pyserial` 开发。
 
 ## 关于这个项目
@@ -29,9 +31,13 @@
 - 接收内容清空与保存
 - 原始接收字节流持续保存到文件
 - 快捷发送配置
+- 主页状态显示与配置
 - 参数读写
 - 参数波形显示、导入导出与交互查看
 - 固件升级
+- 设备固件版本查询
+- Black Box 范围查询与 CSV 导出
+- Factory Mode 时间设置与校准
 
 ## 适用环境
 
@@ -283,7 +289,7 @@ build_frame_installer.bat
 构建完成后安装包位于：
 
 ```text
-dist/installer/FRAME-Setup-<version>.exe
+dist/installer/FRAME-Setup-1.2.1.exe
 ```
 
 ## 文档
