@@ -29,7 +29,7 @@ if not defined APP_VERSION (
 > "%BRAND_FILE%" (
     echo app_name=DR_SSIP_Monitor
     echo app_version=%APP_VERSION%
-    echo hidden_tabs=monitor,parameter,wave
+    echo hidden_tabs=monitor,parameter,wave,scope
 )
 if errorlevel 1 (
     echo [ERROR] Failed to create brand marker file: "%BRAND_FILE%"

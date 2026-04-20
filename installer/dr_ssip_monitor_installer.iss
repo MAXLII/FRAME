@@ -3,7 +3,7 @@
 #define MyAppName "DR_SSIP_Monitor"
 #define MyAppExeName "frame.exe"
 #ifndef MyAppVersion
-#define MyAppVersion "1.2.2"
+#define MyAppVersion "1.3.0"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "LWX"
