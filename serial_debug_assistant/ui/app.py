@@ -87,7 +87,16 @@ from serial_debug_assistant.firmware_update import (
     parse_llc_pfc_upgrade_progress_ack,
 )
 from serial_debug_assistant.i18n import I18nManager
-from serial_debug_assistant.models import FirmwareImage, FirmwareUpdateSession, ParameterEntry, ProtocolFrame
+from serial_debug_assistant.models import (
+    FirmwareImage,
+    FirmwareUpdateSession,
+    ParameterEntry,
+    ProtocolFrame,
+    ScopeCapture,
+    ScopeInfo,
+    ScopeListItem,
+    ScopePullSession,
+)
 from serial_debug_assistant.protocol import (
     FrameParser,
     build_frame,
@@ -95,12 +104,39 @@ from serial_debug_assistant.protocol import (
     u32_to_value,
     value_to_u32,
 )
+from serial_debug_assistant.scope_protocol import (
+    CMD_SET_SCOPE,
+    CMD_WORD_SCOPE_INFO_QUERY,
+    CMD_WORD_SCOPE_LIST_QUERY,
+    CMD_WORD_SCOPE_RESET,
+    CMD_WORD_SCOPE_SAMPLE_QUERY,
+    CMD_WORD_SCOPE_START,
+    CMD_WORD_SCOPE_STOP,
+    CMD_WORD_SCOPE_TRIGGER,
+    CMD_WORD_SCOPE_VAR_QUERY,
+    SCOPE_READ_MODE_FORCE,
+    SCOPE_READ_MODE_NORMAL,
+    SCOPE_TOOL_STATUS_OK,
+    build_scope_sample_query_payload,
+    build_scope_info_query_payload,
+    build_scope_list_query_payload,
+    build_scope_simple_command_payload,
+    build_scope_var_query_payload,
+    describe_scope_state,
+    describe_scope_status,
+    parse_scope_control_ack_payload,
+    parse_scope_info_ack_payload,
+    parse_scope_list_item_payload,
+    parse_scope_sample_ack_payload,
+    parse_scope_var_ack_payload,
+)
 from serial_debug_assistant.services.serial_service import SerialService
 from serial_debug_assistant.ui.black_box_tab import BlackBoxTab
 from serial_debug_assistant.ui.factory_mode_tab import FactoryModeTab
 from serial_debug_assistant.ui.home_tab import HomeTab
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
+from serial_debug_assistant.ui.scope_tab import ScopeTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
 
@@ -142,6 +178,10 @@ MAX_RX_CHUNKS_PER_POLL = 200
 MAX_RX_BYTES_PER_POLL = 262_144
 SAVE_FLUSH_INTERVAL_SECONDS = 0.4
 HOME_REFRESH_INTERVAL_MS = 120
+SCOPE_PULL_INTERVAL_MS = 50
+SCOPE_PULL_TIMEOUT_SECONDS = 1.5
+SCOPE_PULL_MAX_RETRIES = 3
+SCOPE_PULL_PREPARE_DELAY_MS = 120
 
 
 class SerialDebugAssistant(tk.Tk):
@@ -194,6 +234,15 @@ class SerialDebugAssistant(tk.Tk):
         self.black_box_stream_active = False
         self.black_box_row_log_count = 0
         self.black_box_header_log_count = 0
+        self.scope_items: list[ScopeListItem] = []
+        self.scope_info_by_id: dict[int, ScopeInfo] = {}
+        self.scope_var_names_by_id: dict[int, list[str]] = {}
+        self.scope_pending_list_items: list[ScopeListItem] = []
+        self.scope_pending_var_names: dict[int, dict[int, str]] = {}
+        self.scope_captures: list[ScopeCapture] = []
+        self.scope_pull_session: ScopePullSession | None = None
+        self.scope_pull_job: str | None = None
+        self.scope_next_capture_index = 1
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD_RATE)
@@ -435,6 +484,21 @@ class SerialDebugAssistant(tk.Tk):
             on_save_cali=self.send_factory_cali_save,
             i18n=self.i18n,
         )
+        self.scope_tab = ScopeTab(
+            self.notebook,
+            on_refresh_scopes=self.request_scope_list,
+            on_refresh_info=self.request_scope_info,
+            on_refresh_vars=self.request_scope_var_names,
+            on_start=self.send_scope_start,
+            on_trigger=self.send_scope_trigger,
+            on_stop=self.send_scope_stop,
+            on_reset=self.send_scope_reset,
+            on_pull=self.start_scope_pull_normal,
+            on_force_pull=self.start_scope_pull_force,
+            on_clear_captures=self.clear_scope_captures,
+            export_dir=self.paths.exports_dir,
+            i18n=self.i18n,
+        )
 
         self._add_notebook_tab("home", self.home_tab, "主页")
         self._add_notebook_tab("monitor", monitor_page, "串口调试")
@@ -443,6 +507,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("upgrade", self.upgrade_tab, "固件升级")
         self._add_notebook_tab("black_box", self.black_box_tab, "Black Box")
         self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
+        self._add_notebook_tab("scope", self.scope_tab, "Scope")
         self.notebook.select(self.home_tab)
 
         footer = ttk.Frame(root, style="App.TFrame")
@@ -597,6 +662,7 @@ class SerialDebugAssistant(tk.Tk):
         self.upgrade_tab.refresh_texts()
         self.black_box_tab.refresh_texts()
         self.factory_mode_tab.refresh_texts()
+        self.scope_tab.refresh_texts()
         self._update_counter_labels()
         self._on_parameter_message_changed()
         self.set_status(self.status_var.get(), error=self.status_label.cget("style") == "ErrorStatus.TLabel")
@@ -1141,6 +1207,8 @@ class SerialDebugAssistant(tk.Tk):
             return
         if self._handle_black_box_protocol_frame(frame):
             return
+        if self._handle_scope_protocol_frame(frame):
+            return
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
             self.parameters.clear()
@@ -1346,6 +1414,120 @@ class SerialDebugAssistant(tk.Tk):
                 "complete "
                 f"start=0x{int(summary['start_offset']):06X} end=0x{int(summary['end_offset']):06X} "
                 f"scanned={summary['scanned_bytes']} rows={summary['row_count']} has_more={summary['has_more']}",
+            )
+            return True
+
+        return False
+
+    def _handle_scope_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_set != CMD_SET_SCOPE:
+            return False
+
+        if frame.cmd_word == CMD_WORD_SCOPE_LIST_QUERY and frame.is_ack == 0:
+            item = parse_scope_list_item_payload(frame.payload)
+            list_item = ScopeListItem(scope_id=int(item["scope_id"]), name=str(item["name"]))
+            self.scope_pending_list_items.append(list_item)
+            if int(item["is_last"]) == 1:
+                self.scope_items = list(self.scope_pending_list_items)
+                self.scope_pending_list_items = []
+                self.scope_tab.set_scope_items(self.scope_items)
+                self.scope_tab.set_status("Scope list loaded", self.i18n.format_text("Loaded {count} scope object(s).", count=len(self.scope_items)))
+            self.logger.log("SCOPE", f"list item id={list_item.scope_id} name={list_item.name!r} last={int(item['is_last'])}")
+            return True
+
+        if frame.cmd_word == CMD_WORD_SCOPE_INFO_QUERY and frame.is_ack == 1:
+            info_data = parse_scope_info_ack_payload(frame.payload)
+            info = ScopeInfo(
+                scope_id=int(info_data["scope_id"]),
+                status=int(info_data["status"]),
+                state=int(info_data["state"]),
+                data_ready=bool(info_data["data_ready"]),
+                var_count=int(info_data["var_count"]),
+                sample_count=int(info_data["sample_count"]),
+                write_index=int(info_data["write_index"]),
+                trigger_index=int(info_data["trigger_index"]),
+                trigger_post_cnt=int(info_data["trigger_post_cnt"]),
+                trigger_display_index=int(info_data["trigger_display_index"]),
+                sample_period_us=int(info_data["sample_period_us"]),
+                capture_tag=int(info_data["capture_tag"]),
+            )
+            self.scope_info_by_id[info.scope_id] = info
+            self.scope_tab.set_scope_info(info)
+            self.scope_tab.set_status(
+                describe_scope_status(info.status),
+                self.i18n.format_text(
+                    "State: {state}, data ready: {ready}, samples: {samples}, capture tag: {tag}",
+                    state=describe_scope_state(info.state),
+                    ready=self.i18n.translate_text("Yes" if info.data_ready else "No"),
+                    samples=info.sample_count,
+                    tag=info.capture_tag,
+                ),
+            )
+            self.logger.log(
+                "SCOPE",
+                f"info id={info.scope_id} status={info.status} state={info.state} "
+                f"vars={info.var_count} samples={info.sample_count} tag={info.capture_tag}",
+            )
+            return True
+
+        if frame.cmd_word == CMD_WORD_SCOPE_VAR_QUERY and frame.is_ack == 1:
+            var_data = parse_scope_var_ack_payload(frame.payload)
+            scope_id = int(var_data["scope_id"])
+            status = int(var_data["status"])
+            if status == SCOPE_TOOL_STATUS_OK:
+                pending = self.scope_pending_var_names.setdefault(scope_id, {})
+                pending[int(var_data["var_index"])] = str(var_data["name"])
+                if int(var_data["is_last"]) == 1:
+                    var_names = [name for _, name in sorted(pending.items(), key=lambda item: item[0])]
+                    self.scope_var_names_by_id[scope_id] = var_names
+                    self.scope_tab.set_scope_var_names(var_names)
+                    self.scope_tab.set_status("Scope variables loaded", self.i18n.format_text("Loaded {count} variable name(s).", count=len(var_names)))
+                    self.scope_pending_var_names.pop(scope_id, None)
+            else:
+                self.scope_tab.set_status("Scope variable query failed", describe_scope_status(status))
+            self.logger.log(
+                "SCOPE",
+                f"var id={scope_id} status={status} index={int(var_data['var_index'])} "
+                f"name={str(var_data['name'])!r} last={int(var_data['is_last'])}",
+            )
+            return True
+
+        if frame.cmd_word in {CMD_WORD_SCOPE_START, CMD_WORD_SCOPE_TRIGGER, CMD_WORD_SCOPE_STOP, CMD_WORD_SCOPE_RESET} and frame.is_ack == 1:
+            ack = parse_scope_control_ack_payload(frame.payload)
+            scope_id = int(ack["scope_id"])
+            status = int(ack["status"])
+            action_map = {
+                CMD_WORD_SCOPE_START: "Start",
+                CMD_WORD_SCOPE_TRIGGER: "Trigger",
+                CMD_WORD_SCOPE_STOP: "Stop",
+                CMD_WORD_SCOPE_RESET: "Reset",
+            }
+            action_name = action_map.get(frame.cmd_word, "Scope")
+            self.scope_tab.set_status(
+                self.i18n.format_text("{action} ACK", action=action_name),
+                self.i18n.format_text(
+                    "Status: {status}, state: {state}, capture tag: {tag}",
+                    status=describe_scope_status(status),
+                    state=describe_scope_state(int(ack["state"])),
+                    tag=int(ack["capture_tag"]),
+                ),
+            )
+            self.logger.log(
+                "SCOPE",
+                f"{action_name.lower()} ack id={scope_id} status={status} "
+                f"state={int(ack['state'])} tag={int(ack['capture_tag'])}",
+            )
+            if status == SCOPE_TOOL_STATUS_OK:
+                self.request_scope_info()
+            return True
+
+        if frame.cmd_word == CMD_WORD_SCOPE_SAMPLE_QUERY and frame.is_ack == 1:
+            sample = parse_scope_sample_ack_payload(frame.payload)
+            self._handle_scope_sample_ack(sample)
+            self.logger.log(
+                "SCOPE",
+                f"sample ack id={int(sample['scope_id'])} status={int(sample['status'])} "
+                f"index={int(sample['sample_index'])} values={len(sample['values'])}",
             )
             return True
 
@@ -1883,6 +2065,349 @@ class SerialDebugAssistant(tk.Tk):
             cmd_word=CMD_WORD_BLACK_BOX_RANGE_QUERY,
             payload=payload,
         )
+
+    def request_scope_list(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.scope_tab.set_status("Cannot refresh scope list", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.scope_tab.get_target_address()
+        except ValueError:
+            self.set_status("Module and dynamic addresses must be integers.", error=True)
+            self.scope_tab.set_status("Invalid scope target", "Target and dynamic addresses must be valid integers.")
+            return
+
+        self.scope_pending_list_items = []
+        self.scope_items = []
+        self.scope_tab.set_scope_items([])
+        self.scope_tab.set_status("Refreshing scope list", "Waiting for scope objects from the device.")
+        self.logger.log("SCOPE", f"send list query dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SCOPE,
+            cmd_word=CMD_WORD_SCOPE_LIST_QUERY,
+            payload=build_scope_list_query_payload(),
+        )
+
+    def request_scope_info(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.scope_tab.set_status("Cannot refresh scope info", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.scope_tab.get_target_address()
+            scope_id = self.scope_tab.get_selected_scope_id()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.scope_tab.set_status("Scope selection is invalid", str(exc))
+            return
+
+        self.scope_tab.set_status("Refreshing scope info", self.i18n.format_text("Reading metadata for scope ID {scope_id}.", scope_id=scope_id))
+        self.logger.log("SCOPE", f"send info query scope_id={scope_id} dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SCOPE,
+            cmd_word=CMD_WORD_SCOPE_INFO_QUERY,
+            payload=build_scope_info_query_payload(scope_id),
+        )
+
+    def request_scope_var_names(self) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.scope_tab.set_status("Cannot read scope variables", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.scope_tab.get_target_address()
+            scope_id = self.scope_tab.get_selected_scope_id()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.scope_tab.set_status("Scope selection is invalid", str(exc))
+            return
+
+        info = self.scope_info_by_id.get(scope_id)
+        if info is None or info.var_count <= 0:
+            self.scope_tab.set_status("Scope info is required", "Refresh scope info before reading variable names.")
+            return
+
+        self.scope_pending_var_names[scope_id] = {}
+        self.scope_tab.set_scope_var_names([])
+        self.scope_tab.set_status("Reading scope variables", self.i18n.format_text("Reading {count} variable name(s).", count=info.var_count))
+        for var_index in range(info.var_count):
+            self.logger.log("SCOPE", f"send var query scope_id={scope_id} var_index={var_index}")
+            self.send_protocol_frame(
+                dst=dst,
+                d_dst=d_dst,
+                cmd_set=CMD_SET_SCOPE,
+                cmd_word=CMD_WORD_SCOPE_VAR_QUERY,
+                payload=build_scope_var_query_payload(scope_id, var_index),
+            )
+
+    def send_scope_start(self) -> None:
+        self._send_scope_simple_command(CMD_WORD_SCOPE_START, "Scope start command sent")
+
+    def send_scope_trigger(self) -> None:
+        self._send_scope_simple_command(CMD_WORD_SCOPE_TRIGGER, "Scope trigger command sent")
+
+    def send_scope_stop(self) -> None:
+        self._send_scope_simple_command(CMD_WORD_SCOPE_STOP, "Scope stop command sent")
+
+    def send_scope_reset(self) -> None:
+        self._send_scope_simple_command(CMD_WORD_SCOPE_RESET, "Scope reset command sent")
+
+    def start_scope_pull_normal(self) -> None:
+        self._start_scope_pull(SCOPE_READ_MODE_NORMAL)
+
+    def start_scope_pull_force(self) -> None:
+        self._start_scope_pull(SCOPE_READ_MODE_FORCE)
+
+    def clear_scope_captures(self) -> None:
+        self.scope_captures.clear()
+        self.scope_tab.clear_captures()
+
+    def _start_scope_pull(self, read_mode: int) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.scope_tab.fail_pull("Connect the serial port first.")
+            return
+        if self.scope_pull_session is not None:
+            self.scope_tab.fail_pull("A scope pull is already running.")
+            return
+        try:
+            scope_id = self.scope_tab.get_selected_scope_id()
+            scope_name = self.scope_tab.scope_var.get().strip()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.scope_tab.fail_pull(str(exc))
+            return
+
+        info = self.scope_info_by_id.get(scope_id)
+        if info is None:
+            self.scope_tab.fail_pull("Refresh scope info before pulling a capture.")
+            return
+
+        var_names = self.scope_var_names_by_id.get(scope_id)
+        if not var_names or len(var_names) != info.var_count:
+            self.scope_tab.fail_pull("Read scope variables before pulling a capture.")
+            return
+
+        if read_mode == SCOPE_READ_MODE_NORMAL:
+            if info.state != 0:
+                self.scope_tab.fail_pull("Scope is running. Normal pull is not allowed.")
+                return
+            if not info.data_ready:
+                self.scope_tab.fail_pull("No completed scope capture is ready yet.")
+                return
+
+        session = ScopePullSession(
+            scope_id=scope_id,
+            scope_name=scope_name,
+            read_mode=read_mode,
+            expected_capture_tag=info.capture_tag,
+            sample_count=info.sample_count,
+            samples=[],
+            timeout_seconds=SCOPE_PULL_TIMEOUT_SECONDS,
+            max_retries=SCOPE_PULL_MAX_RETRIES,
+        )
+        self.scope_pull_session = session
+        mode_name = self.i18n.translate_text("Force Pull" if read_mode == SCOPE_READ_MODE_FORCE else "Pull Capture")
+        self.scope_tab.start_pull(scope_name, info.sample_count, mode_name)
+        self._prepare_scope_pull_link()
+        self.after(SCOPE_PULL_PREPARE_DELAY_MS, self._schedule_scope_pull_tick)
+
+    def _send_scope_simple_command(self, cmd_word: int, status_text: str) -> None:
+        if not self.serial_service.is_open():
+            self.set_status("Open the serial port first.", error=True)
+            self.scope_tab.set_status("Cannot send scope command", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.scope_tab.get_target_address()
+            scope_id = self.scope_tab.get_selected_scope_id()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.scope_tab.set_status("Scope selection is invalid", str(exc))
+            return
+
+        self.scope_tab.set_status(status_text, self.i18n.format_text("Scope ID {scope_id}", scope_id=scope_id))
+        self.logger.log("SCOPE", f"send cmd_word=0x{cmd_word:02X} scope_id={scope_id} dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SCOPE,
+            cmd_word=cmd_word,
+            payload=build_scope_simple_command_payload(scope_id),
+        )
+
+    def _schedule_scope_pull_tick(self) -> None:
+        if self.scope_pull_job is not None:
+            return
+        self.scope_pull_job = self.after(SCOPE_PULL_INTERVAL_MS, self._scope_pull_tick)
+
+    def _scope_pull_tick(self) -> None:
+        self.scope_pull_job = None
+        session = self.scope_pull_session
+        if session is None or session.completed or session.failed:
+            return
+        if session.waiting_ack:
+            if session.last_request_at > 0.0 and (time.monotonic() - session.last_request_at) >= session.timeout_seconds:
+                if session.retry_count < session.max_retries:
+                    session.retry_count += 1
+                    session.waiting_ack = False
+                    session.last_request_at = 0.0
+                    self.logger.log(
+                        "SCOPE",
+                        f"pull retry scope_id={session.scope_id} mode={session.read_mode} "
+                        f"index={session.next_sample_index} retry={session.retry_count}/{session.max_retries}",
+                    )
+                    self._schedule_scope_pull_tick()
+                    return
+
+                session.failed = True
+                session.fail_reason = "Scope pull timed out while waiting for sample {index}."
+                self.scope_tab.fail_pull(
+                    self.i18n.format_text(
+                        "Scope pull timed out while waiting for sample {index}.",
+                        index=session.next_sample_index,
+                    )
+                )
+                self.logger.log(
+                    "SCOPE",
+                    f"pull timeout scope_id={session.scope_id} mode={session.read_mode} "
+                    f"index={session.next_sample_index} waited={time.monotonic() - session.last_request_at:.3f}s "
+                    f"retries={session.retry_count}",
+                )
+                self.scope_pull_session = None
+                return
+            self._schedule_scope_pull_tick()
+            return
+        try:
+            dst, d_dst = self.scope_tab.get_target_address()
+        except ValueError as exc:
+            self.scope_tab.fail_pull(str(exc))
+            self.scope_pull_session = None
+            return
+
+        payload = build_scope_sample_query_payload(
+            session.scope_id,
+            session.read_mode,
+            session.next_sample_index,
+            session.expected_capture_tag,
+        )
+        session.waiting_ack = True
+        session.last_request_at = time.monotonic()
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SCOPE,
+            cmd_word=CMD_WORD_SCOPE_SAMPLE_QUERY,
+            payload=payload,
+        )
+        self.logger.log(
+            "SCOPE",
+            f"send sample query scope_id={session.scope_id} mode={session.read_mode} "
+            f"index={session.next_sample_index} tag={session.expected_capture_tag} retry={session.retry_count}",
+        )
+        self._schedule_scope_pull_tick()
+
+    def _handle_scope_sample_ack(self, sample: dict[str, object]) -> None:
+        session = self.scope_pull_session
+        if session is None:
+            self.scope_tab.set_pull_status(
+                self.i18n.format_text(
+                    "Last sample ACK: index {index}, status {status}, values {count}",
+                    index=int(sample["sample_index"]),
+                    status=describe_scope_status(int(sample["status"])),
+                    count=len(sample["values"]),
+                )
+            )
+            return
+
+        received_index = int(sample["sample_index"])
+        if received_index != session.next_sample_index:
+            if received_index < session.next_sample_index:
+                self.logger.log(
+                    "SCOPE",
+                    f"ignore stale sample ack scope_id={session.scope_id} "
+                    f"expected={session.next_sample_index} got={received_index}",
+                )
+                return
+            session.failed = True
+            session.fail_reason = "Unexpected sample index"
+            self.scope_tab.fail_pull(
+                self.i18n.format_text(
+                    "Scope pull failed at sample {index}: {status}",
+                    index=received_index,
+                    status=session.fail_reason,
+                )
+            )
+            self.logger.log(
+                "SCOPE",
+                f"unexpected sample ack scope_id={session.scope_id} "
+                f"expected={session.next_sample_index} got={received_index}",
+            )
+            self.scope_pull_session = None
+            return
+
+        session.waiting_ack = False
+        session.last_request_at = 0.0
+        session.retry_count = 0
+        status = int(sample["status"])
+        if status != SCOPE_TOOL_STATUS_OK:
+            session.failed = True
+            session.fail_reason = describe_scope_status(status)
+            self.scope_tab.fail_pull(
+                self.i18n.format_text(
+                    "Scope pull failed at sample {index}: {status}",
+                    index=int(sample["sample_index"]),
+                    status=session.fail_reason,
+                )
+            )
+            self.scope_pull_session = None
+            return
+
+        values = [float(value) for value in sample["values"]]
+        if session.samples is None:
+            session.samples = []
+        session.samples.append(values)
+        session.next_sample_index += 1
+        mode_name = self.i18n.translate_text("Force Pull" if session.read_mode == SCOPE_READ_MODE_FORCE else "Pull Capture")
+        self.scope_tab.update_pull_progress(session.next_sample_index, session.sample_count, session.scope_name, mode_name)
+
+        is_last_sample = int(sample["is_last_sample"]) == 1 or session.next_sample_index >= session.sample_count
+        if not is_last_sample:
+            self._schedule_scope_pull_tick()
+            return
+
+        info = self.scope_info_by_id.get(session.scope_id)
+        var_names = self.scope_var_names_by_id.get(session.scope_id, [])
+        capture = ScopeCapture(
+            scope_id=session.scope_id,
+            scope_name=session.scope_name,
+            capture_tag=int(sample["capture_tag"]),
+            read_mode=session.read_mode,
+            sample_period_us=info.sample_period_us if info is not None else 0,
+            sample_count=session.sample_count,
+            trigger_display_index=info.trigger_display_index if info is not None else 0,
+            var_names=list(var_names),
+            samples=list(session.samples or []),
+            capture_index=self.scope_next_capture_index,
+            capture_changed_during_pull=int(sample["capture_tag"]) != session.expected_capture_tag,
+        )
+        self.scope_next_capture_index += 1
+        self.scope_captures.append(capture)
+        self.scope_tab.finish_pull(capture)
+        self.scope_pull_session = None
+
+    def _prepare_scope_pull_link(self) -> None:
+        if not self.serial_service.is_open():
+            return
+        if self.wave_running:
+            self.wave_running = False
+            self.wave_tab.set_running(False)
+        self.logger.log("SCOPE", "send broadcast stop waveform upload before scope pull")
+        self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
 
     def request_factory_time_read(self) -> None:
         if not self.serial_service.is_open():
@@ -2479,6 +3004,9 @@ class SerialDebugAssistant(tk.Tk):
     def on_close(self) -> None:
         self.logger.log("APP", "shutdown")
         self.cancel_auto_send()
+        if self.scope_pull_job:
+            self.after_cancel(self.scope_pull_job)
+            self.scope_pull_job = None
         self.stop_upgrade("Application closing, upgrade stopped.", user_initiated=False)
         saved_path = self.wave_tab.auto_save_waveform_file(reason="application close")
         if saved_path is not None:

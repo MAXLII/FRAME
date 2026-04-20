@@ -10,6 +10,62 @@ class SerialChunk:
 
 
 @dataclass(slots=True)
+class ScopeListItem:
+    scope_id: int
+    name: str
+
+
+@dataclass(slots=True)
+class ScopeInfo:
+    scope_id: int
+    status: int
+    state: int
+    data_ready: bool
+    var_count: int
+    sample_count: int
+    write_index: int
+    trigger_index: int
+    trigger_post_cnt: int
+    trigger_display_index: int
+    sample_period_us: int
+    capture_tag: int
+
+
+@dataclass(slots=True)
+class ScopeCapture:
+    scope_id: int
+    scope_name: str
+    capture_tag: int
+    read_mode: int
+    sample_period_us: int
+    sample_count: int
+    trigger_display_index: int
+    var_names: list[str]
+    samples: list[list[float]]
+    capture_index: int
+    capture_changed_during_pull: bool = False
+
+
+@dataclass(slots=True)
+class ScopePullSession:
+    scope_id: int
+    scope_name: str
+    read_mode: int
+    expected_capture_tag: int
+    sample_count: int
+    next_sample_index: int = 0
+    waiting_ack: bool = False
+    completed: bool = False
+    failed: bool = False
+    fail_reason: str = ""
+    samples: list[list[float]] | None = None
+    last_request_at: float = 0.0
+    timeout_seconds: float = 1.5
+    retry_count: int = 0
+    max_retries: int = 3
+
+
+@dataclass(slots=True)
 class ProtocolFrame:
     sop: int
     version: int
