@@ -191,6 +191,9 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_home_warning_log: str | None = None
         self.factory_time_snapshot: dict[str, int] | None = None
         self.factory_cali_snapshot: dict[str, float | int] | None = None
+        self.black_box_stream_active = False
+        self.black_box_row_log_count = 0
+        self.black_box_header_log_count = 0
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD_RATE)
@@ -1036,9 +1039,10 @@ class SerialDebugAssistant(tk.Tk):
                 self.total_rx_bytes += len(chunk.data)
                 processed_bytes += len(chunk.data)
                 processed_chunks += 1
-                if not self.wave_running:
+                if not self.wave_running and not self.black_box_stream_active:
                     self.logger.log("RX", chunk.data.hex(" ").upper())
-                receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
+                if not self.black_box_stream_active:
+                    receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
                 try:
                     frames = self.frame_parser.feed(chunk.data)
                 except Exception as exc:
@@ -1265,6 +1269,7 @@ class SerialDebugAssistant(tk.Tk):
 
         if frame.cmd_word == CMD_WORD_BLACK_BOX_RANGE_QUERY and frame.is_ack == 1:
             ack = parse_black_box_range_query_ack(frame.payload)
+            self.black_box_stream_active = int(ack["accepted"]) == 1
             self.black_box_tab.set_query_ack(
                 accepted=int(ack["accepted"]),
                 start_offset=int(ack["start_offset"]),
@@ -1290,7 +1295,12 @@ class SerialDebugAssistant(tk.Tk):
                     name=str(header["name"]),
                     is_last=int(header["is_last"]),
                 )
-                self.logger.log("BLACKBOX", f"header col={int(header['column_index'])} name={str(header['name'])!r} last={int(header['is_last'])}")
+                self.black_box_header_log_count += 1
+                if self.black_box_header_log_count <= 8 or int(header["is_last"]) == 1:
+                    self.logger.log(
+                        "BLACKBOX",
+                        f"header col={int(header['column_index'])} name={str(header['name'])!r} last={int(header['is_last'])}",
+                    )
             return True
 
         if frame.cmd_word == CMD_WORD_BLACK_BOX_ROW and frame.is_ack == 0:
@@ -1312,15 +1322,18 @@ class SerialDebugAssistant(tk.Tk):
                     value=row["value"],
                     is_row_end=int(row["is_row_end"]),
                 )
-                self.logger.log(
-                    "BLACKBOX",
-                    f"row offset=0x{int(row['record_offset']):06X} col={int(row['column_index'])} "
-                    f"type={int(row['type'])} data=0x{int(row['data_u32']):08X} end={int(row['is_row_end'])}",
-                )
+                self.black_box_row_log_count += 1
+                if self.black_box_row_log_count <= 16 or int(row["is_row_end"]) == 1:
+                    self.logger.log(
+                        "BLACKBOX",
+                        f"row offset=0x{int(row['record_offset']):06X} col={int(row['column_index'])} "
+                        f"type={int(row['type'])} data=0x{int(row['data_u32']):08X} end={int(row['is_row_end'])}",
+                    )
             return True
 
         if frame.cmd_word == CMD_WORD_BLACK_BOX_COMPLETE and frame.is_ack == 0:
             summary = parse_black_box_complete_payload(frame.payload)
+            self.black_box_stream_active = False
             self.black_box_tab.finish_query(
                 start_offset=int(summary["start_offset"]),
                 end_offset=int(summary["end_offset"]),
@@ -1854,6 +1867,9 @@ class SerialDebugAssistant(tk.Tk):
             self.black_box_tab.set_status("Invalid black box query", "Start offset must be >= 0 and read length must be > 0.")
             return
 
+        self.black_box_stream_active = False
+        self.black_box_row_log_count = 0
+        self.black_box_header_log_count = 0
         self.black_box_tab.begin_query(start_offset=start_offset, read_length=read_length)
         payload = build_black_box_range_query_payload(start_offset, read_length)
         self.logger.log(

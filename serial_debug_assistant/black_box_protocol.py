@@ -44,6 +44,18 @@ def parse_black_box_range_query_ack(payload: bytes) -> dict[str, int]:
 
 
 def parse_black_box_header_payload(payload: bytes) -> dict[str, int | str]:
+    if len(payload) >= 4:
+        column_index = int.from_bytes(payload[:2], "little")
+        is_last = payload[2]
+        name_length = payload[3]
+        if len(payload) == 4 + name_length:
+            raw_name = payload[4 : 4 + name_length]
+            return {
+                "format": "binary_item",
+                "column_index": column_index,
+                "is_last": is_last,
+                "name": raw_name.decode("utf-8", errors="replace"),
+            }
     if len(payload) >= 2:
         declared_length = int.from_bytes(payload[:2], "little")
         if 0 < declared_length <= len(payload) - 2:
@@ -58,19 +70,27 @@ def parse_black_box_header_payload(payload: bytes) -> dict[str, int | str]:
             "is_last": 1,
             "name": "",
         }
-    column_index = int.from_bytes(payload[:2], "little")
-    is_last = payload[2]
-    name_length = payload[3]
-    raw_name = payload[4 : 4 + name_length]
     return {
         "format": "binary_item",
-        "column_index": column_index,
-        "is_last": is_last,
-        "name": raw_name.decode("utf-8", errors="replace"),
+        "column_index": int.from_bytes(payload[:2], "little"),
+        "is_last": payload[2],
+        "name": payload[4 : 4 + payload[3]].decode("utf-8", errors="replace"),
     }
 
 
 def parse_black_box_row_payload(payload: bytes) -> dict[str, int | float | str]:
+    binary_size = struct.calcsize("<IHBIB")
+    if len(payload) == binary_size:
+        record_offset, column_index, value_type, data_u32, is_row_end = struct.unpack("<IHBIB", payload)
+        return {
+            "format": "binary_item",
+            "record_offset": record_offset,
+            "column_index": column_index,
+            "type": value_type,
+            "data_u32": data_u32,
+            "value": decode_black_box_value(value_type, data_u32),
+            "is_row_end": is_row_end,
+        }
     if len(payload) >= 6:
         record_offset = int.from_bytes(payload[:4], "little")
         declared_length = int.from_bytes(payload[4:6], "little")
@@ -80,7 +100,7 @@ def parse_black_box_row_payload(payload: bytes) -> dict[str, int | float | str]:
                 "record_offset": record_offset,
                 "row_text": payload[6 : 6 + declared_length].decode("utf-8", errors="replace"),
             }
-    if len(payload) < struct.calcsize("<IHBIB"):
+    if len(payload) < binary_size:
         return {
             "format": "binary_item",
             "record_offset": 0,
@@ -90,7 +110,7 @@ def parse_black_box_row_payload(payload: bytes) -> dict[str, int | float | str]:
             "value": "",
             "is_row_end": 1,
         }
-    record_offset, column_index, value_type, data_u32, is_row_end = struct.unpack("<IHBIB", payload[: struct.calcsize("<IHBIB")])
+    record_offset, column_index, value_type, data_u32, is_row_end = struct.unpack("<IHBIB", payload[:binary_size])
     return {
         "format": "binary_item",
         "record_offset": record_offset,
