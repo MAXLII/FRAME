@@ -1,16 +1,16 @@
-; Inno Setup script for packaging the FRAME application.
+; Inno Setup script for packaging the FRAME application as a DR_SSIP_Monitor lite installer.
 
-#define MyAppName "FRAME"
+#define MyAppName "DR_SSIP_Monitor"
 #define MyAppExeName "frame.exe"
 #ifndef MyAppVersion
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "2.2.1"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "LWX"
 #endif
 
 [Setup]
-AppId={{6E1E04A9-84D7-46FD-9379-9EFD1D5BE8E2}
+AppId={{0D30A8C6-A1FE-4857-96FA-7E4F0EB76835}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -22,7 +22,7 @@ UsePreviousGroup=yes
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 OutputDir=..\dist\installer
-OutputBaseFilename=FRAME-Setup-{#MyAppVersion}
+OutputBaseFilename=DR_SSIP_Monitor-Setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -48,6 +48,7 @@ Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "..\dist\frame\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dr_ssip_monitor_lite_brand.txt"; DestDir: "{app}"; DestName: "app_brand.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

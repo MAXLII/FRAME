@@ -46,6 +46,7 @@ from serial_debug_assistant.factory_mode import (
 
 from serial_debug_assistant.constants import (
     APP_GEOMETRY,
+    APP_HIDDEN_TABS,
     APP_MIN_HEIGHT,
     APP_MIN_WIDTH,
     APP_TITLE,
@@ -148,6 +149,8 @@ class SerialDebugAssistant(tk.Tk):
         super().__init__()
         self.i18n = I18nManager("zh")
         self._translatable_widgets: list[tuple[object, str, str]] = []
+        self.hidden_tab_ids = set(APP_HIDDEN_TABS)
+        self._visible_notebook_tabs: list[tuple[object, str]] = []
         self.title(APP_TITLE)
         self.geometry(APP_GEOMETRY)
         self.minsize(APP_MIN_WIDTH, APP_MIN_HEIGHT)
@@ -430,13 +433,13 @@ class SerialDebugAssistant(tk.Tk):
             i18n=self.i18n,
         )
 
-        self.notebook.add(self.home_tab, text=self.i18n.translate_text("主页"))
-        self.notebook.add(monitor_page, text=self.i18n.translate_text("串口调试"))
-        self.notebook.add(self.parameter_tab, text=self.i18n.translate_text("参数读写"))
-        self.notebook.add(self.wave_tab, text=self.i18n.translate_text("参数波形"))
-        self.notebook.add(self.upgrade_tab, text=self.i18n.translate_text("固件升级"))
-        self.notebook.add(self.black_box_tab, text=self.i18n.translate_text("Black Box"))
-        self.notebook.add(self.factory_mode_tab, text=self.i18n.translate_text("Factory Mode"))
+        self._add_notebook_tab("home", self.home_tab, "主页")
+        self._add_notebook_tab("monitor", monitor_page, "串口调试")
+        self._add_notebook_tab("parameter", self.parameter_tab, "参数读写")
+        self._add_notebook_tab("wave", self.wave_tab, "参数波形")
+        self._add_notebook_tab("upgrade", self.upgrade_tab, "固件升级")
+        self._add_notebook_tab("black_box", self.black_box_tab, "Black Box")
+        self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
         self.notebook.select(self.home_tab)
 
         footer = ttk.Frame(root, style="App.TFrame")
@@ -562,6 +565,12 @@ class SerialDebugAssistant(tk.Tk):
     def _build_stop_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         ttk.Combobox(parent, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
 
+    def _add_notebook_tab(self, tab_id: str, widget: object, title: str) -> None:
+        if tab_id in self.hidden_tab_ids:
+            return
+        self.notebook.add(widget, text=self.i18n.translate_text(title))
+        self._visible_notebook_tabs.append((widget, title))
+
     def _on_language_changed(self, _event=None) -> None:
         self.i18n.set_language(self.i18n.get_language_from_label(self.language_var.get()))
         self.language_var.set(self.i18n.get_label_for_language(self.i18n.language))
@@ -576,13 +585,8 @@ class SerialDebugAssistant(tk.Tk):
                 widget.configure(**{option: self.i18n.translate_text(source_text)})
         self.language_combo.configure(values=self.i18n.get_language_labels())
         self._set_open_button_text("Close" if self.serial_service.is_open() else "Open")
-        self.notebook.tab(0, text=self.i18n.translate_text("主页"))
-        self.notebook.tab(1, text=self.i18n.translate_text("串口调试"))
-        self.notebook.tab(2, text=self.i18n.translate_text("参数读写"))
-        self.notebook.tab(3, text=self.i18n.translate_text("参数波形"))
-        self.notebook.tab(4, text=self.i18n.translate_text("固件升级"))
-        self.notebook.tab(5, text=self.i18n.translate_text("Black Box"))
-        self.notebook.tab(6, text=self.i18n.translate_text("Factory Mode"))
+        for widget, title in self._visible_notebook_tabs:
+            self.notebook.tab(widget, text=self.i18n.translate_text(title))
         self.home_tab.refresh_texts()
         self.monitor_tab.refresh_texts()
         self.parameter_tab.refresh_texts()

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import serial
-from serial_debug_assistant.branding import resolve_runtime_app_name
+from serial_debug_assistant.branding import get_runtime_branding
 
 
-APP_VERSION = "1.2.1"
-APP_NAME = resolve_runtime_app_name()
+BASE_APP_VERSION = "1.2.1"
+_RUNTIME_BRANDING = get_runtime_branding()
+APP_NAME = _RUNTIME_BRANDING.app_name
+APP_VERSION = _RUNTIME_BRANDING.app_version or BASE_APP_VERSION
+APP_HIDDEN_TABS = _RUNTIME_BRANDING.hidden_tabs
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_GEOMETRY = "1240x962"
 APP_MIN_WIDTH = 1080
