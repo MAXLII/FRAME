@@ -1,6 +1,6 @@
 # FRAME
 
-Current release: `v1.2.2`
+Current release: `v1.3.0`
 
 一个面向 Windows 的串口调试上位机项目，使用 `Python + tkinter + pyserial` 开发。
 
@@ -34,6 +34,7 @@ Current release: `v1.2.2`
 - 主页状态显示与配置
 - 参数读写
 - 参数波形显示、导入导出与交互查看
+- 软件录波（Scope）对象枚举、状态控制、手动触发、本地录波查看与 CSV 导出
 - 固件升级
 - 设备固件版本查询
 - Black Box 范围查询与 CSV 导出
@@ -225,6 +226,7 @@ FRAME/
 │  ├─ firmware_update.py         # 固件升级辅助逻辑
 │  ├─ models.py                  # 数据模型
 │  ├─ protocol.py                # 协议编解码
+│  ├─ scope_protocol.py          # 软件录波协议编解码
 │  ├─ services/                  # 串口服务层
 │  └─ ui/                        # 界面层
 ├─ main.py                       # 启动入口
@@ -289,7 +291,7 @@ build_frame_installer.bat
 构建完成后安装包位于：
 
 ```text
-dist/installer/FRAME-Setup-1.2.2.exe
+dist/installer/FRAME-Setup-1.3.0.exe
 
 ### 构建 `DR_SSIP_Monitor` 命名安装包
 
@@ -301,13 +303,15 @@ build_dr_ssip_monitor_installer.bat
 然后额外生成一个安装包文件名为：
 
 ```text
-dist/installer/DR_SSIP_Monitor-Setup-1.2.2.exe
+dist/installer/DR_SSIP_Monitor-Setup-1.3.0.exe
 ```
 ```
 
 ## 文档
 
 - 工程设计文档：[docs/ENGINEERING_DESIGN.md](docs/ENGINEERING_DESIGN.md)
+- 软件录波协议草案：[docs/scope.md](docs/scope.md)
+- 软件录波界面设计：[docs/scope_ui_design.md](docs/scope_ui_design.md)
 - AI 协作规则：[docs/AI_WORK_RULES.md](docs/AI_WORK_RULES.md)
 
 ## 说明

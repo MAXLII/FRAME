@@ -1,106 +1,89 @@
-# 工程设计
+# 工程设计文档
 
-## 工程目录
+## 1. 文档说明
 
-```text
-FRAME/
-├─ bl_llc/
-├─ docs/
-│  ├─ AI_WORK_RULES.md
-│  ├─ ENGINEERING_DESIGN.md
-│  └─ homepage_ui_redesign_brief_for_codex.md
-├─ installer/
-│  └─ frame_installer.iss
-├─ llc/
-├─ serial_debug_assistant/
-│  ├─ app_paths.py
-│  ├─ constants.py
-│  ├─ debug_logger.py
-│  ├─ firmware_update.py
-│  ├─ models.py
-│  ├─ protocol.py
-│  ├─ __init__.py
-│  ├─ __main__.py
-│  ├─ services/
-│  │  ├─ __init__.py
-│  │  └─ serial_service.py
-│  └─ ui/
-│     ├─ __init__.py
-│     ├─ app.py
-│     ├─ black_box_tab.py
-│     ├─ debug_tab.py
-│     ├─ factory_mode_tab.py
-│     ├─ home_tab.py
-│     ├─ monitor_tab.py
-│     ├─ parameter_tab.py
-│     ├─ upgrade_tab.py
-│     └─ wave_tab.py
-├─ build_frame_exe.bat
-├─ build_frame_installer.bat
-├─ clean_build_artifacts.bat
-├─ main.py
-├─ README.md
-├─ requirements.txt
-└─ run_serial_debug_assistant.bat
-```
+### 1.1 文档目的
 
-## 工程分层
+本文档用于说明本工程的总体设计思路、通信协议设计、分页功能设计、操作方法与维护扩展方式，作为开发、联调、测试和后续迭代的统一参考。
 
-### 启动入口层
+### 1.2 适用范围
 
-- `main.py` 作为桌面程序启动入口，负责调用 `serial_debug_assistant.ui.app.launch_app`。
-- `serial_debug_assistant/__main__.py` 提供包级启动入口，入口行为与 `main.py` 保持一致。
-- `run_serial_debug_assistant.bat` 负责创建虚拟环境、安装依赖并启动桌面程序。
+本文档适用于：
 
-### 构建发布层
+- 当前上位机桌面软件工程
+- 与之配套的串口通信协议
+- 当前已实现的分页功能
+- 后续在现有架构下新增的小功能和新分页
 
-- `build_frame_exe.bat` 负责准备虚拟环境、安装 `PyInstaller`、清理构建输出目录并生成 `dist/frame/frame.exe`。
-- `build_frame_installer.bat` 负责串联目录版构建和安装包编译流程。
-- `build_dr_ssip_monitor_installer.bat` 负责复用 `FRAME` 目录版产物并生成 `DR_SSIP_Monitor` 命名安装包。
-- `installer/frame_installer.iss` 定义 Windows 安装包的安装目录、快捷方式、卸载入口和覆盖升级行为。
-- `clean_build_artifacts.bat` 负责清理构建目录、缓存目录和 Python 编译产物。
+### 1.3 文档边界
 
-### 应用包层
+本文档重点关注以下内容：
 
-- `serial_debug_assistant/` 承载串口调试助手的运行时路径、协议处理、固件升级、串口服务和界面组件。
+- 协议设计与数据结构
+- 分页的设计目标与实现方式
+- 页面与协议之间的对应关系
+- 用户操作说明
+- 后续扩展与维护建议
 
-## 顶层文件与目录职责
+本文档不以源码目录讲解为主体，也不替代代码注释或逐文件 API 文档。
 
-### 文档目录
+### 1.4 版本信息
 
-- `docs/AI_WORK_RULES.md` 定义本仓库的 AI 执行规则、Git 提交规则和工程设计文档编写规则。
-- `docs/ENGINEERING_DESIGN.md` 说明本工程当前目录和模块设计。
-- `docs/homepage_ui_redesign_brief_for_codex.md` 记录主页 UI 重设计的目标、输入来源和界面原则。
+| 项目 | 内容 |
+| --- | --- |
+| 文档名称 | 工程设计文档 |
+| 文档版本 | v1.0 |
+| 软件版本 | v1.3.0 |
+| Lite 版本 | v2.3.0 |
+| 最后更新日期 | 2026-04-21 |
+| 维护方式 | 按协议章节与分页章节持续增量维护 |
 
-### 参考资料
+### 1.5 名词定义
 
-- `README.md` 说明工程用途、运行方式和打包方式。
-- 仓库根目录中的 PDF 文件作为协议和界面设计参考资料。
+| 名词 | 说明 |
+| --- | --- |
+| `cmd_set` | 命令集，用于对通信能力做大类划分 |
+| `cmd_word` | 命令字，用于表示某个命令集下的具体功能 |
+| `ACK` | 应答帧，`is_ack = 1` |
+| `Target Address` | 目标地址，即通信报文中的 `dst` |
+| `Dynamic Address` | 动态地址，即通信报文中的 `d_dst` |
+| `broadcast` | 广播地址，通常用于发送全局控制命令 |
+| `Scope` | 软件录波功能，面向下位机 RAM 中保存的一次录波数据 |
+| `capture_tag` | 录波标号，用于识别一次抓取过程中设备侧录波包是否发生变化 |
+| `data_ready` | 数据就绪标志，用于表示本次录波是否可供常规拉取 |
+| `normal pull` | 常规拉取，仅允许在录波停止且数据就绪时进行 |
+| `force pull` | 强制拉取，允许在设备运行过程中读取当前录波缓冲区 |
 
-## `serial_debug_assistant` 包设计
+### 1.6 阅读建议
 
-### 路径与运行环境
+- 需要了解协议时，从第 2 章开始阅读。
+- 需要了解某个页面时，从第 3 章对应分页开始阅读。
+- 需要联调时，建议先阅读协议章节，再阅读对应分页的操作说明与注意事项。
+- 需要扩展功能时，优先阅读第 8 章扩展与维护规则。
 
-- `app_paths.py` 统一计算源码运行和安装运行两种模式下的安装目录与数据目录。
-- `app_paths.py` 负责创建 `config/`、`exports/`、`logs/` 运行数据目录，并处理旧版快捷发送配置、导出文件与调试日志的迁移。
-- 源码运行模式默认使用仓库根目录作为数据根目录，安装运行模式默认使用 `%LOCALAPPDATA%\FRAME\` 作为数据根目录。
-- `constants.py` 定义应用版本、窗口尺寸、接收轮询周期、串口默认参数和串口参数选项。
+## 2. 通信协议详细说明
 
-### 公共数据模型
+### 2.1 协议设计目标
 
-- `models.py` 定义串口接收块、协议帧、参数项、固件尾部、固件镜像和升级会话的数据结构。
+本工程的串口协议设计目标为：
 
-### 协议与业务计算
+- 为上位机与设备之间建立统一、稳定、可扩展的串口通信机制
+- 在有限带宽与有限资源条件下，兼顾状态查询、数据交互、数据采集与维护操作
+- 通过统一帧结构承载多类功能协议，并支持后续增量扩展
+- 使协议层与分页界面层解耦，便于新增页面和新增小功能
 
-- `protocol.py` 定义帧结构常量、CRC16 计算、协议帧打包、协议帧解析和参数数值类型转换。
-- `firmware_update.py` 定义固件尾部解析、CRC32 校验、版本格式化、模块名称映射和升级报文载荷构造。
-- `debug_logger.py` 定义应用日志写入器，并提供日志订阅回调分发能力。
+#### 2.1.1 设计原则
 
-### PDF 参考协议补充
+- 统一帧格式
+- 功能按命令集与命令字分层
+- 请求 / 应答机制清晰
+- 数据结构尽量定长或易解析
+- 页面逻辑与协议能力对应，但不过度绑定
+- 支持后续兼容扩展
 
-仓库根目录中的 `通信.pdf` 与 `上位机.pdf` 目前仍是理解本工程协议来源的重要参考资料。当前代码实现与工程设计文档应以源码为准，但下面这些协议结构体和字段定义仍然值得保留，便于后续联调、扩展和与下位机文档核对。
+### 2.2 总帧格式
 
-#### 总帧格式（来自 `通信.pdf`）
+#### 2.2.1 帧结构体定义
 
 `通信.pdf` 定义了一个以 `0xE8` 为起始符、以 `0x0A0D` 为结束符的轻量级通信帧，等价结构如下：
 
@@ -108,120 +91,116 @@ FRAME/
 #pragma pack(1)
 typedef struct
 {
-    uint8_t sop;      // 固定 0xE8
-    uint8_t version;  // 协议版本
-    uint8_t src;      // 源地址
-    uint8_t d_src;    // 动态源地址
-    uint8_t dst;      // 目的地址
-    uint8_t d_dst;    // 动态目的地址
-    uint8_t cmd_set;  // 命令集
-    uint8_t cmd_word; // 命令字
-    uint8_t is_ack;   // 是否为响应帧
-    uint16_t len;     // payload 长度
-    uint8_t *p_data;  // payload 起始地址
-    uint16_t crc;     // 从 sop 到 p_data 的 CRC16
-    uint16_t eop;     // 固定 0x0A0D
+    uint8_t sop;
+    uint8_t version;
+    uint8_t src;
+    uint8_t d_src;
+    uint8_t dst;
+    uint8_t d_dst;
+    uint8_t cmd_set;
+    uint8_t cmd_word;
+    uint8_t is_ack;
+    uint16_t len;
+    uint8_t *p_data;
+    uint16_t crc;
+    uint16_t eop;
 } section_packform_t;
 ```
 
-字段约定如下：
+#### 2.2.2 字段说明
 
 | 字段 | 长度 | 含义 | 备注 |
 | --- | --- | --- | --- |
 | `sop` | 1B | 起始符 | 固定为 `0xE8` |
-| `version` | 1B | 协议版本号 | 当前 PDF 示例为 `0x01` |
-| `src` | 1B | 源设备地址 | 例如上位机地址 |
+| `version` | 1B | 协议版本号 | 当前使用 `0x01` |
+| `src` | 1B | 源地址 | 上位机或设备地址 |
 | `d_src` | 1B | 动态源地址 | 用于地址扩展 |
-| `dst` | 1B | 目的设备地址 | 例如下位机模块地址 |
+| `dst` | 1B | 目的地址 | 目标模块地址 |
 | `d_dst` | 1B | 动态目的地址 | 用于地址扩展 |
-| `cmd_set` | 1B | 命令集分类 | `0x01/0x02/0x03` 等 |
-| `cmd_word` | 1B | 具体命令字 | 同一命令集下的子命令 |
-| `is_ack` | 1B | 请求/响应标记 | `0` 为请求，`1` 为响应 |
-| `len` | 2B | 数据长度 | 仅表示 payload 字节数 |
-| `p_data` | 变长 | 数据载荷 | 必须按 1 字节对齐理解 |
-| `crc` | 2B | 帧内 CRC16 | 覆盖范围为 `sop..payload` |
-| `eop` | 2B | 结束符 | 固定为 `0x0A0D` |
+| `cmd_set` | 1B | 命令集 | 按功能大类划分 |
+| `cmd_word` | 1B | 命令字 | 命令集下的具体功能 |
+| `is_ack` | 1B | 应答标记 | `0` 为请求，`1` 为应答 |
+| `len` | 2B | `payload` 长度 | 小端 |
+| `p_data` | 变长 | 数据载荷 | 长度由 `len` 决定 |
+| `crc` | 2B | CRC16 校验值 | 覆盖 `sop..payload` |
+| `eop` | 2B | 结束符 | 固定为 `0x0D 0x0A` |
 
-PDF 中给出的示例帧如下：
+#### 2.2.3 帧收发规则
 
-```text
-E8 01 10 00 20 00 01 02 04 00 01 02 03 04 A3 C4 0D 0A
-```
+- 接收端按 `sop -> 固定头 -> payload -> crc -> eop` 顺序解析。
+- `len` 只表示 `payload` 的字节数，不包含头、CRC 和尾部。
+- CRC 校验失败时，当前帧无效。
+- 上位机侧 `protocol.py` 中的 `FrameParser` 负责按上述规则拆帧与验帧。
 
-#### CRC 约定（来自 `通信.pdf`）
+### 2.3 数据编码约定
 
-- 通信帧校验采用 `CRC-16-CCITT`。
-- 多项式为 `0x1021`。
-- 初始值为 `0xFFFF`。
-- 计算范围为从 `sop` 开始到 payload 最后一个字节结束，不包含帧尾 `crc` 和 `eop`。
-- 当前代码中的 `protocol.py` 已按同类思路实现 CRC16 计算与验帧流程。
+#### 2.3.1 字节序
 
-## `cmd_set = 0x01` 指令集
+- 所有多字节整型字段均按小端编码传输。
 
-当前工程中，`cmd_set = 0x01` 主要承载参数读写、波形配置与波形上报相关协议，收发逻辑集中在 `serial_debug_assistant/ui/app.py`。
+#### 2.3.2 基本类型
 
-| `cmd_word` | 方向 | 用途 | 载荷结构 |
-| --- | --- | --- | --- |
-| `0x01` | PC -> 设备 | 请求参数列表总数 | 空载荷 |
-| `0x01` | 设备 -> PC，`is_ack = 1` | 返回参数总数 | `uint32 total_count` |
-| `0x02` | PC -> 设备 | 按参数名读取单个参数 | `name_len(1B) + name(UTF-8)` |
-| `0x02` | 设备 -> PC，`is_ack = 1` | 返回单个参数当前值 | `name_len(1B) + type_id(1B) + data_raw(4B) + name` |
-| `0x03` | PC -> 设备 | 写入参数或执行命令型参数 | `name_len(1B) + data_raw(4B) + max_raw(4B) + min_raw(4B) + name` |
-| `0x03` | 设备 -> PC，`is_ack = 1` | 返回写入后的参数值与范围 | `name_len(1B) + type_id(1B) + data_raw(4B) + max_raw(4B) + min_raw(4B) + name` |
-| `0x04` | 设备 -> PC，通常非 ACK 流 | 逐条下发参数列表项 | `name_len(1B) + type_id(1B) + data_raw(4B) + max_raw(4B) + min_raw(4B) + status(1B) + name` |
-| `0x05` | PC -> 设备 | 设置某个参数是否参与波形自动上报 | `name_len(1B) + enabled(1B) + name` |
-| `0x05` | 设备 -> PC，`is_ack = 1` | 确认波形勾选状态更新 | 当前工程未消费具体 payload，按 ACK 成功处理 |
-| `0x06` | PC -> 设备 | 设置波形上报周期 | `period_ms(4B, little-endian)` |
-| `0x06` | 设备 -> PC，`is_ack = 1` | 返回生效的波形上报周期 | `period_ms(4B, little-endian)` |
-| `0x07` | 设备 -> PC | 上报单个波形点或波形批次分隔符 | `name_len(1B) + type_id(1B) + data_raw(4B) + name`；批次开始/结束使用特殊哨兵 |
-| `0x0C` | PC -> 设备 | 启动或停止波形上报 | `running(1B)`，`0x00` 为停止，`0x01` 为启动 |
-| `0x0C` | 设备 -> PC，`is_ack = 1` | 确认波形运行状态切换 | 当前工程未消费具体 payload，按 ACK 成功处理 |
+- `uint8_t / uint16_t / uint32_t`：按无符号整型传输
+- `int8_t`：按有符号整型传输
+- `float`：按 IEEE754 单精度浮点原始位模式传输
+- 字符串：一般为紧随结构体头后的变长字节序列
 
-#### 参数列表与单参数模型
+#### 2.3.3 通用数据承载约定
 
-- 参数项解析结果落到 `ParameterEntry`，包含 `name`、`type_id`、`data_raw`、`min_raw`、`max_raw` 与 `status`。
-- `type_id == 7` 表示命令型参数，界面侧会走“执行命令”而不是“写普通值”流程。
-- `status` 的 bit0 当前映射为 `auto_report`，bit1 当前映射为 `important`。
-
-#### 波形上报 `0x07` 的特殊约定
-
-- 普通波形点格式为 `name_len + type_id + data_raw + name`。
-- 当 `name_len == 0`、`type_id == 0` 且 `data_raw == 0x55555555` 时，表示一个波形批次开始。
-- 当 `name_len == 0`、`type_id == 0` 且 `data_raw == 0xAAAAAAAA` 时，表示一个波形批次结束。
-- 在批次模式下，主程序会先把多个参数点暂存到 `pending_wave_batch`，批次结束后再统一送入 `WaveformTab.append_batch`。
-
-#### 当前界面使用关系
-
-- 参数页读取参数列表时，会先发送 `0x0C` 停止发波，再发送 `0x01` 请求参数总数，随后接收多帧 `0x04` 参数项。
-- 参数页读取单参数使用 `0x02`，写参数或执行命令使用 `0x03`。
-- 参数页勾选波形显示使用 `0x05`。
-- 波形页应用上报周期使用 `0x06`。
-- 串口连接成功、读取参数列表前、以及波形页开始/停止运行时，都会用到 `0x0C` 控制设备侧波形上传。
-
-#### `cmd_set = 0x01` 结构体级载荷定义（来自 `上位机.pdf`）
-
-`上位机.pdf` 对 `cmd_set = 0x01` 的 payload 结构定义比当前代码注释更完整，整理如下。
-
-##### 通用数据类型
+- 参数与黑匣子中的很多数值采用 `uint32_t` 作为统一承载类型。
+- 当实际类型长度短于 4 字节时，高位补零。
+- 当实际类型为浮点数时，直接拷贝其原始位，例如：
 
 ```c
-typedef enum
-{
-    SHELL_INT8,
-    SHELL_UINT8,
-    SHELL_INT16,
-    SHELL_UINT16,
-    SHELL_INT32,
-    SHELL_UINT32,
-    SHELL_FP32,
-    SHELL_CMD,
-} SHELL_TYPE_E;
+uint32_t data = 0;
+float fp32 = 0.01f;
+memcpy(&data, &fp32, 4);
 ```
 
-- PDF 明确说明：参数数据统一按固定 4 字节 `uint32_t` 传输。
-- 当参数类型是 `FP32` 时，`data` 字段传输的是浮点数的原始位模式，例如 `0.01f` 对应 `0x3C23D70A`。
+### 2.4 CRC 与校验规则
 
-##### `0x01 / 0x01` 读取参数列表总数
+- 通信帧校验采用 `CRC-16-CCITT`
+- 多项式为 `0x1021`
+- 初始值为 `0xFFFF`
+- 计算范围为从 `sop` 开始到 payload 最后一个字节结束，不包含 `crc` 和 `eop`
+
+### 2.5 地址机制说明
+
+- `src / d_src` 表示源地址与动态源地址
+- `dst / d_dst` 表示目标地址与动态目标地址
+- 上位机页面中填写的 `Target Address` 和 `Dynamic Address` 最终映射到 `dst / d_dst`
+- 广播命令通常使用 `dst = 0x00, d_dst = 0x00`
+
+### 2.6 请求 / 应答机制
+
+- `is_ack = 0` 表示请求帧
+- `is_ack = 1` 表示应答帧
+- 某些功能采用无 ACK 上报，例如主页广播与波形上报
+- 查询类与控制类命令通常要求收到 ACK 后再更新上位机状态
+
+### 2.7 超时 / 重试 / 状态码规则
+
+- 普通查询类命令由上位机主线程异步等待响应
+- 软件录波 Scope 拉取使用独立拉取状态机，支持超时和有限次数重试
+- 设备返回状态码后，上位机会转换成可读文本并更新对应分页提示信息
+
+### 2.8 状态码与错误码总表
+
+当前工程中不同协议使用各自的状态码集合，本章仅统一说明管理方式：
+
+- 参数页：通过结构体中的 `status` 字段区分自动上报、重要参数等属性
+- 升级页：使用升级 ACK 字段与错误码字段描述阶段状态和失败原因
+- Scope 页：使用 `scope_tool_status_e`
+- 黑匣子页：使用 `accepted`、`has_more` 等字段表达查询状态
+- 工厂模式页：按命令 ACK 是否成功和结构体内容判断结果
+
+### 2.9 指令集详细说明
+
+#### 2.9.1 `cmd_set = 0x01`
+
+`cmd_set = 0x01` 承载当前大部分辅助工具与上位机交互协议，包括参数读写、参数波形、固件升级、Black Box、Scope、工厂模式时间与校准等能力。
+
+##### 参数列表总数读取 `0x01 / 0x01`
 
 ```c
 // request payload: NULL
@@ -231,29 +210,10 @@ typedef struct
 } cmd_0101_ack_t;
 ```
 
-- 上位机发送空载荷请求。
-- 下位机返回参数总数 `data_num`。
+- 请求 payload 为空
+- ACK 返回参数总数 `data_num`
 
-##### `0x01 / 0x04` 参数列表项
-
-```c
-typedef struct
-{
-    uint8_t name_len;
-    uint8_t type;
-    uint32_t data;
-    uint32_t data_max;
-    uint32_t data_min;
-    uint8_t status;
-    char name[];
-} cmd_0104_item_t;
-```
-
-- 每个参数占一帧。
-- `status.bit0` 表示自动上报/周期打印波形标志。
-- `status.bit1` 表示重要参数标志。
-
-##### `0x01 / 0x02` 读取单参数
+##### 单参数读取 `0x01 / 0x02`
 
 ```c
 typedef struct
@@ -271,10 +231,7 @@ typedef struct
 } cmd_0102_ack_t;
 ```
 
-- 请求中只携带参数名。
-- 响应中返回参数类型、参数值和参数名。
-
-##### `0x01 / 0x03` 写入单参数
+##### 单参数写入或执行 `0x01 / 0x03`
 
 ```c
 typedef struct
@@ -297,11 +254,26 @@ typedef struct
 } cmd_0103_ack_t;
 ```
 
-- 请求中携带参数名、当前待写值及上下限。
-- 对命令型参数，界面表现为“执行”，但协议层仍复用该结构。
-- 响应返回下位机侧最终生效的值和范围。
+##### 参数列表项下发 `0x01 / 0x04`
 
-##### `0x01 / 0x05` 波形勾选
+```c
+typedef struct
+{
+    uint8_t name_len;
+    uint8_t type;
+    uint32_t data;
+    uint32_t data_max;
+    uint32_t data_min;
+    uint8_t status;
+    char name[];
+} cmd_0104_item_t;
+```
+
+- 每个参数占一帧
+- `status.bit0` 当前映射为自动上报
+- `status.bit1` 当前映射为重要参数
+
+##### 参数波形勾选 `0x01 / 0x05`
 
 ```c
 typedef struct
@@ -317,10 +289,7 @@ typedef struct
 } cmd_0105_ack_t;
 ```
 
-- `auto_report = 1` 表示开启该参数自动上报。
-- `auto_report = 0` 表示关闭该参数自动上报。
-
-##### `0x01 / 0x06` 波形上报周期
+##### 参数波形周期设置 `0x01 / 0x06`
 
 ```c
 typedef struct
@@ -329,10 +298,10 @@ typedef struct
 } cmd_0106_req_t;
 ```
 
-- 请求与响应结构相同，字段单位均为毫秒。
-- PDF 原文字段名为 `reprot_period`，当前文档保留该拼写以便与原资料核对。
+- 请求与 ACK 使用相同结构
+- 单位为毫秒
 
-##### `0x01 / 0x07` 自动上报波形点
+##### 参数波形上报 `0x01 / 0x07`
 
 ```c
 typedef struct
@@ -344,25 +313,10 @@ typedef struct
 } cmd_0107_report_t;
 ```
 
-- 正常数据帧表示一个参数的当前值。
-- 当 `name_len = 0x00`、`type = 0x00`、`data = 0x55555555` 时，表示一组波形数据开始。
-- 当 `name_len = 0x00`、`type = 0x00`、`data = 0xAAAAAAAA` 时，表示一组波形数据结束。
-- 当前代码已按该哨兵约定将一整组波形点收敛为单批次处理。
+- `name_len = 0, type = 0, data = 0x55555555` 表示批次开始
+- `name_len = 0, type = 0, data = 0xAAAAAAAA` 表示批次结束
 
-##### `0x01 / 0x0C` 周期打印使能
-
-```c
-typedef struct
-{
-    uint8_t start_report;
-} cmd_010C_req_t;
-```
-
-- `start_report = 1` 表示开始自动上报。
-- `start_report = 0` 表示停止自动上报。
-- ACK 按 PDF 定义为空载荷。
-
-##### `0x01 / 0x08 ~ 0x0B` 在线升级协议
+##### 固件升级 `0x01 / 0x08 ~ 0x0D`
 
 ```c
 typedef struct
@@ -379,7 +333,6 @@ typedef struct
     uint16_t reject_reason;
 } cmd_0108_ack_t;
 
-// 0x01 / 0x09 request payload: NULL
 typedef struct
 {
     uint8_t ready;
@@ -408,19 +361,7 @@ typedef struct
 {
     uint8_t success_flg;
 } cmd_010B_ack_t;
-```
 
-- `0x08` 用于发送升级意图和固件概要，`update_type` 中 `1` 为正常升级，`2` 为强制升级。
-- `0x09` 用于轮询 bootloader 是否已准备完成。
-- `0x0A` 用于按 256 字节小包发送固件，其中 `packet_crc` 是单包 CRC16。
-- `0x0B` 用于发送整包结束帧，`fw_crc` 表示包含 footer 的整包固件 CRC16。
-
-##### `0x01 / 0x0D` LLC -> PFC 转发升级进度查询
-
-当上位机升级 `PFC` 固件时，实际链路为“上位机 -> LLC -> PFC”。因此在 `0x0B ACK` 之后，上位机还需要继续查询 LLC 当前向 PFC 转发固件的进度。当前设计新增 `0x01 / 0x0D` 查询-应答协议，上位机周期轮询，LLC 返回当前转发状态快照。
-
-```c
-// 0x01 / 0x0D request payload: NULL
 typedef struct
 {
     uint8_t source_module_id;
@@ -436,37 +377,7 @@ typedef struct
 } llc_pfc_upgrade_progress_ack_t;
 ```
 
-- `source_module_id` 与 `target_module_id` 分别标识当前转发链路的起点与终点模块。
-- `stage` 用于表示 `queued / enter_boot / erasing / forwarding / verifying / done / failed` 等阶段。
-- `result` 用于表示 `in_progress / success / failed`。
-- `forwarded_bytes` 与 `total_bytes` 是上位机进度条的主数据源。
-- `packet_offset` 与 `packet_length` 用于显示最近一次处理分包的位置信息。
-- `progress_permille` 用于在特殊阶段维持连续进度显示。
-- `error_code` 用于回传 LLC 侧判定的失败原因。
-
-当前桌面程序中，若目标固件模块为 `PFC`，在收到 `0x0B ACK` 后不会直接判为升级完成，而是切换到该指令的轮询阶段；只有收到 LLC 返回的 `success / done` 才结束升级流程。
-
-##### `0x01 / 0x17` 固件版本查询协议
-
-为了在固件升级页中直接读取设备当前运行版本，当前设计新增 `0x01 / 0x17` 查询-应答协议。该协议同时在 `llc/update.c` 与 `pfc/update.c` 中实现，因此上位机只需要切换升级页中的目标地址，就可以分别读取 LLC 或 PFC 当前版本。
-
-```c
-// 0x01 / 0x17 request payload: NULL
-typedef struct
-{
-    uint32_t version;
-} firmware_version_ack_t;
-```
-
-- 请求 payload 为空，表示查询目标模块当前固件版本。
-- 应答 payload 只返回一个 `uint32_t version`。
-- 版本值来源于设备侧宏 `COMPOSE_VERSION(HARD_VER, DEVICE_VENDOR, RELEASE_VER, DEBUG_VER)`。
-- 上位机会把该 `uint32_t` 按 `major.minor.patch.build` 形式格式化显示，例如 `1.2.0.13`。
-- 该查询结果用于显示“设备当前版本”，不覆盖本地已加载固件文件 footer 中解析出的“文件版本”。
-
-##### `0x01 / 0x0E ~ 0x11` 黑匣子范围查询协议
-
-黑匣子数据量可能达到数 MB，因此当前设计采用“按逻辑偏移范围查询”，而不是按记录页码分页。这样上位机可以只拉取指定 Flash 区间的数据，减少等待时间，并支持跨 sector 的完整记录读取。
+##### Black Box 范围查询 `0x01 / 0x0E ~ 0x11`
 
 ```c
 typedef struct
@@ -503,24 +414,9 @@ typedef struct
 } black_box_range_complete_report_t;
 ```
 
-- `0x0E`：范围查询请求与 ACK。
-- `0x0F`：表头字符串上传。
-- `0x10`：数据行字符串上传。
-- `0x11`：本次范围查询完成通知。
-
-实现约束如下：
-
-- 查询单位为 `start_offset + read_length`，不是“第几页记录”。
-- 只要一条记录头落在查询区间内，就允许把整条记录完整上传，即使记录尾部超过查询区间末尾。
-- 如果下一条记录头已经超出查询区间末尾，则停止扫描并发送完成帧。
-- Flash sector 仅作为底层存储边界，不作为解析边界；跨 sector 记录由连续缓存读取完成。
-
-##### `0x01 / 0x12 ~ 0x13` 工厂模式时间协议
-
-为支持出厂时间配置，当前在 `time.c` 中新增工厂模式时间协议。通信内容仅包含 `UTC Unix time` 与半小时单位的时区值。
+##### 工厂模式时间协议 `0x01 / 0x12 ~ 0x13`
 
 ```c
-// 0x01 / 0x12 request payload: NULL
 typedef struct
 {
     uint32_t unix_time_utc;
@@ -528,15 +424,7 @@ typedef struct
 } factory_time_payload_t;
 ```
 
-- `0x12`：读取设备当前 `UTC Unix time` 与 `timezone_half_hour`。
-- `0x13`：下发新的 `UTC Unix time` 与 `timezone_half_hour`，设备写入后返回当前生效值。
-- `timezone_half_hour` 以半小时为单位编码，例如 `UTC+8 = 16`，`UTC+5:30 = 11`。
-
-下位机实现中，`unix_time_utc` 直接写入 RTC，不叠加时区偏移；本地时区时间由 `unix_time_utc + timezone_half_hour * 1800` 推导。
-
-##### `0x01 / 0x14 ~ 0x16` 工厂模式校准协议
-
-为支持工厂模式下的增益与偏置校准，当前在 `cali.c / cali.h` 基础上新增一组独立于旧 `0x10 / 0x11` 的校准查询与保存协议，避免与现有上位机指令冲突。该协议同时适用于 LLC 与 PFC，因此工厂模式页需要单独填写校准目的地址。
+##### 工厂模式校准协议 `0x01 / 0x14 ~ 0x16`
 
 ```c
 typedef struct
@@ -552,50 +440,134 @@ typedef struct
 } cali_info_t;
 ```
 
-- `0x14`：读取指定 `CALI_ID_E` 项当前的 `gain` 与 `bias`。
-- `0x15`：下发指定 `CALI_ID_E` 项新的 `gain` 与 `bias`，设备应用后返回当前生效值。
-- `0x16`：请求设备把当前校准值保存到 Flash，ACK payload 为空。
-
-当前工厂模式页中，校准项不再直接输入数字 ID，而是通过下拉框从 `CALI_ID_E` 枚举含义中选择自然语言名称，当前对应关系如下：
-
-- `CALI_ID_V_G_RMS` -> `Grid Voltage`
-- `CALI_ID_V_AC_OUT_RMS` -> `Inverter Voltage`
-- `CALI_ID_I_AC_OUT_RMS` -> `Inverter Current`
-- `CALI_ID_V_BAT` -> `Battery Voltage`
-- `CALI_ID_I_BAT` -> `Battery Current`
-- `CALI_ID_V_PV` -> `PV Voltage`
-- `CALI_ID_I_PV` -> `PV Current`
-
-设备侧仍然按枚举值处理，主机侧只负责把下拉框选择转换成对应的数值 ID。
-
-##### 固件尾信息 footer（来自 `上位机.pdf`）
+##### 固件版本查询 `0x01 / 0x17`
 
 ```c
 typedef struct
 {
-    uint32_t unix_time;
-    uint8_t fw_type;
     uint32_t version;
-    uint32_t file_size;
-    uint8_t commit_id[16];
-    uint8_t module_id;
-    uint32_t crc32;
-} footer_t;
+} firmware_version_ack_t;
 ```
 
-- PDF 说明 footer 位于固件最后 `34` 字节。
-- `fw_type` 中 `0` 表示 `ISP`，`1` 表示 `IAP`，只有 `IAP` 固件允许在线升级。
-- `version` 采用打包整型表达，例如 `1.2.0.13 = (1<<24) | (2<<16) | (0<<8) | 13`。
-- `commit_id[16]` 以 ASCII 方式显示。
-- footer 的 CRC32 使用多项式 `0xEDB88320`，计算时不包含 `crc32` 字段本身。
+##### 软件录波 Scope 协议 `0x01 / 0x18 ~ 0x1F`
 
-## 主页与配置协议
+当前工程新增独立的软件录波页签，用于和下位机 `scope / scope_service` 模块联调。由于 `0x01 / 0x17` 已被固件版本查询占用，Scope 命令字从 `0x18` 开始分配。
 
-`上位机.pdf` 除了参数页与升级页协议，还定义了主页广播数据和逆变配置数据。当前代码中的主页页签与设置区就是围绕这些结构展开的。
+| `cmd_word` | 方向 | 用途 | 说明 |
+| --- | --- | --- | --- |
+| `0x18` | PC -> 设备 / 设备 -> PC | 查询录波对象列表 | 下位机逐条返回 `scope_id + name` |
+| `0x19` | PC -> 设备 / ACK | 查询录波对象状态信息 | 返回采样点数、变量数量、触发索引、采样周期、录波标号等 |
+| `0x1A` | PC -> 设备 / ACK | 查询某个变量名 | 变量名按索引逐个返回 |
+| `0x1B` | PC -> 设备 / ACK | 开始录波 | 空闲态允许开始，成功后 `capture_tag` 自增 |
+| `0x1C` | PC -> 设备 / ACK | 触发录波 | 仅运行态允许触发 |
+| `0x1D` | PC -> 设备 / ACK | 停止录波 | 停止后可把本次数据标记为 `data_ready` |
+| `0x1E` | PC -> 设备 / ACK | 复位录波 | 清状态并清除 `data_ready` |
+| `0x1F` | PC -> 设备 / ACK | 按采样索引读取单个采样点 | 上位机采用颗粒化轮询拉取 |
 
-### `cmd_set = 0x02`，`cmd_word = 0x02` 主页广播
+```c
+typedef enum
+{
+    SCOPE_READ_MODE_NORMAL = 0,
+    SCOPE_READ_MODE_FORCE = 1,
+} scope_read_mode_e;
 
-PDF 定义下位机周期广播 `pcs_info_t`，主界面据此刷新电网、逆变、电池、MPPT、温度、风扇、继电器、故障、保护与告警区域。
+typedef enum
+{
+    SCOPE_TOOL_STATUS_OK = 0,
+    SCOPE_TOOL_STATUS_SCOPE_ID_INVALID = 1,
+    SCOPE_TOOL_STATUS_VAR_INDEX_INVALID = 2,
+    SCOPE_TOOL_STATUS_SAMPLE_INDEX_INVALID = 3,
+    SCOPE_TOOL_STATUS_RUNNING_DENIED = 4,
+    SCOPE_TOOL_STATUS_DATA_NOT_READY = 5,
+    SCOPE_TOOL_STATUS_BUSY = 6,
+    SCOPE_TOOL_STATUS_CAPTURE_CHANGED = 7,
+} scope_tool_status_e;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t is_last;
+    uint8_t name_len;
+    uint8_t reserved;
+} scope_list_item_t;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t status;
+    uint8_t state;
+    uint8_t data_ready;
+    uint8_t var_count;
+    uint8_t reserved[3];
+    uint32_t sample_count;
+    uint32_t write_index;
+    uint32_t trigger_index;
+    uint32_t trigger_post_cnt;
+    uint32_t trigger_display_index;
+    uint32_t sample_period_us;
+    uint32_t capture_tag;
+} scope_info_ack_t;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t var_index;
+    uint8_t reserved[2];
+} scope_var_query_t;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t status;
+    uint8_t var_index;
+    uint8_t is_last;
+    uint8_t name_len;
+    uint8_t reserved[3];
+} scope_var_ack_t;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t status;
+    uint8_t state;
+    uint8_t data_ready;
+    uint32_t capture_tag;
+} scope_ctrl_ack_t;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t read_mode;
+    uint8_t reserved[2];
+    uint32_t sample_index;
+    uint32_t expected_capture_tag;
+} scope_sample_query_t;
+
+typedef struct
+{
+    uint8_t scope_id;
+    uint8_t status;
+    uint8_t read_mode;
+    uint8_t var_count;
+    uint32_t sample_index;
+    uint32_t capture_tag;
+    uint8_t is_last_sample;
+    uint8_t reserved[3];
+} scope_sample_ack_t;
+```
+
+当前 Scope 协议约束如下：
+
+- 录波对象通过 `scope_id` 编址，不在协议中直接传完整对象名
+- 变量名采用逐项读取，避免一次性下发长表头
+- 采样值采用“单个采样点请求、单个采样点应答”的颗粒化拉取方式
+- 常规拉取仅允许在 `IDLE + data_ready = 1` 时进行
+- 强制拉取允许在运行过程中读取当前缓冲区
+- 每次开始录波后 `capture_tag` 自增，用于识别当前设备侧录波包是否已经变化
+
+#### 2.9.2 `cmd_set = 0x02`
+
+当前主要用于主页广播数据。主页页签中的交流侧、电池、MPPT、状态、故障和告警区域均依赖该广播更新。
 
 ```c
 typedef struct
@@ -615,19 +587,6 @@ typedef struct
     float llc_temp1;
     float llc_temp2;
     uint8_t fan_sta;
-    union
-    {
-        uint8_t raw;
-        struct
-        {
-            unsigned char grid_rly : 1;
-            unsigned char inv_rly : 1;
-            unsigned char prechg_mos : 1;
-            unsigned char chg_mos : 1;
-            unsigned char pv_mos : 1;
-            unsigned char reserved : 3;
-        };
-    } rly_sta;
     uint32_t protect;
     uint32_t fault;
     uint32_t warning;
@@ -639,9 +598,9 @@ typedef struct
 } pcs_info_t;
 ```
 
-### `cmd_set = 0x03`，`cmd_word = 0x01` 逆变配置
+#### 2.9.3 `cmd_set = 0x03`
 
-主页设置区中的 AC 输出使能、关闭以及电压频率组合设置，对应 PDF 中的 `inv_cfg_t`：
+当前主要用于主页设置区中的逆变输出配置。
 
 ```c
 typedef struct
@@ -653,114 +612,577 @@ typedef struct
 } inv_cfg_t;
 ```
 
-- 上位机发送和下位机响应复用同一结构。
-- `ac_out_enable_trig = 1` 表示触发打开 AC 输出。
-- `ac_out_disable_trig = 1` 表示触发关闭 AC 输出。
-- `ac_out_rms` 有效值为 `220/230/240`。
-- `ac_out_freq` 有效值为 `50/60`。
+## 3. 分页功能说明
 
-## PDF 需求与当前实现的对应关系
+以下各分页均按统一模板描述：
 
-- `上位机.pdf` 中的参数读写、参数波形、主页广播和在线升级，当前工程都已有对应页面与协议处理逻辑。
-- `上位机.pdf` 中提到的“通信抓包管理”“历史数据”“固件库管理”“软件示波器”等能力，当前仓库中仍以基础串口监视、波形导入导出和升级页的形式部分覆盖，尚未形成独立完整子系统。
-- `CMD_SET = 0x01 / CMD_WORD = 0x10` 校准信息下发与 `0x11` 保存命令在 PDF 中已有协议定义；当前实现为了避免与已有桌面程序指令冲突，改为在工厂模式页中使用 `0x14 / 0x15 / 0x16` 完成校准读写与保存。
-- 后续若扩展新页面，建议优先沿用本文档中整理出的结构体定义，并在源码实现与 PDF 定义出现偏差时及时在此文档中标注差异。
+- 设计内容和意图
+- 功能范围
+- 设计方法
+- 通信协议
+- 操作使用说明
+- 注意事项
 
-### 服务层
+### 3.1 主页
 
-- `services/serial_service.py` 负责串口枚举、串口打开关闭、接收线程管理、接收队列投递和发送写入。
-- `services/serial_service.py` 负责在后台线程中持续读取串口数据，并通过线程安全队列把接收块交给界面主线程处理。
-- `services/__init__.py` 作为服务子包入口文件。
+#### 3.1.1 设计内容和意图
 
-### 界面层总控
+主页用于集中展示设备运行状态，并提供少量高频配置入口，使用户在打开软件后无需进入其他页面即可快速了解当前设备运行情况。
 
-- `ui/app.py` 负责创建主窗口、顶部串口连接栏、底部状态栏和五个主功能页签，并组织串口连接、协议处理、参数管理、波形显示和固件升级流程。
-- `ui/app.py` 负责创建主页页签、串口调试页签、参数读写页签、参数波形页签、固件升级页签、黑匣子页签和工厂模式页签，并管理这些页面之间的状态同步。
-- `ui/app.py` 负责为串口调试页签补充左侧调试设置区，包括接收时间戳、HEX 接收、自动分帧换行、接收持续保存、HEX 发送、定时发送和发送回显控制。
-- `ui/app.py` 负责将串口接收数据分发到监视区、协议解析器、主页页签、参数页、波形页、升级页、黑匣子页和工厂模式页，并在主线程中执行批量 UI 刷新。
-- `ui/app.py` 负责运行状态显示、参数提示栏、收发字节计数、接收保存和发送控制。
-- `ui/app.py` 负责统一收发显示字符串的格式化，发送回显与接收数据显示共享公共显示函数，并在 HEX 模式下处理 `0D 0A` 换行显示。
-- `ui/app.py` 负责在连接建立后向广播地址发送停止发波命令，避免旧设备状态影响参数读取与波形显示。
-- `ui/app.py` 负责主页刷新容错与限频，包括错包异常隔离、主页数据暂存和合并刷新，避免坏包导致首页卡死。
+#### 3.1.2 功能范围
 
-## `serial_debug_assistant.ui` 组件设计
+- 负责展示电网、输出、电池、MPPT、温度、状态、故障和告警信息
+- 负责展示和下发 AC 输出配置
+- 不负责参数级读写
+- 不负责历史数据查看
 
-### 主页页
+#### 3.1.3 设计方法
 
-- `ui/home_tab.py` 定义主页页签布局，展示电网、逆变器、电池、MPPT、温度、风扇与继电器状态、故障信息和告警信息。
-- `ui/home_tab.py` 负责逆变输出配置的读取、写入、使能和关闭操作入口，并维护主页状态文本与故障/告警日志显示。
-- `ui/home_tab.py` 负责展示主页协议帧解析后的实时功率、电压、电流、频率、温度和电池荷电状态。
+- 采用广播驱动刷新方式更新大部分数值
+- 将实时状态展示与主动配置操作分区设计
+- 故障与告警文本区域使用滚动文本框，兼顾信息量与可读性
 
-### 串口收发页
+#### 3.1.4 通信协议
 
-- `ui/monitor_tab.py` 定义串口监视页布局。
-- `ui/monitor_tab.py` 负责发送日志区、接收显示区、手动发送区、快捷发送区和快捷发送配置持久化。
-- `ui/monitor_tab.py` 负责发送日志区与接收显示区共用的文本框样式配置，接收区使用黑色文本标签，发送区使用绿色文本标签。
-- `ui/monitor_tab.py` 负责批量追加接收/发送文本，并在文本长度过大时自动裁剪历史内容，避免长时间运行后文本框持续膨胀。
-- `ui/monitor_tab.py` 负责快捷发送配置文件 `quick_send.cfg` 的加载、修复与保存。
-- `ui/monitor_tab.py` 负责主分栏位置记录和界面布局信息回传。
+- 使用 `cmd_set = 0x02` 广播状态数据
+- 使用 `cmd_set = 0x03` 读写逆变输出配置
 
-### 参数读写页
+#### 3.1.5 操作使用说明
 
-- `ui/parameter_tab.py` 定义参数列表页布局。
-- `ui/parameter_tab.py` 负责模块地址输入、参数搜索、参数表格显示、单参数读取、参数写入和波形勾选控制。
-- `ui/parameter_tab.py` 负责参数条目的忙碌态、非法态、脏数据态和波形选中态展示。
-- `ui/parameter_tab.py` 负责在读取参数列表、读取单参数和写参数过程中向主窗口状态栏反馈参数提示信息。
+1. 打开串口后等待设备广播状态
+2. 观察主页各区域数值与状态点
+3. 如需修改 AC 输出设置，在设置区选择输出配置并发送
+4. 如需打开或关闭 AC 输出，点击对应按钮
 
-### 波形页
+#### 3.1.6 注意事项
 
-- `ui/wave_tab.py` 定义波形页布局。
-- `ui/wave_tab.py` 负责已选参数列表、最新值列表、实时曲线绘制、窗口时间切换、暂停查看和回到实时视图。
-- `ui/wave_tab.py` 负责波形导入导出、停止发波自动保存、软件关闭自动保存、标记线、参考线和鼠标交互。
-- `ui/wave_tab.py` 支持显示全部、时间窗口查看、矩形缩放、横向/纵向缩放与平移、悬停读数和快捷键操作。
+- 主页数据主要依赖广播更新，广播停止时页面会保持最后一次有效值
+- 故障和告警文案依赖设备上报与上位机映射表
 
-### 固件升级页
+### 3.2 串口调试页
 
-- `ui/upgrade_tab.py` 定义固件升级页布局。
-- `ui/upgrade_tab.py` 负责固件路径显示、升级地址输入、升级类型选择、进度显示和升级日志显示。
-- `ui/upgrade_tab.py` 负责呈现文件版本、设备版本、编译时间、模块和校验结果。
-- `ui/upgrade_tab.py` 负责根据串口连接状态切换可操作控件，并展示升级阶段、错误码与详细结果。
-- `ui/upgrade_tab.py` 额外提供 `Read Device Version` 操作，用于向当前目标地址发送 `0x01 / 0x17` 查询。
-- `ui/upgrade_tab.py` 负责显示 `LLC -> PFC Forward Progress` 面板，用于展示 `0x01 / 0x0D` 返回的二级转发进度。
+#### 3.2.1 设计内容和意图
 
-### 黑匣子页
+串口调试页用于提供原始串口收发能力，便于做协议验证、故障抓包和临时联调。
 
-- `ui/black_box_tab.py` 定义黑匣子页布局。
-- `ui/black_box_tab.py` 负责 `start_offset` 与 `read_length` 的范围输入、查询发送和完成状态显示。
-- `ui/black_box_tab.py` 负责把表头字符串和数据行字符串解析成接近 Excel 的表格展示。
-- `ui/black_box_tab.py` 固定显示 `No.` 与 `Time` 列，并根据设备上传的表头动态扩展其余参数列。
-- `ui/black_box_tab.py` 会把记录首列中的 Unix 时间自动转换为 UTC 时间字符串，并以居中方式显示表格中的数值列。
-- `ui/black_box_tab.py` 支持将当前表格结果导出为 `.csv`。
+#### 3.2.2 功能范围
 
-### 工厂模式页
+- 负责文本与 HEX 发送
+- 负责文本与 HEX 接收显示
+- 负责定时发送、快捷发送和接收持续保存
+- 不负责业务协议逻辑解释
 
-- `ui/factory_mode_tab.py` 定义工厂模式页布局。
-- `ui/factory_mode_tab.py` 负责设备地址输入、设备时间读取、当前 PC UTC 时间下发和时区输入。
-- `ui/factory_mode_tab.py` 负责将设备返回的 `UTC Unix time + timezone_half_hour` 自动转换为带时区的字符串显示，例如 `YYYY-MM-DD HH:MM:SS UTC+8`。
-- `ui/factory_mode_tab.py` 额外提供校准区，支持单独输入校准目的地址、读取当前 `gain / bias`、下发新校准值以及请求保存到 Flash。
-- `ui/factory_mode_tab.py` 使用自然语言下拉框展示校准项，而不是让用户直接输入 `CALI_ID_E` 数字。
+#### 3.2.3 设计方法
 
-### 日志页组件
+- 将原始接收区和发送区分离
+- 左侧提供调试设置，右侧提供收发文本区
+- 快捷发送使用本地配置文件持久化
 
-- `ui/debug_tab.py` 定义可复用的日志文本显示组件。
-- `ui/debug_tab.py` 负责日志路径展示、日志内容追加和显示内容清理。
-- `ui/debug_tab.py` 当前未作为独立主页签挂载，但保留为后续调试界面扩展组件。
+#### 3.2.4 通信协议
 
-### 界面包入口
+- 本页不绑定某个固定业务协议
+- 主要服务于原始串口字节流发送与接收
 
-- `ui/__init__.py` 作为界面子包入口文件。
+#### 3.2.5 操作使用说明
 
-## 模块协作关系
+1. 选择串口参数并打开串口
+2. 在发送框输入文本或 HEX
+3. 点击发送或启用定时发送
+4. 如需保存接收流，打开“接收保存到文件”
 
-- 启动入口层负责启动 `ui/app.py` 中的主窗口。
-- 主窗口负责调用 `SerialService` 完成串口收发，并通过 `FrameParser` 解析协议帧。
-- 串口调试页负责展示发送日志、接收显示、手动发送和快捷发送配置，左侧调试设置区负责控制显示模式、定时发送与数据保存。
-- 主页页负责汇总协议解析后的设备状态、告警与故障信息，并提供逆变配置操作入口。
-- 参数页负责发起参数列表读取、单参数读取、参数写入和波形勾选；参数结果进入 `ParameterEntry` 映射和参数表格。
-- 参数页输出的波形勾选结果进入 `WaveformTab`，波形页负责绘制和管理参数曲线，并支持保存、导入和交互分析。
-- 固件文件解析、版本格式化与升级/版本查询载荷构造由 `firmware_update.py` 提供，升级界面和升级状态流转由 `ui/app.py` 与 `UpgradeTab` 共同组织；当目标为 `PFC` 固件时，升级流程还会切换到 LLC 二级转发进度轮询。
-- 黑匣子协议打包与解析由 `black_box_protocol.py` 提供，黑匣子页查询、表格展示与 CSV 导出由 `ui/app.py` 与 `BlackBoxTab` 共同组织。
-- 工厂模式时间协议与校准协议打包、解析与枚举名称映射由 `factory_mode.py` 提供，工厂模式页中的时间读取、UTC 时间下发、时区化显示以及校准读写保存由 `ui/app.py` 与 `FactoryModeTab` 共同组织。
-- `debug_logger.py` 负责把运行日志写入 `logs/app_debug.log`，同时把日志分发给订阅组件使用。
-- `app_paths.py` 负责统一数据目录定位和旧数据迁移，使安装版覆盖升级后保留配置、导出文件和日志。
-- 构建发布层负责将应用包转换为目录版可执行程序和 Windows 安装包。
+#### 3.2.6 注意事项
+
+- 在原始调试时发送业务命令可能影响其他分页的协议状态
+- HEX 模式下需保证输入格式正确
+
+### 3.3 参数读写页
+
+#### 3.3.1 设计内容和意图
+
+参数读写页用于展示设备可读写参数，并支持单参数读取、写入和命令型参数执行。
+
+#### 3.3.2 功能范围
+
+- 负责参数列表读取
+- 负责单参数读取与写入
+- 负责波形勾选状态设置
+- 不负责参数趋势图绘制
+
+#### 3.3.3 设计方法
+
+- 参数以表格方式展示
+- 支持搜索、当前行操作和脏数据标记
+- 写入前检查范围，减少非法值下发
+
+#### 3.3.4 通信协议
+
+- `0x01 / 0x01` 参数总数读取
+- `0x01 / 0x02` 单参数读取
+- `0x01 / 0x03` 单参数写入 / 执行
+- `0x01 / 0x04` 参数列表项
+- `0x01 / 0x05` 波形勾选
+
+#### 3.3.5 操作使用说明
+
+1. 先读取参数列表
+2. 在参数表中搜索目标参数
+3. 选择读取、写入或执行
+4. 如需参与参数波形上报，可勾选波形显示
+
+#### 3.3.6 注意事项
+
+- 读取参数列表前会先发送停止发波命令
+- 命令型参数与普通参数共用同一写入协议，但界面含义不同
+
+### 3.4 参数波形页
+
+#### 3.4.1 设计内容和意图
+
+参数波形页用于展示设备实时上报的参数趋势，适合观察连续变化过程和现场波形状态。
+
+#### 3.4.2 功能范围
+
+- 负责参数实时波形显示
+- 负责波形导入导出
+- 负责标记、参考线、缩放和悬浮读数
+- 不负责录波对象化抓取
+
+#### 3.4.3 设计方法
+
+- 使用本地缓存保存实时上报点
+- 支持窗口时间切换与历史查看
+- 将实时查看与交互分析放在同一页面内
+
+#### 3.4.4 通信协议
+
+- `0x01 / 0x05` 波形勾选
+- `0x01 / 0x06` 上报周期设置
+- `0x01 / 0x07` 波形数据上报
+- `0x01 / 0x0C` 发波开始 / 停止
+
+#### 3.4.5 操作使用说明
+
+1. 在参数页勾选需要显示的参数
+2. 进入参数波形页开始发波
+3. 调整时间窗口或暂停显示
+4. 使用参考线、缩放和导出功能分析数据
+
+#### 3.4.6 注意事项
+
+- 本页是实时波形，不等同于 Scope 本地录波
+- 发波过程中读取参数列表会导致实时波形停止
+
+### 3.5 软件录波 Scope 页
+
+#### 3.5.1 设计内容和意图
+
+软件录波页用于与下位机本地 RAM 录波功能联调，适合观察一次完整触发过程中的离散采样结果。
+
+#### 3.5.2 功能范围
+
+- 负责枚举录波对象
+- 负责读取录波对象状态与变量名
+- 负责开始、触发、停止、复位录波
+- 负责常规拉取与强制拉取
+- 负责本地录波缓存、预览与 CSV 导出
+- 不负责实时流式趋势显示
+
+#### 3.5.3 设计方法
+
+- 录波对象以 `scope_id` 编址
+- 变量名逐项读取，避免长表头一次性传输
+- 采样值按单点轮询方式读取，降低串口长期占用
+- 抓取完成后缓存为本地录波包，支持多包叠加分析
+
+#### 3.5.4 通信协议
+
+- `0x01 / 0x18` 查询录波对象列表
+- `0x01 / 0x19` 查询对象状态信息
+- `0x01 / 0x1A` 查询变量名
+- `0x01 / 0x1B` 开始录波
+- `0x01 / 0x1C` 触发录波
+- `0x01 / 0x1D` 停止录波
+- `0x01 / 0x1E` 复位录波
+- `0x01 / 0x1F` 单采样点拉取
+
+#### 3.5.5 操作使用说明
+
+1. 刷新录波对象
+2. 选择录波对象并刷新状态
+3. 读取变量名
+4. 开始录波并在合适时机触发
+5. 录波完成后执行普通拉取；如需运行中查看则执行强制拉取
+6. 在本地录波列表中选择显示 / 隐藏、导出 CSV 或删除
+
+#### 3.5.6 注意事项
+
+- 普通拉取要求对象处于空闲且 `data_ready = 1`
+- 强制拉取允许运行过程中查看，但数据可能是中间态
+- 拉取过程中若 `capture_tag` 变化，说明设备侧录波包已切换
+
+### 3.6 固件升级页
+
+#### 3.6.1 设计内容和意图
+
+固件升级页用于加载本地固件、查看文件版本与设备版本，并执行在线升级。
+
+#### 3.6.2 功能范围
+
+- 负责固件文件加载与解析
+- 负责设备版本查询
+- 负责升级过程控制与日志显示
+- 不负责运行时参数调试
+
+#### 3.6.3 设计方法
+
+- 采用阶段式升级状态机
+- 将文件信息、设备信息、进度与日志分区展示
+- 对 PFC 升级增加 LLC -> PFC 转发进度追踪
+
+#### 3.6.4 通信协议
+
+- `0x01 / 0x08 ~ 0x0B` 升级主流程
+- `0x01 / 0x0D` LLC -> PFC 转发进度查询
+- `0x01 / 0x17` 固件版本查询
+
+#### 3.6.5 操作使用说明
+
+1. 加载固件文件
+2. 查看文件版本和设备版本
+3. 设置目标地址与升级类型
+4. 开始升级并观察日志与进度
+
+#### 3.6.6 注意事项
+
+- 升级中不可断串口或断电
+- 目标模块为 PFC 时，升级完成判定晚于 `0x0B ACK`
+
+### 3.7 Black Box 页
+
+#### 3.7.1 设计内容和意图
+
+Black Box 页用于按逻辑偏移范围读取历史记录，并以表格方式查看和导出。
+
+#### 3.7.2 功能范围
+
+- 负责范围查询
+- 负责表头与行数据解析
+- 负责 CSV 导出
+- 不负责实时广播或实时录波
+
+#### 3.7.3 设计方法
+
+- 采用 `start_offset + read_length` 方式查询
+- 表头和行数据采用颗粒化上传
+- 完成帧用于标识本次查询结束及是否存在更多数据
+
+#### 3.7.4 通信协议
+
+- `0x01 / 0x0E` 范围查询
+- `0x01 / 0x0F` 表头上传
+- `0x01 / 0x10` 行数据上传
+- `0x01 / 0x11` 查询完成通知
+
+#### 3.7.5 操作使用说明
+
+1. 输入起始偏移与读取长度
+2. 点击开始查询
+3. 等待表头、数据行和完成通知
+4. 如需保存，导出为 CSV
+
+#### 3.7.6 注意事项
+
+- 查询范围越大，等待时间越长
+- 记录可跨 sector 解析，不以 Flash sector 为记录边界
+
+### 3.8 Factory Mode 页
+
+#### 3.8.1 设计内容和意图
+
+Factory Mode 页用于执行设备出厂维护相关操作，包括时间设置与校准管理。
+
+#### 3.8.2 功能范围
+
+- 负责设备时间读取与写入
+- 负责时区配置
+- 负责校准项读取、写入和保存
+- 不负责一般运行参数管理
+
+#### 3.8.3 设计方法
+
+- 时间区与校准区分离
+- 校准项以自然语言名称呈现，避免直接暴露枚举值
+- 使用独立输入地址支持不同模块校准
+
+#### 3.8.4 通信协议
+
+- `0x01 / 0x12 ~ 0x13` 工厂模式时间协议
+- `0x01 / 0x14 ~ 0x16` 工厂模式校准协议
+
+#### 3.8.5 操作使用说明
+
+1. 读取设备时间
+2. 如有需要，设置当前 PC 的 UTC 时间
+3. 选择校准项并读取当前增益与偏置
+4. 修改后写入并保存到 Flash
+
+#### 3.8.6 注意事项
+
+- 时间写入使用 UTC 原始时间，不是本地时区时间
+- 保存校准到 Flash 前应确认目标地址和参数无误
+
+## 4. 页面与协议映射
+
+### 4.1 页面与指令映射表
+
+| 页面 | 协议用途 | 指令范围 |
+| --- | --- | --- |
+| 主页 | 状态广播、逆变配置 | `cmd_set = 0x02`，`cmd_set = 0x03` |
+| 串口调试页 | 原始串口透传 | 不绑定单一业务协议 |
+| 参数读写页 | 参数列表、读写、波形勾选 | `0x01 / 0x01 ~ 0x05` |
+| 参数波形页 | 波形勾选、周期设置、实时上报、启停 | `0x01 / 0x05 ~ 0x07, 0x0C` |
+| Scope 页 | 软件录波对象控制与抓取 | `0x01 / 0x18 ~ 0x1F` |
+| 固件升级页 | 升级、版本查询、转发进度 | `0x01 / 0x08 ~ 0x0D, 0x17` |
+| Black Box 页 | 范围查询、表头、行数据、完成通知 | `0x01 / 0x0E ~ 0x11` |
+| Factory Mode 页 | 时间、校准 | `0x01 / 0x12 ~ 0x16` |
+
+### 4.2 页面与代码模块映射表
+
+| 页面 | UI 文件 | 控制逻辑 | 协议文件 |
+| --- | --- | --- | --- |
+| 主页 | `ui/home_tab.py` | `ui/app.py` | `protocol.py` |
+| 串口调试页 | `ui/monitor_tab.py` | `ui/app.py` | `protocol.py` |
+| 参数读写页 | `ui/parameter_tab.py` | `ui/app.py` | `protocol.py` |
+| 参数波形页 | `ui/wave_tab.py` | `ui/app.py` | `protocol.py` |
+| Scope 页 | `ui/scope_tab.py` | `ui/app.py` | `scope_protocol.py` |
+| 固件升级页 | `ui/upgrade_tab.py` | `ui/app.py` | `firmware_update.py` |
+| Black Box 页 | `ui/black_box_tab.py` | `ui/app.py` | `black_box_protocol.py` |
+| Factory Mode 页 | `ui/factory_mode_tab.py` | `ui/app.py` | `factory_mode.py` |
+
+## 5. 数据结构汇总
+
+### 5.1 总帧结构
+
+- `section_packform_t`
+
+### 5.2 参数相关结构
+
+- `cmd_0101_ack_t`
+- `cmd_0102_req_t`
+- `cmd_0102_ack_t`
+- `cmd_0103_req_t`
+- `cmd_0103_ack_t`
+- `cmd_0104_item_t`
+- `cmd_0105_req_t`
+- `cmd_0105_ack_t`
+- `cmd_0106_req_t`
+- `cmd_0107_report_t`
+
+### 5.3 波形相关结构
+
+- `cmd_0106_req_t`
+- `cmd_0107_report_t`
+
+### 5.4 Scope 相关结构
+
+- `scope_list_item_t`
+- `scope_info_ack_t`
+- `scope_var_query_t`
+- `scope_var_ack_t`
+- `scope_ctrl_ack_t`
+- `scope_sample_query_t`
+- `scope_sample_ack_t`
+
+### 5.5 升级相关结构
+
+- `cmd_0108_req_t`
+- `cmd_0108_ack_t`
+- `cmd_0109_ack_t`
+- `cmd_010A_req_t`
+- `cmd_010A_ack_t`
+- `cmd_010B_req_t`
+- `cmd_010B_ack_t`
+- `llc_pfc_upgrade_progress_ack_t`
+- `firmware_version_ack_t`
+- `footer_t`
+
+### 5.6 Black Box 相关结构
+
+- `black_box_range_query_req_t`
+- `black_box_range_query_ack_t`
+- `black_box_header_report_t`
+- `black_box_row_report_t`
+- `black_box_range_complete_report_t`
+
+### 5.7 Factory Mode 相关结构
+
+- `factory_time_payload_t`
+- `cali_query_t`
+- `cali_info_t`
+
+## 6. 状态机与时序说明
+
+### 6.1 参数列表读取流程
+
+1. 上位机先发送停止波形上传命令
+2. 请求参数总数
+3. 连续接收参数列表项
+4. 更新参数表格
+
+### 6.2 参数波形启停流程
+
+1. 上位机设置周期
+2. 上位机发送开始发波
+3. 设备连续上报波形批次
+4. 上位机缓存并绘制
+5. 上位机发送停止发波
+
+### 6.3 Scope 录波流程
+
+1. 枚举录波对象
+2. 读取对象状态与变量名
+3. 上位机下发开始录波
+4. 在合适时机下发触发
+5. 录波完成后执行普通拉取或运行中执行强制拉取
+6. 上位机按 `sample_index` 逐点拉取样本
+7. 本地生成录波包并显示
+
+### 6.4 Black Box 查询流程
+
+1. 上位机发送范围查询
+2. 设备返回 ACK
+3. 设备逐项上传表头
+4. 设备逐行上传记录
+5. 设备发送完成通知
+
+### 6.5 固件升级流程
+
+1. 加载固件
+2. 下发升级信息
+3. 轮询 ready
+4. 按包发送数据
+5. 下发结束命令
+6. 如目标为 PFC，则继续查询 LLC -> PFC 进度
+
+### 6.6 工厂模式流程
+
+- 时间读取 / 写入采用单次请求-应答模式
+- 校准读取 / 写入 / 保存采用分步操作
+
+## 7. 操作说明汇总
+
+### 7.1 首次连接设备
+
+1. 选择串口
+2. 配置串口参数
+3. 打开串口
+4. 检查底部状态栏和主页状态是否更新
+
+### 7.2 参数读取
+
+1. 进入参数读写页
+2. 读取参数列表
+3. 搜索目标参数
+4. 读取或写入
+
+### 7.3 参数波形使用
+
+1. 在参数页勾选波形参数
+2. 进入参数波形页
+3. 启动发波
+4. 查看曲线，必要时导出
+
+### 7.4 Scope 使用
+
+1. 进入 Scope 页
+2. 刷新对象
+3. 读取对象状态和变量名
+4. 开始录波、触发录波
+5. 普通拉取或强制拉取
+6. 本地查看和导出 CSV
+
+### 7.5 Black Box 使用
+
+1. 输入起始偏移和读取长度
+2. 开始查询
+3. 等待完成
+4. 导出 CSV
+
+### 7.6 固件升级使用
+
+1. 加载固件文件
+2. 检查版本信息
+3. 设置目标地址和升级类型
+4. 开始升级并等待完成
+
+### 7.7 工厂模式使用
+
+1. 读取设备时间
+2. 如有需要，下发当前 PC UTC 时间
+3. 选择校准项并读取
+4. 写入增益 / 偏置后保存
+
+## 8. 注意事项与维护规则
+
+### 8.1 串口相关
+
+- 打开串口后，多个分页共享同一底层串口服务
+- 原始串口调试页发送数据可能影响业务分页状态
+
+### 8.2 参数相关
+
+- 读取参数列表前建议停止实时波形上传
+- 写入值应满足上下限约束
+
+### 8.3 波形相关
+
+- 参数波形适合连续趋势观察
+- Scope 适合一次完整触发后的离散录波分析
+
+### 8.4 Scope 相关
+
+- 普通拉取要求数据就绪
+- 强制拉取可能读到运行中缓冲区
+- 录波拉取采用单点轮询，不追求高速连续传输
+
+### 8.5 升级相关
+
+- 升级期间不可断电、断串口
+- PFC 升级完成判定依赖 LLC -> PFC 转发结果
+
+### 8.6 Black Box 相关
+
+- 查询范围越大耗时越长
+- 记录解析边界由记录头决定，不由 sector 边界决定
+
+### 8.7 Factory Mode 相关
+
+- 时间写入采用 UTC 原始值
+- 保存校准到 Flash 前需确认目标模块与参数无误
+
+### 8.8 小功能增加时如何补文档
+
+- 若新增协议，先补第 2 章
+- 若新增某页小功能，补第 3 章对应分页小节
+- 若影响用户操作，再补第 7 章
+- 若新增限制或坑点，再补第 8 章
+
+### 8.9 新分页增加时如何补文档
+
+- 在第 3 章新增分页章节
+- 在第 4 章补映射表
+- 在第 2 章补对应协议
+- 在第 7 章补操作说明
+
+### 8.10 协议修改时如何补文档
+
+- 改结构体必须同步更新结构体定义和字段含义
+- 改状态码必须同步更新相关章节和注意事项
+- 改时序必须同步更新第 6 章
+
+### 8.11 变更记录
+
+| 日期 | 模块 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 2026-04-21 | 文档结构 | 重构 | 将旧版目录说明式文档重构为协议章节 + 分页章节结构 |
+
