@@ -85,6 +85,7 @@ from serial_debug_assistant.firmware_update import (
     parse_firmware_version_ack,
     parse_llc_pfc_upgrade_progress_ack,
 )
+from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import FirmwareImage, FirmwareUpdateSession, ParameterEntry, ProtocolFrame
 from serial_debug_assistant.protocol import (
     FrameParser,
@@ -145,6 +146,8 @@ HOME_REFRESH_INTERVAL_MS = 120
 class SerialDebugAssistant(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self.i18n = I18nManager("zh")
+        self._translatable_widgets: list[tuple[object, str, str]] = []
         self.title(APP_TITLE)
         self.geometry(APP_GEOMETRY)
         self.minsize(APP_MIN_WIDTH, APP_MIN_HEIGHT)
@@ -191,9 +194,9 @@ class SerialDebugAssistant(tk.Tk):
         self.data_bits_var = tk.StringVar(value=DEFAULT_DATA_BITS)
         self.parity_var = tk.StringVar(value=DEFAULT_PARITY)
         self.stop_bits_var = tk.StringVar(value=DEFAULT_STOP_BITS)
-        self.status_var = tk.StringVar(value="Ready")
-        self.rx_count_var = tk.StringVar(value="Receive: 0 bytes")
-        self.tx_count_var = tk.StringVar(value="Send: 0 bytes")
+        self.status_var = tk.StringVar(value=self.i18n.translate_text("Ready"))
+        self.rx_count_var = tk.StringVar(value=self.i18n.format_text("Receive: {count} bytes", count=0))
+        self.tx_count_var = tk.StringVar(value=self.i18n.format_text("Send: {count} bytes", count=0))
         self.break_ms_var = tk.StringVar(value=DEFAULT_BREAK_MS)
         self.auto_send_seconds_var = tk.StringVar(value=DEFAULT_AUTO_SEND_SECONDS)
         self.send_hex_var = tk.BooleanVar(value=False)
@@ -204,7 +207,8 @@ class SerialDebugAssistant(tk.Tk):
         self.auto_send_var = tk.BooleanVar(value=False)
         self.line_mode_var = tk.BooleanVar(value=True)
         self.display_send_string_var = tk.BooleanVar(value=True)
-        self.parameter_status_var = tk.StringVar(value="参数提示: 参数页就绪")
+        self.parameter_status_var = tk.StringVar(value=self.i18n.format_text("参数提示: {message}", message=self.i18n.translate_text("参数页就绪")))
+        self.language_var = tk.StringVar(value=self.i18n.get_label_for_language(self.i18n.language))
 
         self._configure_styles()
         self._build_ui()
@@ -364,7 +368,7 @@ class SerialDebugAssistant(tk.Tk):
         monitor_settings.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         self._build_monitor_settings(monitor_settings)
 
-        self.home_tab = HomeTab(self.notebook)
+        self.home_tab = HomeTab(self.notebook, i18n=self.i18n)
         self.home_tab.bind_inv_cfg_actions(
             on_enable=self.request_enable_ac_output,
             on_disable=self.request_disable_ac_output,
@@ -381,6 +385,7 @@ class SerialDebugAssistant(tk.Tk):
             on_layout_change=self._log_monitor_layout,
             receive_hex_var=self.recv_hex_var,
             send_hex_var=self.send_hex_var,
+            i18n=self.i18n,
         )
         self.monitor_tab.grid(row=0, column=1, sticky="nsew")
 
@@ -390,6 +395,7 @@ class SerialDebugAssistant(tk.Tk):
             on_read_param=self.request_single_parameter,
             on_write_param=self.write_single_parameter,
             on_toggle_wave=self.toggle_auto_report,
+            i18n=self.i18n,
         )
         self.parameter_tab.message_var.trace_add("write", self._on_parameter_message_changed)
         self.wave_tab = WaveformTab(
@@ -399,17 +405,20 @@ class SerialDebugAssistant(tk.Tk):
             on_clear=self.clear_wave_data,
             export_dir=self.paths.exports_dir,
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
+            i18n=self.i18n,
         )
         self.upgrade_tab = UpgradeTab(
             self.notebook,
             on_browse=self.load_upgrade_firmware,
             on_start_stop=self.toggle_upgrade,
             on_read_version=self.request_upgrade_device_version,
+            i18n=self.i18n,
         )
         self.black_box_tab = BlackBoxTab(
             self.notebook,
             on_query=self.request_black_box_range_query,
             export_dir=self.paths.exports_dir,
+            i18n=self.i18n,
         )
         self.factory_mode_tab = FactoryModeTab(
             self.notebook,
@@ -418,15 +427,16 @@ class SerialDebugAssistant(tk.Tk):
             on_read_cali=self.request_factory_cali_read,
             on_write_cali=self.send_factory_cali_write,
             on_save_cali=self.send_factory_cali_save,
+            i18n=self.i18n,
         )
 
-        self.notebook.add(self.home_tab, text="主页")
-        self.notebook.add(monitor_page, text="串口调试")
-        self.notebook.add(self.parameter_tab, text="参数读写")
-        self.notebook.add(self.wave_tab, text="参数波形")
-        self.notebook.add(self.upgrade_tab, text="固件升级")
-        self.notebook.add(self.black_box_tab, text="Black Box")
-        self.notebook.add(self.factory_mode_tab, text="Factory Mode")
+        self.notebook.add(self.home_tab, text=self.i18n.translate_text("主页"))
+        self.notebook.add(monitor_page, text=self.i18n.translate_text("串口调试"))
+        self.notebook.add(self.parameter_tab, text=self.i18n.translate_text("参数读写"))
+        self.notebook.add(self.wave_tab, text=self.i18n.translate_text("参数波形"))
+        self.notebook.add(self.upgrade_tab, text=self.i18n.translate_text("固件升级"))
+        self.notebook.add(self.black_box_tab, text=self.i18n.translate_text("Black Box"))
+        self.notebook.add(self.factory_mode_tab, text=self.i18n.translate_text("Factory Mode"))
         self.notebook.select(self.home_tab)
 
         footer = ttk.Frame(root, style="App.TFrame")
@@ -444,7 +454,10 @@ class SerialDebugAssistant(tk.Tk):
     def _build_serial_bar(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(2, weight=1)
         parent.columnconfigure(12, weight=1)
-        ttk.Label(parent, text="Serial Port", style="SidebarHeader.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 16))
+        parent.columnconfigure(13, weight=0)
+        serial_label = ttk.Label(parent, text=self.i18n.translate_text("Serial Port"), style="SidebarHeader.TLabel")
+        serial_label.grid(row=0, column=0, sticky="w", padx=(0, 16))
+        self._remember_text(serial_label, "Serial Port")
 
         controls = [
             ("Port Name", self._build_port_selector),
@@ -455,42 +468,77 @@ class SerialDebugAssistant(tk.Tk):
         ]
         col = 1
         for label, builder in controls:
-            ttk.Label(parent, text=f"{label} :", style="Sidebar.TLabel").grid(row=0, column=col, sticky="w", padx=(0, 6))
+            label_widget = ttk.Label(parent, text=f"{self.i18n.translate_text(label)} :", style="Sidebar.TLabel")
+            label_widget.grid(row=0, column=col, sticky="w", padx=(0, 6))
+            self._translatable_widgets.append((label_widget, f"{label} :", "text"))
             builder(parent, 0, col + 1)
             col += 2
 
-        self.open_button = ttk.Button(parent, text="Open", command=self.toggle_connection, style="Accent.TButton")
+        self.open_button = ttk.Button(parent, text=self.i18n.translate_text("Open"), command=self.toggle_connection, style="Accent.TButton")
         self.open_button.grid(row=0, column=11, sticky="w", padx=(12, 0))
+        self._remember_text(self.open_button, "Open")
+        language_label = ttk.Label(parent, text=self.i18n.translate_text("Language"), style="Sidebar.TLabel")
+        language_label.grid(row=0, column=12, sticky="e", padx=(12, 6))
+        self._remember_text(language_label, "Language")
+        self.language_combo = ttk.Combobox(parent, textvariable=self.language_var, state="readonly", values=self.i18n.get_language_labels(), width=12)
+        self.language_combo.grid(row=0, column=13, sticky="e")
+        self.language_combo.bind("<<ComboboxSelected>>", self._on_language_changed)
 
     def _build_monitor_settings(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
-        ttk.Label(parent, text="Debug Settings", style="SidebarHeader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 12))
+        debug_label = ttk.Label(parent, text=self.i18n.translate_text("Debug Settings"), style="SidebarHeader.TLabel")
+        debug_label.grid(row=0, column=0, sticky="w", pady=(0, 12))
+        self._remember_text(debug_label, "Debug Settings")
 
         row = 1
-        receive_frame = ttk.LabelFrame(parent, text="Receive Settings", style="Sidebar.Section.TLabelframe", padding=12)
+        receive_frame = ttk.LabelFrame(parent, text=self.i18n.translate_text("Receive Settings"), style="Sidebar.Section.TLabelframe", padding=12)
+        self._remember_text(receive_frame, "Receive Settings")
         receive_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         receive_frame.columnconfigure(0, weight=1)
         receive_frame.columnconfigure(1, weight=1)
         row += 1
 
-        ttk.Checkbutton(receive_frame, text="Save receiving to file", variable=self.save_to_file_var, command=self.on_toggle_save_to_file, style="Sidebar.TCheckbutton").grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(receive_frame, text="HEX display", variable=self.recv_hex_var, style="Sidebar.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(receive_frame, text="Auto break frame", variable=self.auto_break_var, style="Sidebar.TCheckbutton").grid(row=2, column=0, sticky="w", pady=2)
+        self.save_file_check = ttk.Checkbutton(receive_frame, text=self.i18n.translate_text("Save receiving to file"), variable=self.save_to_file_var, command=self.on_toggle_save_to_file, style="Sidebar.TCheckbutton")
+        self.save_file_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        self._remember_text(self.save_file_check, "Save receiving to file")
+        self.hex_display_check = ttk.Checkbutton(receive_frame, text=self.i18n.translate_text("HEX display"), variable=self.recv_hex_var, style="Sidebar.TCheckbutton")
+        self.hex_display_check.grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        self._remember_text(self.hex_display_check, "HEX display")
+        self.auto_break_check = ttk.Checkbutton(receive_frame, text=self.i18n.translate_text("Auto break frame"), variable=self.auto_break_var, style="Sidebar.TCheckbutton")
+        self.auto_break_check.grid(row=2, column=0, sticky="w", pady=2)
+        self._remember_text(self.auto_break_check, "Auto break frame")
         ttk.Entry(receive_frame, textvariable=self.break_ms_var, width=8).grid(row=2, column=1, sticky="e", pady=2)
-        ttk.Checkbutton(receive_frame, text="Add timestamp", variable=self.timestamp_var, style="Sidebar.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Button(receive_frame, text="Clear data", command=self.clear_receive_area).grid(row=4, column=0, sticky="ew", pady=(8, 0), padx=(0, 6))
-        ttk.Button(receive_frame, text="Save data", command=self.save_receive_snapshot).grid(row=4, column=1, sticky="ew", pady=(8, 0))
+        self.timestamp_check = ttk.Checkbutton(receive_frame, text=self.i18n.translate_text("Add timestamp"), variable=self.timestamp_var, style="Sidebar.TCheckbutton")
+        self.timestamp_check.grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        self._remember_text(self.timestamp_check, "Add timestamp")
+        self.clear_data_button = ttk.Button(receive_frame, text=self.i18n.translate_text("Clear data"), command=self.clear_receive_area)
+        self.clear_data_button.grid(row=4, column=0, sticky="ew", pady=(8, 0), padx=(0, 6))
+        self._remember_text(self.clear_data_button, "Clear data")
+        self.save_data_button = ttk.Button(receive_frame, text=self.i18n.translate_text("Save data"), command=self.save_receive_snapshot)
+        self.save_data_button.grid(row=4, column=1, sticky="ew", pady=(8, 0))
+        self._remember_text(self.save_data_button, "Save data")
 
-        send_frame = ttk.LabelFrame(parent, text="Send Settings", style="Sidebar.Section.TLabelframe", padding=12)
+        send_frame = ttk.LabelFrame(parent, text=self.i18n.translate_text("Send Settings"), style="Sidebar.Section.TLabelframe", padding=12)
+        self._remember_text(send_frame, "Send Settings")
         send_frame.grid(row=row, column=0, columnspan=3, sticky="ew")
         send_frame.columnconfigure(0, weight=1)
         send_frame.columnconfigure(1, weight=1)
-        ttk.Checkbutton(send_frame, text="HEX send", variable=self.send_hex_var, style="Sidebar.TCheckbutton").grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(send_frame, text="Timing send", variable=self.auto_send_var, command=self.on_toggle_auto_send, style="Sidebar.TCheckbutton").grid(row=1, column=0, sticky="w", pady=2)
+        self.hex_send_check = ttk.Checkbutton(send_frame, text=self.i18n.translate_text("HEX send"), variable=self.send_hex_var, style="Sidebar.TCheckbutton")
+        self.hex_send_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        self._remember_text(self.hex_send_check, "HEX send")
+        self.timing_send_check = ttk.Checkbutton(send_frame, text=self.i18n.translate_text("Timing send"), variable=self.auto_send_var, command=self.on_toggle_auto_send, style="Sidebar.TCheckbutton")
+        self.timing_send_check.grid(row=1, column=0, sticky="w", pady=2)
+        self._remember_text(self.timing_send_check, "Timing send")
         ttk.Entry(send_frame, textvariable=self.auto_send_seconds_var, width=8).grid(row=1, column=1, sticky="e", pady=2)
-        ttk.Checkbutton(send_frame, text="Send line ending (CRLF)", variable=self.line_mode_var, style="Sidebar.TCheckbutton").grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(send_frame, text="Display send string", variable=self.display_send_string_var, style="Sidebar.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Button(send_frame, text="Refresh Ports", command=self.refresh_ports).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.line_mode_check = ttk.Checkbutton(send_frame, text=self.i18n.translate_text("Send line ending (CRLF)"), variable=self.line_mode_var, style="Sidebar.TCheckbutton")
+        self.line_mode_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        self._remember_text(self.line_mode_check, "Send line ending (CRLF)")
+        self.display_send_check = ttk.Checkbutton(send_frame, text=self.i18n.translate_text("Display send string"), variable=self.display_send_string_var, style="Sidebar.TCheckbutton")
+        self.display_send_check.grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        self._remember_text(self.display_send_check, "Display send string")
+        self.refresh_ports_button = ttk.Button(send_frame, text=self.i18n.translate_text("Refresh Ports"), command=self.refresh_ports)
+        self.refresh_ports_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self._remember_text(self.refresh_ports_button, "Refresh Ports")
 
     def _build_port_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         holder = ttk.Frame(parent, style="Sidebar.TFrame")
@@ -498,7 +546,9 @@ class SerialDebugAssistant(tk.Tk):
         holder.columnconfigure(0, weight=1)
         self.port_combo = ttk.Combobox(holder, textvariable=self.port_var, state="readonly", width=18)
         self.port_combo.grid(row=0, column=0, sticky="ew")
-        ttk.Button(holder, text="刷新", command=self.refresh_ports, width=5).grid(row=0, column=1, padx=(6, 0))
+        self.port_refresh_button = ttk.Button(holder, text=self.i18n.translate_text("刷新"), command=self.refresh_ports, width=5)
+        self.port_refresh_button.grid(row=0, column=1, padx=(6, 0))
+        self._remember_text(self.port_refresh_button, "刷新")
 
     def _build_baud_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         ttk.Combobox(parent, textvariable=self.baud_var, values=BAUD_RATES, width=10).grid(row=row, column=column, sticky="w", padx=(0, 12))
@@ -511,6 +561,45 @@ class SerialDebugAssistant(tk.Tk):
 
     def _build_stop_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         ttk.Combobox(parent, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
+
+    def _on_language_changed(self, _event=None) -> None:
+        self.i18n.set_language(self.i18n.get_language_from_label(self.language_var.get()))
+        self.language_var.set(self.i18n.get_label_for_language(self.i18n.language))
+        self._apply_language()
+
+    def _apply_language(self) -> None:
+        for widget, source_text, option in self._translatable_widgets:
+            if source_text.endswith(" :"):
+                base_text = source_text[:-2]
+                widget.configure(**{option: f"{self.i18n.translate_text(base_text)} :"})
+            else:
+                widget.configure(**{option: self.i18n.translate_text(source_text)})
+        self.language_combo.configure(values=self.i18n.get_language_labels())
+        self._set_open_button_text("Close" if self.serial_service.is_open() else "Open")
+        self.notebook.tab(0, text=self.i18n.translate_text("主页"))
+        self.notebook.tab(1, text=self.i18n.translate_text("串口调试"))
+        self.notebook.tab(2, text=self.i18n.translate_text("参数读写"))
+        self.notebook.tab(3, text=self.i18n.translate_text("参数波形"))
+        self.notebook.tab(4, text=self.i18n.translate_text("固件升级"))
+        self.notebook.tab(5, text=self.i18n.translate_text("Black Box"))
+        self.notebook.tab(6, text=self.i18n.translate_text("Factory Mode"))
+        self.home_tab.refresh_texts()
+        self.monitor_tab.refresh_texts()
+        self.parameter_tab.refresh_texts()
+        self.wave_tab.refresh_texts()
+        self.upgrade_tab.refresh_texts()
+        self.black_box_tab.refresh_texts()
+        self.factory_mode_tab.refresh_texts()
+        self._update_counter_labels()
+        self._on_parameter_message_changed()
+        self.set_status(self.status_var.get(), error=self.status_label.cget("style") == "ErrorStatus.TLabel")
+
+    def _update_counter_labels(self) -> None:
+        self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=self.total_rx_bytes))
+        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
+
+    def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
+        self._translatable_widgets.append((widget, source_text, option))
 
     def _log_monitor_layout(self, layout: dict[str, int | str]) -> None:
         self.logger.log(
@@ -543,7 +632,7 @@ class SerialDebugAssistant(tk.Tk):
             self.port_var.set(selected_display)
         else:
             self.port_var.set("")
-        self.set_status(f"Ready | {len(display_values)} port(s) found")
+        self.set_status(self.i18n.format_text("Ready | {count} port(s) found", count=len(display_values)))
         self.logger.log("PORTS", f"refresh -> {display_values}")
 
     def toggle_connection(self) -> None:
@@ -554,7 +643,7 @@ class SerialDebugAssistant(tk.Tk):
 
     def open_connection(self) -> None:
         if not self.port_var.get():
-            self.set_status("Please select a serial port.", error=True)
+            self.set_status(self.i18n.translate_text("Please select a serial port."), error=True)
             return
         selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
         try:
@@ -583,7 +672,7 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_rx_hex_bytes.clear()
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
-        self.set_status(f"Connected to {selected_port}")
+        self.set_status(self.i18n.format_text("Connected to {port}", port=selected_port))
         self.upgrade_tab.set_connection_state(True, selected_port)
         self.parameter_tab.set_message("串口已连接，已向广播地址发送停止波形上传命令")
         self._set_open_button_text("Close")
@@ -595,23 +684,23 @@ class SerialDebugAssistant(tk.Tk):
 
     def close_connection(self) -> None:
         self.cancel_auto_send()
-        self.stop_upgrade("串口已断开，升级已停止。", user_initiated=False)
+        self.stop_upgrade(self.i18n.translate_text("串口已断开，升级已停止。"), user_initiated=False)
         self.serial_service.close()
         self.pending_rx_hex_bytes.clear()
         self.upgrade_tab.set_connection_state(False)
-        self.set_status("Disconnected")
+        self.set_status(self.i18n.translate_text("Disconnected"))
         self.parameter_tab.set_message("串口已断开")
         self._set_open_button_text("Open")
         self.logger.log("SERIAL", "close")
 
     def _set_open_button_text(self, text: str) -> None:
-        self.open_button.configure(text=text)
+        self.open_button.configure(text=self.i18n.translate_text(text))
 
     def _on_parameter_message_changed(self, *_args) -> None:
-        self.parameter_status_var.set(f"参数提示: {self.parameter_tab.message_var.get()}")
+        self.parameter_status_var.set(self.i18n.format_text("参数提示: {message}", message=self.parameter_tab.message_var.get()))
 
     def set_status(self, message: str, *, error: bool = False) -> None:
-        self.status_var.set(message)
+        self.status_var.set(self.i18n.translate_text(message))
         if hasattr(self, "status_label"):
             self.status_label.configure(style="ErrorStatus.TLabel" if error else "Status.TLabel")
 
@@ -623,7 +712,7 @@ class SerialDebugAssistant(tk.Tk):
     def load_upgrade_firmware(self) -> None:
         path = filedialog.askopenfilename(
             title="Select Firmware Image",
-            filetypes=[("Binary Files", "*.bin"), ("All Files", "*.*")],
+            filetypes=[("Binary Files", "*.bin"), (self.i18n.translate_text("All Files"), "*.*")],
         )
         if not path:
             return
@@ -979,7 +1068,7 @@ class SerialDebugAssistant(tk.Tk):
                     self.save_handle.flush()
                     self.last_save_flush_at = now
             if updated:
-                self.rx_count_var.set(f"Receive: {self.total_rx_bytes} bytes")
+                self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=self.total_rx_bytes))
             next_delay = 1 if not self.serial_service.rx_queue.empty() else POLL_INTERVAL_MS
         except Exception as exc:
             self.logger.log("ERROR", f"process incoming loop failed: {exc}")
@@ -1061,7 +1150,7 @@ class SerialDebugAssistant(tk.Tk):
                 current_count = len(self.parameters)
                 self.parameter_tab.set_expected_count(current_count, self.expected_param_count)
                 if current_count % 5 == 0 or current_count == self.expected_param_count:
-                    self.parameter_tab.set_message(f"已加载参数: {entry.name}")
+                    self.parameter_tab.set_message(self.i18n.format_text("已加载参数: {name}", name=entry.name))
                 if entry.auto_report and (current_count % 10 == 0 or current_count == self.expected_param_count):
                     self.sync_wave_selection()
                 elif current_count == self.expected_param_count:
@@ -1082,7 +1171,13 @@ class SerialDebugAssistant(tk.Tk):
                 self.parameter_tab.update_parameter(entry)
                 self.parameter_tab.clear_busy(entry.name)
                 self.parameter_tab.clear_invalid(entry.name)
-                self.parameter_tab.set_message(f"读取成功: {entry.name} = {format_value(entry.data_raw, entry.type_id)}")
+                self.parameter_tab.set_message(
+                    self.i18n.format_text(
+                        "读取成功: {name} = {value}",
+                        name=entry.name,
+                        value=format_value(entry.data_raw, entry.type_id),
+                    )
+                )
                 if not entry.is_command:
                     self.wave_tab.update_latest_value(entry.name, format_value(entry.data_raw, entry.type_id))
                 self.logger.log("PARAM", f"read ack name={entry.name} raw={entry.data_raw}")
@@ -1094,7 +1189,13 @@ class SerialDebugAssistant(tk.Tk):
                 self.parameter_tab.update_parameter(entry)
                 self.parameter_tab.clear_busy(entry.name)
                 self.parameter_tab.clear_invalid(entry.name)
-                self.parameter_tab.set_message(f"写入成功: {entry.name} = {format_value(entry.data_raw, entry.type_id)}")
+                self.parameter_tab.set_message(
+                    self.i18n.format_text(
+                        "写入成功: {name} = {value}",
+                        name=entry.name,
+                        value=format_value(entry.data_raw, entry.type_id),
+                    )
+                )
                 if not entry.is_command:
                     self.wave_tab.update_latest_value(entry.name, format_value(entry.data_raw, entry.type_id))
                 self.logger.log("PARAM", f"write ack name={entry.name} raw={entry.data_raw}")
@@ -1346,26 +1447,26 @@ class SerialDebugAssistant(tk.Tk):
 
     def _format_fault_log(self, fault: int | None) -> str:
         fault_text = f"0x{fault:08X}" if fault is not None else "--"
-        lines = [f"故障信息: {fault_text}"]
+        lines = [self.i18n.format_text("故障信息: {fault}", fault=fault_text)]
         active = self._active_bits(fault, FAULT_MESSAGES)
         if active:
             lines.append("")
             lines.extend(active)
         else:
             lines.append("")
-            lines.append("当前无故障" if fault is not None else "故障数据未上报")
+            lines.append(self.i18n.translate_text("当前无故障" if fault is not None else "故障数据未上报"))
         return "\n".join(lines)
 
     def _format_warning_log(self, warning: int | None) -> str:
         warning_text = f"0x{warning:08X}" if warning is not None else "--"
-        lines = [f"告警信息: {warning_text}"]
+        lines = [self.i18n.format_text("告警信息: {warning}", warning=warning_text)]
         active = self._active_bits(warning, WARNING_MESSAGES)
         if active:
             lines.append("")
             lines.extend(active)
         else:
             lines.append("")
-            lines.append("当前无告警" if warning is not None else "告警数据未上报")
+            lines.append(self.i18n.translate_text("当前无告警" if warning is not None else "告警数据未上报"))
         return "\n".join(lines)
 
     def _active_bits(self, value: int | None, mapping: dict[int, str]) -> list[str]:
@@ -1374,7 +1475,7 @@ class SerialDebugAssistant(tk.Tk):
         lines: list[str] = []
         for bit, message in mapping.items():
             if value & (1 << bit):
-                lines.append(f"代码{bit}: {message}")
+                lines.append(self.i18n.format_text("代码 {bit}: {message}", bit=bit, message=self.i18n.translate_text(message)))
         return lines
 
     def request_enable_ac_output(self) -> None:
@@ -1903,7 +2004,7 @@ class SerialDebugAssistant(tk.Tk):
             return
         payload = bytes([len(name.encode("utf-8"))]) + name.encode("utf-8")
         self.parameter_tab.mark_busy(name)
-        self.parameter_tab.set_message(f"正在读取: {name}")
+        self.parameter_tab.set_message(self.i18n.format_text("正在读取: {name}", name=name))
         self.logger.log("PARAM", f"send read single name={name}")
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x02, payload=payload)
 
@@ -1914,7 +2015,7 @@ class SerialDebugAssistant(tk.Tk):
         if entry.is_command:
             payload = bytes([len(name.encode("utf-8"))]) + (0).to_bytes(4, "little") * 3 + name.encode("utf-8")
             self.parameter_tab.mark_busy(name)
-            self.parameter_tab.set_message(f"正在执行: {name}")
+            self.parameter_tab.set_message(self.i18n.format_text("正在执行: {name}", name=name))
             self.logger.log("PARAM", f"send execute command name={name}")
             self.send_protocol_frame(cmd_set=0x01, cmd_word=0x03, payload=payload)
             return
@@ -1960,7 +2061,14 @@ class SerialDebugAssistant(tk.Tk):
         if not in_range:
             self.parameter_tab.clear_busy(name)
             self.parameter_tab.mark_invalid(name)
-            self.parameter_tab.set_message(f"写入越界: {name} 需要在 {min_value} 到 {max_value} 之间")
+            self.parameter_tab.set_message(
+                self.i18n.format_text(
+                    "写入越界: {name} 需要在 {min_value} 到 {max_value} 之间",
+                    name=name,
+                    min_value=min_value,
+                    max_value=max_value,
+                )
+            )
             self.set_status(f"Write out of range: {name}", error=True)
             self.logger.log(
                 "WARN",
@@ -1976,7 +2084,7 @@ class SerialDebugAssistant(tk.Tk):
             + name.encode("utf-8")
         )
         self.parameter_tab.mark_busy(name)
-        self.parameter_tab.set_message(f"正在写入: {name}")
+        self.parameter_tab.set_message(self.i18n.format_text("正在写入: {name}", name=name))
         self.logger.log(
             "PARAM",
             f"send write name={name} raw=0x{raw_value:08X} min=0x{min_raw:08X} max=0x{max_raw:08X} "
@@ -1997,7 +2105,7 @@ class SerialDebugAssistant(tk.Tk):
             entry.auto_report = enabled
             self.parameter_tab.update_wave_state(name, enabled)
         self.sync_wave_selection()
-        self.parameter_tab.set_message(f"已更新波形勾选: {name}")
+        self.parameter_tab.set_message(self.i18n.format_text("已更新波形勾选: {name}", name=name))
         self.logger.log("PARAM", f"toggle auto report name={name} enabled={enabled}")
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x05, payload=payload)
 
@@ -2085,7 +2193,7 @@ class SerialDebugAssistant(tk.Tk):
             self._handle_serial_error(str(exc))
             return
         self.total_tx_bytes += sent
-        self.tx_count_var.set(f"Send: {self.total_tx_bytes} bytes")
+        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
         self._echo_sent_payload(frame, hex_mode=self.monitor_tab.send_hex_enabled())
 
     def format_incoming(self, timestamp: float, data: bytes) -> str:
@@ -2177,7 +2285,7 @@ class SerialDebugAssistant(tk.Tk):
             title="Save Receive Data",
             initialdir=str(self.paths.exports_dir),
             defaultextension=".txt",
-            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+            filetypes=[("Text Files", "*.txt"), (self.i18n.translate_text("All Files"), "*.*")],
         )
         if not path:
             return
@@ -2192,7 +2300,7 @@ class SerialDebugAssistant(tk.Tk):
                 title="Select output file",
                 initialdir=str(self.paths.exports_dir),
                 defaultextension=".bin",
-                filetypes=[("Binary Files", "*.bin"), ("All Files", "*.*")],
+            filetypes=[("Binary Files", "*.bin"), (self.i18n.translate_text("All Files"), "*.*")],
             )
             if not path:
                 self.save_to_file_var.set(False)
@@ -2230,7 +2338,7 @@ class SerialDebugAssistant(tk.Tk):
             self._handle_serial_error(str(exc))
             return
         self.total_tx_bytes += sent
-        self.tx_count_var.set(f"Send: {self.total_tx_bytes} bytes")
+        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
         self._echo_sent_payload(payload, hex_mode=self.monitor_tab.send_hex_enabled())
         self.set_status(f"Sent {sent} byte(s)")
 
@@ -2239,7 +2347,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status("Open the serial port first.", error=True)
             return
         if not raw_text.strip():
-            self.set_status(f"快捷发送 {index + 1} 为空", error=True)
+            self.set_status(self.i18n.format_text("快捷发送 {index} 为空", index=index + 1), error=True)
             return
         try:
             payload = self.build_send_bytes(raw_text, hex_mode=hex_mode, append_crlf=append_crlf)
@@ -2253,9 +2361,9 @@ class SerialDebugAssistant(tk.Tk):
             self._handle_serial_error(str(exc))
             return
         self.total_tx_bytes += sent
-        self.tx_count_var.set(f"Send: {self.total_tx_bytes} bytes")
+        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
         self._echo_sent_payload(payload, hex_mode=hex_mode)
-        self.set_status(f"快捷发送 {index + 1} 已发送 {sent} byte(s)")
+        self.set_status(self.i18n.format_text("快捷发送 {index} 已发送 {sent} byte(s)", index=index + 1, sent=sent))
 
     def build_send_bytes(self, raw_text: str, *, hex_mode: bool, append_crlf: bool) -> bytes:
         if hex_mode:
@@ -2311,9 +2419,9 @@ class SerialDebugAssistant(tk.Tk):
     def reset_counters(self) -> None:
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
-        self.rx_count_var.set("Receive: 0 bytes")
-        self.tx_count_var.set("Send: 0 bytes")
-        self.set_status("Counters reset")
+        self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=0))
+        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=0))
+        self.set_status(self.i18n.translate_text("Counters reset"))
         self.logger.log("UI", "reset counters")
 
     def _parse_float(self, value: str, default: float) -> float:

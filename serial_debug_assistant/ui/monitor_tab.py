@@ -6,6 +6,8 @@ import re
 import tkinter as tk
 from tkinter import ttk
 
+from serial_debug_assistant.i18n import I18nManager
+
 
 class SerialMonitorTab(ttk.Frame):
     PRESET_ROWS = 50
@@ -26,8 +28,11 @@ class SerialMonitorTab(ttk.Frame):
         on_layout_change=None,
         receive_hex_var: tk.BooleanVar | None = None,
         send_hex_var: tk.BooleanVar | None = None,
+        i18n: I18nManager,
     ) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
+        self.i18n = i18n
+        self._translatable_widgets: list[tuple[object, str, str]] = []
         self.on_send = on_send
         self.on_send_preset = on_send_preset
         self.on_reset_count = on_reset_count
@@ -83,7 +88,8 @@ class SerialMonitorTab(ttk.Frame):
         io_paned.grid(row=0, column=0, sticky="nsew")
         self.io_paned = io_paned
 
-        send_log_container = ttk.LabelFrame(io_container, text="发送信息", style="Section.TLabelframe", padding=8)
+        send_log_container = ttk.LabelFrame(io_container, text=self.i18n.translate_text("发送信息"), style="Section.TLabelframe", padding=8)
+        self._remember_text(send_log_container, "发送信息")
         send_log_container.rowconfigure(1, weight=1)
         send_log_container.columnconfigure(0, weight=1)
         self.send_log_container = send_log_container
@@ -112,7 +118,8 @@ class SerialMonitorTab(ttk.Frame):
         send_log_scroll.grid(row=1, column=1, sticky="ns")
         self.send_log_text.configure(yscrollcommand=send_log_scroll.set)
 
-        receive_container = ttk.LabelFrame(io_container, text="接收信息", style="Section.TLabelframe", padding=8)
+        receive_container = ttk.LabelFrame(io_container, text=self.i18n.translate_text("接收信息"), style="Section.TLabelframe", padding=8)
+        self._remember_text(receive_container, "接收信息")
         receive_container.rowconfigure(1, weight=1)
         receive_container.columnconfigure(0, weight=1)
         self.receive_container = receive_container
@@ -154,7 +161,7 @@ class SerialMonitorTab(ttk.Frame):
         manual_tab = ttk.Frame(send_tabs, style="Panel.TFrame", padding=8)
         manual_tab.rowconfigure(0, weight=1)
         manual_tab.columnconfigure(0, weight=1)
-        send_tabs.add(manual_tab, text="手动发送")
+        send_tabs.add(manual_tab, text=self.i18n.translate_text("手动发送"))
         self.manual_tab = manual_tab
 
         manual_editor = ttk.Frame(manual_tab, style="Panel.TFrame")
@@ -185,24 +192,28 @@ class SerialMonitorTab(ttk.Frame):
         send_actions.grid(row=0, column=1, sticky="ns", padx=(10, 0))
         send_actions.rowconfigure(1, weight=1)
 
-        ttk.Button(
+        self.send_button = ttk.Button(
             send_actions,
-            text="Send",
+            text=self.i18n.translate_text("Send"),
             command=self.on_send,
             style="Accent.TButton",
             width=10,
-        ).grid(row=0, column=0, sticky="ew")
-        ttk.Button(
+        )
+        self.send_button.grid(row=0, column=0, sticky="ew")
+        self._remember_text(self.send_button, "Send")
+        self.reset_count_button = ttk.Button(
             send_actions,
-            text="Reset count",
+            text=self.i18n.translate_text("Reset count"),
             command=self.on_reset_count,
             width=10,
-        ).grid(row=1, column=0, sticky="sew", pady=(8, 0))
+        )
+        self.reset_count_button.grid(row=1, column=0, sticky="sew", pady=(8, 0))
+        self._remember_text(self.reset_count_button, "Reset count")
 
         preset_tab = ttk.Frame(send_tabs, style="Panel.TFrame", padding=8)
         preset_tab.rowconfigure(0, weight=1)
         preset_tab.columnconfigure(0, weight=1)
-        send_tabs.add(preset_tab, text="快捷发送")
+        send_tabs.add(preset_tab, text=self.i18n.translate_text("快捷发送"))
         self.preset_tab = preset_tab
 
         preset_frame = ttk.Frame(preset_tab, style="Panel.TFrame")
@@ -213,10 +224,15 @@ class SerialMonitorTab(ttk.Frame):
         preset_header = ttk.Frame(preset_frame, style="Panel.TFrame")
         preset_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self._configure_preset_columns(preset_header)
-        ttk.Label(preset_header, text="HEX", anchor="center").grid(row=0, column=0, sticky="ew")
-        ttk.Label(preset_header, text="发送内容", anchor="w").grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        hex_label = ttk.Label(preset_header, text="HEX", anchor="center")
+        hex_label.grid(row=0, column=0, sticky="ew")
+        payload_label = ttk.Label(preset_header, text=self.i18n.translate_text("发送内容"), anchor="w")
+        payload_label.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        send_label = ttk.Label(preset_header, text=self.i18n.translate_text("发送"), anchor="center")
+        send_label.grid(row=0, column=3, sticky="ew", padx=(8, 0))
         ttk.Label(preset_header, text="\\r\\n", anchor="center").grid(row=0, column=2, sticky="ew", padx=(8, 0))
-        ttk.Label(preset_header, text="发送", anchor="center").grid(row=0, column=3, sticky="ew", padx=(8, 0))
+        self._remember_text(payload_label, "发送内容")
+        self._remember_text(send_label, "发送")
 
         self.preset_canvas = tk.Canvas(
             preset_frame,
@@ -275,12 +291,14 @@ class SerialMonitorTab(ttk.Frame):
 
         preset_actions = ttk.Frame(preset_tab, style="Panel.TFrame")
         preset_actions.grid(row=1, column=0, sticky="e", pady=(8, 0))
-        ttk.Button(
+        self.preset_reset_count_button = ttk.Button(
             preset_actions,
-            text="Reset count",
+            text=self.i18n.translate_text("Reset count"),
             command=self.on_reset_count,
             width=12,
-        ).grid(row=0, column=0)
+        )
+        self.preset_reset_count_button.grid(row=0, column=0)
+        self._remember_text(self.preset_reset_count_button, "Reset count")
 
         io_paned.add(send_log_container, minsize=280, stretch="always")
         io_paned.add(receive_container, minsize=280, stretch="always")
@@ -328,6 +346,15 @@ class SerialMonitorTab(ttk.Frame):
 
     def get_receive_hex_bytes_per_line(self) -> int:
         return 0
+
+    def refresh_texts(self) -> None:
+        for widget, source_text, option in self._translatable_widgets:
+            widget.configure(**{option: self.i18n.translate_text(source_text)})
+        self.send_tabs.tab(self.manual_tab, text=self.i18n.translate_text("手动发送"))
+        self.send_tabs.tab(self.preset_tab, text=self.i18n.translate_text("快捷发送"))
+
+    def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
+        self._translatable_widgets.append((widget, source_text, option))
 
     def _on_receive_mode_change(self, *_args) -> None:
         self._update_receive_wrap()

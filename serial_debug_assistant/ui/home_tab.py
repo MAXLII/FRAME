@@ -4,10 +4,14 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Optional
 
+from serial_debug_assistant.i18n import I18nManager
+
 
 class HomeTab(ttk.Frame):
-    def __init__(self, master) -> None:
+    def __init__(self, master, *, i18n: I18nManager) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
+        self.i18n = i18n
+        self._translatable_widgets: list[tuple[object, str, str]] = []
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
@@ -38,7 +42,7 @@ class HomeTab(ttk.Frame):
         self.llc_temp1_var = tk.StringVar(value="-- C")
         self.llc_temp2_var = tk.StringVar(value="-- C")
         self.inv_cfg_var = tk.StringVar(value="220V/50Hz")
-        self.inv_cfg_status_var = tk.StringVar(value="等待读取逆变设置")
+        self.inv_cfg_status_var = tk.StringVar(value=self.i18n.translate_text("等待读取逆变设置"))
         self._inv_cfg_choices = ("220V/50Hz", "230V/50Hz", "240V/50Hz")
 
         self.indicator_dots: dict[str, tk.Canvas] = {}
@@ -98,8 +102,8 @@ class HomeTab(ttk.Frame):
         self.fault_text = self._build_log_section(bottom_strip, row=0, column=1, title="故障信息")
         self.warning_text = self._build_log_section(bottom_strip, row=0, column=2, title="告警信息")
 
-        self.set_fault_log("暂无故障信息")
-        self.set_warning_log("暂无告警信息")
+        self.set_fault_log(self.i18n.translate_text("暂无故障信息"))
+        self.set_warning_log(self.i18n.translate_text("暂无告警信息"))
 
     def update_pcs_info(
         self,
@@ -172,7 +176,8 @@ class HomeTab(ttk.Frame):
         rows: list[tuple[str, tk.StringVar]],
         columnspan: int = 1,
     ) -> None:
-        frame = ttk.LabelFrame(parent, text=title, style="Section.TLabelframe", padding=10)
+        frame = ttk.LabelFrame(parent, text=self.i18n.translate_text(title), style="Section.TLabelframe", padding=10)
+        self._remember_text(frame, title)
         frame.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=6, pady=6)
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=0, minsize=92)
@@ -181,7 +186,9 @@ class HomeTab(ttk.Frame):
             item = ttk.Frame(frame, style="Panel.TFrame")
             item.grid(row=index, column=0, columnspan=2, sticky="ew", pady=(0, 4 if index < len(rows) - 1 else 0))
             item.columnconfigure(0, weight=1)
-            ttk.Label(item, text=label_text, style="TLabel").grid(row=0, column=0, sticky="w")
+            label = ttk.Label(item, text=self.i18n.translate_text(label_text), style="TLabel")
+            self._remember_text(label, label_text)
+            label.grid(row=0, column=0, sticky="w")
             ttk.Label(
                 item,
                 textvariable=value_var,
@@ -192,7 +199,8 @@ class HomeTab(ttk.Frame):
             ).grid(row=0, column=1, sticky="e", padx=(18, 0))
 
     def _build_log_section(self, parent: ttk.Frame, *, row: int, column: int, title: str) -> tk.Text:
-        frame = ttk.LabelFrame(parent, text=title, style="Section.TLabelframe", padding=6)
+        frame = ttk.LabelFrame(parent, text=self.i18n.translate_text(title), style="Section.TLabelframe", padding=6)
+        self._remember_text(frame, title)
         frame.grid(row=row, column=column, sticky="nsew", padx=6, pady=0)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
@@ -227,7 +235,8 @@ class HomeTab(ttk.Frame):
         column: int,
         columnspan: int = 1,
     ) -> None:
-        frame = ttk.LabelFrame(parent, text="交流侧", style="Section.TLabelframe", padding=10)
+        frame = ttk.LabelFrame(parent, text=self.i18n.translate_text("交流侧"), style="Section.TLabelframe", padding=10)
+        self._remember_text(frame, "交流侧")
         frame.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=6, pady=6)
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=0, minsize=1)
@@ -290,7 +299,9 @@ class HomeTab(ttk.Frame):
         panel.grid(row=row, column=column, sticky="nsew")
         panel.columnconfigure(0, weight=1)
         panel.columnconfigure(1, weight=0, minsize=92)
-        ttk.Label(panel, text=title, style="Header.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        title_label = ttk.Label(panel, text=self.i18n.translate_text(title), style="Header.TLabel")
+        self._remember_text(title_label, title)
+        title_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
 
         for index, (label_text, value_var) in enumerate(rows, start=1):
             self._build_value_row(panel, row=index, label_text=label_text, value_var=value_var)
@@ -303,7 +314,8 @@ class HomeTab(ttk.Frame):
         column: int,
         columnspan: int = 1,
     ) -> None:
-        frame = ttk.LabelFrame(parent, text="状态", style="Section.TLabelframe", padding=10)
+        frame = ttk.LabelFrame(parent, text=self.i18n.translate_text("状态"), style="Section.TLabelframe", padding=10)
+        self._remember_text(frame, "状态")
         frame.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=6, pady=6)
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
@@ -371,7 +383,8 @@ class HomeTab(ttk.Frame):
         row: int,
         column: int,
     ) -> None:
-        frame = ttk.LabelFrame(parent, text="设置", style="Section.TLabelframe", padding=10)
+        frame = ttk.LabelFrame(parent, text=self.i18n.translate_text("设置"), style="Section.TLabelframe", padding=10)
+        self._remember_text(frame, "设置")
         frame.grid(row=row, column=column, sticky="nsew", padx=6, pady=0)
         frame.columnconfigure(0, weight=1)
 
@@ -379,17 +392,23 @@ class HomeTab(ttk.Frame):
         top_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         top_row.columnconfigure(2, weight=1)
 
-        ttk.Label(top_row, text="AC 输出控制", style="TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self.enable_output_button = ttk.Button(top_row, text="打开 AC 输出", style="TButton")
+        top_label = ttk.Label(top_row, text=self.i18n.translate_text("AC 输出控制"), style="TLabel")
+        self._remember_text(top_label, "AC 输出控制")
+        top_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.enable_output_button = ttk.Button(top_row, text=self.i18n.translate_text("打开 AC 输出"), style="TButton")
+        self._remember_text(self.enable_output_button, "打开 AC 输出")
         self.enable_output_button.grid(row=0, column=1, sticky="w", padx=(0, 8))
-        self.disable_output_button = ttk.Button(top_row, text="关闭 AC 输出", style="TButton")
+        self.disable_output_button = ttk.Button(top_row, text=self.i18n.translate_text("关闭 AC 输出"), style="TButton")
+        self._remember_text(self.disable_output_button, "关闭 AC 输出")
         self.disable_output_button.grid(row=0, column=2, sticky="w")
 
         bottom_row = ttk.Frame(frame, style="Panel.TFrame")
         bottom_row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         bottom_row.columnconfigure(3, weight=1)
 
-        ttk.Label(bottom_row, text="输出配置", style="TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        bottom_label = ttk.Label(bottom_row, text=self.i18n.translate_text("输出配置"), style="TLabel")
+        self._remember_text(bottom_label, "输出配置")
+        bottom_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
         self.config_combo = ttk.Combobox(
             bottom_row,
             textvariable=self.inv_cfg_var,
@@ -399,7 +418,8 @@ class HomeTab(ttk.Frame):
         )
         self.config_combo.grid(row=0, column=1, sticky="w", padx=(0, 10))
 
-        self.send_cfg_button = ttk.Button(bottom_row, text="发送设置", style="Primary.TButton")
+        self.send_cfg_button = ttk.Button(bottom_row, text=self.i18n.translate_text("发送设置"), style="Primary.TButton")
+        self._remember_text(self.send_cfg_button, "发送设置")
         self.send_cfg_button.grid(row=0, column=2, sticky="w")
 
         third_row = ttk.Frame(frame, style="Panel.TFrame")
@@ -411,7 +431,8 @@ class HomeTab(ttk.Frame):
             column=0,
             sticky="w",
         )
-        self.read_cfg_button = ttk.Button(third_row, text="读取当前设置", style="TButton")
+        self.read_cfg_button = ttk.Button(third_row, text=self.i18n.translate_text("读取当前设置"), style="TButton")
+        self._remember_text(self.read_cfg_button, "读取当前设置")
         self.read_cfg_button.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
 
@@ -419,7 +440,9 @@ class HomeTab(ttk.Frame):
         item = ttk.Frame(parent, style="Panel.TFrame")
         item.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         item.columnconfigure(0, weight=1)
-        ttk.Label(item, text=label_text, style="TLabel").grid(row=0, column=0, sticky="w")
+        label = ttk.Label(item, text=self.i18n.translate_text(label_text), style="TLabel")
+        self._remember_text(label, label_text)
+        label.grid(row=0, column=0, sticky="w")
         ttk.Label(
             item,
             textvariable=value_var,
@@ -447,7 +470,9 @@ class HomeTab(ttk.Frame):
         dot.create_oval(2, 2, 14, 14, fill="#c4c4c4", outline="")
         self.indicator_dots[key] = dot
 
-        ttk.Label(item, text=title, style="TLabel").grid(row=0, column=1, sticky="w")
+        label = ttk.Label(item, text=self.i18n.translate_text(title), style="TLabel")
+        self._remember_text(label, title)
+        label.grid(row=0, column=1, sticky="w")
 
     def set_fault_log(self, message: str) -> None:
         if message == self._fault_log_cache:
@@ -480,14 +505,26 @@ class HomeTab(ttk.Frame):
             if combo_value in self._inv_cfg_choices:
                 self.inv_cfg_var.set(combo_value)
         if ac_out_enable_trig == 0xFF and ac_out_disable_trig == 0xFF and ac_out_rms == 0xFF and ac_out_freq == 0xFF:
-            self.inv_cfg_status_var.set("已读取当前逆变设置")
+            self.inv_cfg_status_var.set(self.i18n.translate_text("已读取当前逆变设置"))
         elif ac_out_enable_trig == 1:
-            self.inv_cfg_status_var.set("已应答: 打开 AC 输出")
+            self.inv_cfg_status_var.set(self.i18n.translate_text("已应答: 打开 AC 输出"))
         elif ac_out_disable_trig == 1:
-            self.inv_cfg_status_var.set("已应答: 关闭 AC 输出")
+            self.inv_cfg_status_var.set(self.i18n.translate_text("已应答: 关闭 AC 输出"))
         else:
-            display = f"{ac_out_rms}V/{ac_out_freq}Hz" if ac_out_rms != 0xFF and ac_out_freq != 0xFF else "保持当前"
-            self.inv_cfg_status_var.set(f"逆变设置已更新: {display}")
+            display = f"{ac_out_rms}V/{ac_out_freq}Hz" if ac_out_rms != 0xFF and ac_out_freq != 0xFF else self.i18n.translate_text("保持当前")
+            self.inv_cfg_status_var.set(self.i18n.format_text("逆变设置已更新: {display}", display=display))
+
+    def refresh_texts(self) -> None:
+        for widget, source_text, option in self._translatable_widgets:
+            widget.configure(**{option: self.i18n.translate_text(source_text)})
+        self.inv_cfg_status_var.set(self.i18n.translate_text(self.inv_cfg_status_var.get()))
+        if self._fault_log_cache is not None:
+            self._replace_text(self.fault_text, self.i18n.translate_text(self._fault_log_cache))
+        if self._warning_log_cache is not None:
+            self._replace_text(self.warning_text, self.i18n.translate_text(self._warning_log_cache))
+
+    def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
+        self._translatable_widgets.append((widget, source_text, option))
 
     def _replace_text(self, widget: tk.Text, message: str) -> None:
         widget.configure(state="normal")

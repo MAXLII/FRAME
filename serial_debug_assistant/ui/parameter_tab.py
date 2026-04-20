@@ -4,6 +4,7 @@ from typing import Callable
 import tkinter as tk
 from tkinter import ttk
 
+from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import ParameterEntry
 from serial_debug_assistant.protocol import TYPE_NAMES, format_value
 
@@ -20,8 +21,11 @@ class ParameterReadWriteTab(ttk.Frame):
         on_read_param: Callable[[str], None],
         on_write_param: Callable[[str], None],
         on_toggle_wave: Callable[[str, bool], None],
+        i18n: I18nManager,
     ) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
+        self.i18n = i18n
+        self._translatable_widgets: list[tuple[object, str, str]] = []
         self.on_read_list = on_read_list
         self.on_read_param = on_read_param
         self.on_write_param = on_write_param
@@ -31,7 +35,7 @@ class ParameterReadWriteTab(ttk.Frame):
         self.dynamic_addr_var = tk.StringVar(value="0")
         self.search_var = tk.StringVar()
         self.count_var = tk.StringVar(value="0/0")
-        self.message_var = tk.StringVar(value="参数页就绪")
+        self.message_var = tk.StringVar(value=self.i18n.translate_text("参数页就绪"))
         self.parameters: dict[str, ParameterEntry] = {}
         self._busy_name: str | None = None
         self._invalid_name: str | None = None
@@ -46,28 +50,39 @@ class ParameterReadWriteTab(ttk.Frame):
         self.rowconfigure(1, weight=1)
         self.columnconfigure(0, weight=1)
 
-        toolbar = ttk.LabelFrame(self, text="参数筛选", style="Section.TLabelframe", padding=12)
+        toolbar = ttk.LabelFrame(self, text=self.i18n.translate_text("参数筛选"), style="Section.TLabelframe", padding=12)
+        self._remember_text(toolbar, "参数筛选")
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         toolbar.columnconfigure(8, weight=1)
 
-        ttk.Button(toolbar, text="读取参数列表", command=self.on_read_list, style="Accent.TButton").grid(
+        read_list_button = ttk.Button(toolbar, text=self.i18n.translate_text("读取参数列表"), command=self.on_read_list, style="Accent.TButton")
+        self._remember_text(read_list_button, "读取参数列表")
+        read_list_button.grid(
             row=0,
             column=0,
             padx=(0, 12),
         )
         ttk.Label(toolbar, textvariable=self.count_var, style="Header.TLabel").grid(row=0, column=1, padx=(0, 20))
-        ttk.Label(toolbar, text="模块地址:", style="Header.TLabel").grid(row=0, column=2)
+        module_label = ttk.Label(toolbar, text=self.i18n.translate_text("模块地址:"), style="Header.TLabel")
+        self._remember_text(module_label, "模块地址:")
+        module_label.grid(row=0, column=2)
         ttk.Entry(toolbar, textvariable=self.module_addr_var, width=8).grid(row=0, column=3, padx=(6, 12))
-        ttk.Label(toolbar, text="动态地址:", style="Header.TLabel").grid(row=0, column=4)
+        dynamic_label = ttk.Label(toolbar, text=self.i18n.translate_text("动态地址:"), style="Header.TLabel")
+        self._remember_text(dynamic_label, "动态地址:")
+        dynamic_label.grid(row=0, column=4)
         ttk.Entry(toolbar, textvariable=self.dynamic_addr_var, width=8).grid(row=0, column=5, padx=(6, 24))
-        ttk.Label(toolbar, text="参数搜索", style="Header.TLabel").grid(row=0, column=6)
+        search_label = ttk.Label(toolbar, text=self.i18n.translate_text("参数搜索"), style="Header.TLabel")
+        self._remember_text(search_label, "参数搜索")
+        search_label.grid(row=0, column=6)
         ttk.Entry(toolbar, textvariable=self.search_var, width=28).grid(row=0, column=7, padx=(8, 0))
-        self.read_button = ttk.Button(toolbar, text="读取", width=8, command=self._invoke_selected_read, state="disabled")
+        self.read_button = ttk.Button(toolbar, text=self.i18n.translate_text("读取"), width=8, command=self._invoke_selected_read, state="disabled")
+        self._remember_text(self.read_button, "读取")
         self.read_button.grid(row=0, column=9, padx=(12, 6), sticky="e")
-        self.action_button = ttk.Button(toolbar, text="写入", width=8, command=self._invoke_selected_action, state="disabled")
+        self.action_button = ttk.Button(toolbar, text=self.i18n.translate_text("写入"), width=8, command=self._invoke_selected_action, state="disabled")
         self.action_button.grid(row=0, column=10, padx=(0, 6), sticky="e")
 
-        table_frame = ttk.LabelFrame(self, text="参数表", style="Section.TLabelframe", padding=10)
+        table_frame = ttk.LabelFrame(self, text=self.i18n.translate_text("参数表"), style="Section.TLabelframe", padding=10)
+        self._remember_text(table_frame, "参数表")
         table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
@@ -102,7 +117,7 @@ class ParameterReadWriteTab(ttk.Frame):
             "max": 120,
         }
         for column in columns:
-            self.tree.heading(column, text=headings[column])
+            self.tree.heading(column, text=self.i18n.translate_text(headings[column]))
             self.tree.column(column, width=widths[column], anchor="center")
 
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self._on_tree_scroll)
@@ -120,7 +135,7 @@ class ParameterReadWriteTab(ttk.Frame):
         self.count_var.set(f"{received}/{total}")
 
     def set_message(self, message: str) -> None:
-        self.message_var.set(message)
+        self.message_var.set(self.i18n.translate_text(message))
 
     def set_parameters(self, parameters: dict[str, ParameterEntry]) -> None:
         self.parameters = dict(sorted(parameters.items(), key=lambda item: item[0].lower()))
@@ -337,21 +352,39 @@ class ParameterReadWriteTab(ttk.Frame):
         row_id = self.get_selected_name()
         if not row_id or not self.tree.exists(row_id):
             self._update_tree_selection_style()
-            self.message_var.set("当前选中参数: 无")
+            self.message_var.set(self.i18n.translate_text("当前选中参数: 无"))
             self.read_button.configure(state="disabled")
-            self.action_button.configure(state="disabled", text="写入")
+            self.action_button.configure(state="disabled", text=self.i18n.translate_text("写入"))
             return
 
         entry = self.parameters.get(row_id)
         if entry is None:
             self._update_tree_selection_style()
-            self.message_var.set("当前选中参数: 无")
+            self.message_var.set(self.i18n.translate_text("当前选中参数: 无"))
             return
 
         self._update_tree_selection_style()
-        self.message_var.set(f"当前选中参数: {row_id}")
+        self.message_var.set(self.i18n.format_text("当前选中参数: {name}", name=row_id))
         self.read_button.configure(state="normal")
-        self.action_button.configure(state="normal", text="执行" if entry.is_command else "写入")
+        self.action_button.configure(state="normal", text=self.i18n.translate_text("执行" if entry.is_command else "写入"))
+
+    def refresh_texts(self) -> None:
+        for widget, source_text, option in self._translatable_widgets:
+            widget.configure(**{option: self.i18n.translate_text(source_text)})
+        headings = {
+            "name": "参数名称",
+            "type": "类型",
+            "data": "数据",
+            "min": "最小值",
+            "max": "最大值",
+        }
+        for column, text in headings.items():
+            self.tree.heading(column, text=self.i18n.translate_text(text))
+        self.message_var.set(self.i18n.translate_text(self.message_var.get()))
+        self._update_action_bar()
+
+    def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
+        self._translatable_widgets.append((widget, source_text, option))
 
     def _invoke_selected_read(self) -> None:
         row_id = self.get_selected_name()

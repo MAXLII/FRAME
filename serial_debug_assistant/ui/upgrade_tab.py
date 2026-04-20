@@ -5,17 +5,21 @@ import tkinter as tk
 from tkinter import ttk
 
 from serial_debug_assistant.firmware_update import UPDATE_TYPE_FORCE, UPDATE_TYPE_NORMAL
+from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import FirmwareImage
 
 
 class UpgradeTab(ttk.Frame):
-    def __init__(self, master, *, on_browse, on_start_stop, on_read_version) -> None:
+    def __init__(self, master, *, on_browse, on_start_stop, on_read_version, i18n: I18nManager) -> None:
         super().__init__(master, style="Panel.TFrame", padding=12)
+        self.i18n = i18n
+        self._translatable_widgets: list[tuple[object, str, str]] = []
+        self._running = False
         self.on_browse = on_browse
         self.on_start_stop = on_start_stop
         self.on_read_version = on_read_version
 
-        self.file_path_var = tk.StringVar(value="No firmware loaded")
+        self.file_path_var = tk.StringVar(value=self.i18n.translate_text("No firmware loaded"))
         self.version_var = tk.StringVar(value="-")
         self.device_version_var = tk.StringVar(value="-")
         self.compile_time_var = tk.StringVar(value="-")
@@ -26,14 +30,14 @@ class UpgradeTab(ttk.Frame):
         self.download_addr_var = tk.StringVar(value="2")
         self.download_dyn_addr_var = tk.StringVar(value="0")
         self.update_type_var = tk.StringVar(value="Normal")
-        self.status_var = tk.StringVar(value="Waiting for firmware")
-        self.detail_var = tk.StringVar(value="Flow: 0x08 -> 0x09 -> 0x0A -> 0x0B, firmware packet size: 1024 bytes")
+        self.status_var = tk.StringVar(value=self.i18n.translate_text("Waiting for firmware"))
+        self.detail_var = tk.StringVar(value=self.i18n.translate_text("Flow: 0x08 -> 0x09 -> 0x0A -> 0x0B, firmware packet size: 1024 bytes"))
         self.error_var = tk.StringVar(value="-")
         self.progress_text_var = tk.StringVar(value="0 / 0 bytes")
         self.progress_percent_var = tk.StringVar(value="0%")
-        self.connection_var = tk.StringVar(value="Serial port disconnected")
-        self.forward_status_var = tk.StringVar(value="LLC -> PFC forward progress is idle")
-        self.forward_detail_var = tk.StringVar(value="Waiting for the main upgrade flow to start")
+        self.connection_var = tk.StringVar(value=self.i18n.translate_text("Serial port disconnected"))
+        self.forward_status_var = tk.StringVar(value=self.i18n.translate_text("LLC -> PFC forward progress is idle"))
+        self.forward_detail_var = tk.StringVar(value=self.i18n.translate_text("Waiting for the main upgrade flow to start"))
         self.forward_text_var = tk.StringVar(value="0 / 0 bytes")
         self.forward_percent_var = tk.StringVar(value="0%")
 
@@ -54,21 +58,31 @@ class UpgradeTab(ttk.Frame):
         right.rowconfigure(0, weight=1)
         right.columnconfigure(0, weight=1)
 
-        file_frame = ttk.LabelFrame(left, text="Firmware", style="Section.TLabelframe", padding=12)
+        file_frame = ttk.LabelFrame(left, text=self.i18n.translate_text("Firmware"), style="Section.TLabelframe", padding=12)
+        self._remember_text(file_frame, "Firmware")
         file_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         file_frame.columnconfigure(0, weight=1)
         ttk.Entry(file_frame, textvariable=self.file_path_var, state="readonly").grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        ttk.Button(file_frame, text="Load Firmware", command=self.on_browse, style="Accent.TButton", width=12).grid(row=0, column=1)
+        self.load_button = ttk.Button(file_frame, text=self.i18n.translate_text("Load Firmware"), command=self.on_browse, style="Accent.TButton", width=12)
+        self.load_button.grid(row=0, column=1)
+        self._remember_text(self.load_button, "Load Firmware")
 
-        control_frame = ttk.LabelFrame(left, text="Upgrade Control", style="Section.TLabelframe", padding=12)
+        control_frame = ttk.LabelFrame(left, text=self.i18n.translate_text("Upgrade Control"), style="Section.TLabelframe", padding=12)
+        self._remember_text(control_frame, "Upgrade Control")
         control_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         for index in range(4):
             control_frame.columnconfigure(index, weight=1 if index % 2 == 1 else 0)
-        ttk.Label(control_frame, text="Target Address").grid(row=0, column=0, sticky="w")
+        target_label = ttk.Label(control_frame, text=self.i18n.translate_text("Target Address"))
+        target_label.grid(row=0, column=0, sticky="w")
+        self._remember_text(target_label, "Target Address")
         ttk.Entry(control_frame, textvariable=self.download_addr_var, width=10).grid(row=0, column=1, sticky="ew", padx=(8, 16))
-        ttk.Label(control_frame, text="Dynamic Address").grid(row=0, column=2, sticky="w")
+        dynamic_label = ttk.Label(control_frame, text=self.i18n.translate_text("Dynamic Address"))
+        dynamic_label.grid(row=0, column=2, sticky="w")
+        self._remember_text(dynamic_label, "Dynamic Address")
         ttk.Entry(control_frame, textvariable=self.download_dyn_addr_var, width=10).grid(row=0, column=3, sticky="ew", padx=(8, 0))
-        ttk.Label(control_frame, text="Upgrade Type").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        type_label = ttk.Label(control_frame, text=self.i18n.translate_text("Upgrade Type"))
+        type_label.grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self._remember_text(type_label, "Upgrade Type")
         ttk.Combobox(
             control_frame,
             textvariable=self.update_type_var,
@@ -76,11 +90,14 @@ class UpgradeTab(ttk.Frame):
             values=("Normal", "Force"),
         ).grid(row=1, column=1, sticky="ew", padx=(8, 16), pady=(10, 0))
         ttk.Label(control_frame, textvariable=self.connection_var, style="Status.TLabel").grid(row=1, column=2, columnspan=2, sticky="e", pady=(10, 0))
-        ttk.Button(control_frame, text="Read Device Version", command=self.on_read_version).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0), padx=(0, 8))
-        self.start_button = ttk.Button(control_frame, text="Start Upgrade", command=self.on_start_stop, style="Accent.TButton")
+        self.read_version_button = ttk.Button(control_frame, text=self.i18n.translate_text("Read Device Version"), command=self.on_read_version)
+        self.read_version_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0), padx=(0, 8))
+        self._remember_text(self.read_version_button, "Read Device Version")
+        self.start_button = ttk.Button(control_frame, text=self.i18n.translate_text("Start Upgrade"), command=self.on_start_stop, style="Accent.TButton")
         self.start_button.grid(row=2, column=2, columnspan=2, sticky="ew", pady=(12, 0))
 
-        info_frame = ttk.LabelFrame(left, text="Firmware Info", style="Section.TLabelframe", padding=12)
+        info_frame = ttk.LabelFrame(left, text=self.i18n.translate_text("Firmware Info"), style="Section.TLabelframe", padding=12)
+        self._remember_text(info_frame, "Firmware Info")
         info_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         info_frame.columnconfigure(1, weight=1)
         rows = [
@@ -93,10 +110,13 @@ class UpgradeTab(ttk.Frame):
             ("Footer CRC", self.footer_crc_var),
         ]
         for row, (label, variable) in enumerate(rows):
-            ttk.Label(info_frame, text=label).grid(row=row, column=0, sticky="w", pady=4)
+            info_label = ttk.Label(info_frame, text=self.i18n.translate_text(label))
+            info_label.grid(row=row, column=0, sticky="w", pady=4)
+            self._remember_text(info_label, label)
             ttk.Label(info_frame, textvariable=variable).grid(row=row, column=1, sticky="w", pady=4, padx=(10, 0))
 
-        status_frame = ttk.LabelFrame(left, text="Download Status", style="Section.TLabelframe", padding=12)
+        status_frame = ttk.LabelFrame(left, text=self.i18n.translate_text("Download Status"), style="Section.TLabelframe", padding=12)
+        self._remember_text(status_frame, "Download Status")
         status_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         status_frame.columnconfigure(0, weight=1)
         status_frame.grid_propagate(False)
@@ -112,7 +132,8 @@ class UpgradeTab(ttk.Frame):
         ttk.Label(progress_meta, textvariable=self.progress_text_var).grid(row=0, column=0, sticky="w")
         ttk.Label(progress_meta, textvariable=self.progress_percent_var).grid(row=0, column=1, sticky="e")
 
-        forward_frame = ttk.LabelFrame(left, text="LLC -> PFC Forward Progress", style="Section.TLabelframe", padding=12)
+        forward_frame = ttk.LabelFrame(left, text=self.i18n.translate_text("LLC -> PFC Forward Progress"), style="Section.TLabelframe", padding=12)
+        self._remember_text(forward_frame, "LLC -> PFC Forward Progress")
         forward_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         forward_frame.columnconfigure(0, weight=1)
         forward_frame.grid_propagate(False)
@@ -127,7 +148,8 @@ class UpgradeTab(ttk.Frame):
         ttk.Label(forward_meta, textvariable=self.forward_text_var).grid(row=0, column=0, sticky="w")
         ttk.Label(forward_meta, textvariable=self.forward_percent_var).grid(row=0, column=1, sticky="e")
 
-        log_frame = ttk.LabelFrame(right, text="Upgrade Log", style="Section.TLabelframe", padding=12)
+        log_frame = ttk.LabelFrame(right, text=self.i18n.translate_text("Upgrade Log"), style="Section.TLabelframe", padding=12)
+        self._remember_text(log_frame, "Upgrade Log")
         log_frame.grid(row=0, column=0, sticky="nsew")
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
@@ -157,7 +179,7 @@ class UpgradeTab(ttk.Frame):
 
     def set_firmware(self, image: FirmwareImage | None, *, summary: dict[str, str] | None = None) -> None:
         if image is None or summary is None:
-            self.file_path_var.set("No firmware loaded")
+            self.file_path_var.set(self.i18n.translate_text("No firmware loaded"))
             self.version_var.set("-")
             self.device_version_var.set("-")
             self.compile_time_var.set("-")
@@ -178,17 +200,21 @@ class UpgradeTab(ttk.Frame):
         self.device_version_var.set(version_text or "-")
 
     def set_running(self, running: bool) -> None:
-        self.start_button.configure(text="Stop Upgrade" if running else "Start Upgrade")
+        self._running = running
+        self.start_button.configure(text=self.i18n.translate_text("Stop Upgrade" if running else "Start Upgrade"))
 
     def set_connection_state(self, connected: bool, port_label: str = "") -> None:
         self.connection_var.set(
-            f"Connected: {port_label}" if connected and port_label else ("Serial port connected" if connected else "Serial port disconnected")
+            self.i18n.format_text("Connected: {port}", port=port_label)
+            if connected and port_label
+            else self.i18n.translate_text("Serial port connected" if connected else "Serial port disconnected")
         )
 
     def set_status(self, status: str, detail: str = "", *, error_code: str = "-") -> None:
-        self.status_var.set(status)
-        self.detail_var.set(detail or "")
-        self.error_var.set(f"Error Code: {error_code}" if error_code and error_code != "-" else "Error Code: -")
+        self.status_var.set(self.i18n.translate_text(status))
+        self.detail_var.set(self.i18n.translate_text(detail or ""))
+        code = error_code if error_code and error_code != "-" else "-"
+        self.error_var.set(self.i18n.format_text("Error Code: {code}", code=code))
 
     def set_progress(self, sent_bytes: int, total_bytes: int) -> None:
         total = max(total_bytes, 0)
@@ -199,8 +225,8 @@ class UpgradeTab(ttk.Frame):
         self.progress_percent_var.set(f"{percent:.1f}%")
 
     def reset_forward_progress(self, detail: str = "Waiting for the main upgrade flow to start") -> None:
-        self.forward_status_var.set("LLC -> PFC forward progress is idle")
-        self.forward_detail_var.set(detail)
+        self.forward_status_var.set(self.i18n.translate_text("LLC -> PFC forward progress is idle"))
+        self.forward_detail_var.set(self.i18n.translate_text(detail))
         self.forward_progress["value"] = 0
         self.forward_text_var.set("0 / 0 bytes")
         self.forward_percent_var.set("0%")
@@ -212,11 +238,26 @@ class UpgradeTab(ttk.Frame):
             percent = forwarded / total * 100.0
         else:
             percent = max(min(progress_permille, 1000), 0) / 10.0
-        self.forward_status_var.set(status)
-        self.forward_detail_var.set(detail)
+        self.forward_status_var.set(self.i18n.translate_text(status))
+        self.forward_detail_var.set(self.i18n.translate_text(detail))
         self.forward_progress["value"] = percent
         self.forward_text_var.set(f"{forwarded} / {total} bytes")
         self.forward_percent_var.set(f"{percent:.1f}%")
+
+    def refresh_texts(self) -> None:
+        for widget, source_text, option in self._translatable_widgets:
+            widget.configure(**{option: self.i18n.translate_text(source_text)})
+        self.file_path_var.set(self.i18n.translate_text(self.file_path_var.get()))
+        self.status_var.set(self.i18n.translate_text(self.status_var.get()))
+        self.detail_var.set(self.i18n.translate_text(self.detail_var.get()))
+        self.connection_var.set(self.i18n.translate_text(self.connection_var.get()))
+        self.forward_status_var.set(self.i18n.translate_text(self.forward_status_var.get()))
+        self.forward_detail_var.set(self.i18n.translate_text(self.forward_detail_var.get()))
+        self.error_var.set(self.i18n.translate_text(self.error_var.get()))
+        self.set_running(self._running)
+
+    def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
+        self._translatable_widgets.append((widget, source_text, option))
 
     def append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")
