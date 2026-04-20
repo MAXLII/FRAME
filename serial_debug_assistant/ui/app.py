@@ -1275,21 +1275,44 @@ class SerialDebugAssistant(tk.Tk):
             return True
 
         if frame.cmd_word == CMD_WORD_BLACK_BOX_HEADER and frame.is_ack == 0:
-            header_text = parse_black_box_header_payload(frame.payload)
-            self.black_box_tab.set_header(header_text)
-            self.logger.log("BLACKBOX", f"header {header_text!r}")
+            header = parse_black_box_header_payload(frame.payload)
+            if str(header.get("format", "")) == "legacy_text":
+                header_text = str(header["text"])
+                self.black_box_tab.set_header(header_text)
+                self.logger.log("BLACKBOX", f"header legacy {header_text!r}")
+            else:
+                self.black_box_tab.add_header_item(
+                    column_index=int(header["column_index"]),
+                    name=str(header["name"]),
+                    is_last=int(header["is_last"]),
+                )
+                self.logger.log("BLACKBOX", f"header col={int(header['column_index'])} name={str(header['name'])!r} last={int(header['is_last'])}")
             return True
 
         if frame.cmd_word == CMD_WORD_BLACK_BOX_ROW and frame.is_ack == 0:
             row = parse_black_box_row_payload(frame.payload)
-            self.black_box_tab.add_row(
-                row_text=str(row["row_text"]),
-                record_offset=int(row["record_offset"]),
-            )
-            self.logger.log(
-                "BLACKBOX",
-                f"row offset=0x{int(row['record_offset']):06X} text={str(row['row_text'])!r}",
-            )
+            if str(row.get("format", "")) == "legacy_text":
+                self.black_box_tab.add_row(
+                    row_text=str(row["row_text"]),
+                    record_offset=int(row["record_offset"]),
+                )
+                self.logger.log(
+                    "BLACKBOX",
+                    f"row legacy offset=0x{int(row['record_offset']):06X} text={str(row['row_text'])!r}",
+                )
+            else:
+                self.black_box_tab.add_row_item(
+                    record_offset=int(row["record_offset"]),
+                    column_index=int(row["column_index"]),
+                    value_type=int(row["type"]),
+                    value=row["value"],
+                    is_row_end=int(row["is_row_end"]),
+                )
+                self.logger.log(
+                    "BLACKBOX",
+                    f"row offset=0x{int(row['record_offset']):06X} col={int(row['column_index'])} "
+                    f"type={int(row['type'])} data=0x{int(row['data_u32']):08X} end={int(row['is_row_end'])}",
+                )
             return True
 
         if frame.cmd_word == CMD_WORD_BLACK_BOX_COMPLETE and frame.is_ack == 0:

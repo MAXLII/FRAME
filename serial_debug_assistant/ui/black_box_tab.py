@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, timezone
-import re
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, ttk
 
 from serial_debug_assistant.i18n import I18nManager
+from serial_debug_assistant.black_box_protocol import BLACK_BOX_UINT32, format_black_box_value
 
 
 class BlackBoxTab(ttk.Frame):
@@ -27,6 +27,8 @@ class BlackBoxTab(ttk.Frame):
         self._rows: list[dict[str, int | str]] = []
         self._query_start_offset = 0
         self._query_read_length = 0
+        self._pending_row_offset: int | None = None
+        self._pending_row_values: dict[int, str] = {}
 
         self._build()
         self._configure_default_columns()
@@ -84,6 +86,8 @@ class BlackBoxTab(ttk.Frame):
         self._query_read_length = read_length
         self._header_fields = []
         self._rows.clear()
+        self._pending_row_offset = None
+        self._pending_row_values.clear()
         self.tree.delete(*self.tree.get_children())
         self._configure_default_columns()
         self._set_save_enabled(False)
@@ -106,29 +110,59 @@ class BlackBoxTab(ttk.Frame):
                 self.i18n.format_text("Device rejected the query: offset 0x{start:06X}, length 0x{length:X}.", start=effective_start, length=effective_length),
             )
 
+    def add_header_item(self, *, column_index: int, name: str, is_last: int) -> None:
+        while len(self._header_fields) <= column_index:
+            self._header_fields.append("")
+        self._header_fields[column_index] = name
+        self._configure_table_columns()
+        self.set_status(self.i18n.translate_text("Receiving black box records"), self.i18n.translate_text("Header received. Rows are being appended to the table."))
+
     def set_header(self, header_text: str) -> None:
-        parsed_fields = self._split_fields(header_text)
-        if parsed_fields and parsed_fields[0].strip().lower() in {"time", "timestamp"}:
-            parsed_fields = parsed_fields[1:]
+        parsed_fields = [item.strip() for item in header_text.split("\t") if item.strip()]
         self._header_fields = parsed_fields
         self._configure_table_columns()
         self.set_status(self.i18n.translate_text("Receiving black box records"), self.i18n.translate_text("Header received. Rows are being appended to the table."))
 
     def add_row(self, *, row_text: str, record_offset: int = 0) -> None:
-        fields = self._split_fields(row_text)
+        fields = [item.strip() for item in row_text.split("\t")]
         raw_time_value = fields[0] if fields else ""
         time_value = self._format_utc_time(raw_time_value)
         value_fields = fields[1:] if fields else []
 
-        extra_count = max(0, len(value_fields) - len(self._header_fields))
-        if extra_count > 0:
-            self._header_fields.extend(f"Extra {index}" for index in range(len(self._header_fields) + 1, len(self._header_fields) + extra_count + 1))
-            self._configure_table_columns()
+        row_number = len(self._rows) + 1
+        row_values = [str(row_number), time_value, *value_fields]
+        self._rows.append(
+            {
+                "row_number": row_number,
+                "record_offset": record_offset,
+                "time": time_value,
+                "values": list(value_fields),
+            }
+        )
+        self.tree.insert("", "end", values=row_values)
+        self._set_save_enabled(True)
+        self.set_status(self.i18n.translate_text("Receiving black box records"), self.i18n.format_text("Received {count} row(s) so far.", count=len(self._rows)))
+
+    def add_row_item(self, *, record_offset: int, column_index: int, value_type: int, value: int | float, is_row_end: int) -> None:
+        if self._pending_row_offset != record_offset:
+            self._pending_row_offset = record_offset
+            self._pending_row_values = {}
+
+        text_value = format_black_box_value(value_type, value)
+        self._pending_row_values[column_index] = self._format_utc_time(text_value) if column_index == 0 and value_type == BLACK_BOX_UINT32 else text_value
+
+        if not is_row_end:
+            return
+
+        max_columns = max(len(self._header_fields), max(self._pending_row_values.keys(), default=0) + 1)
+        while len(self._header_fields) < max_columns:
+            self._header_fields.append(f"Extra {len(self._header_fields)}")
+        self._configure_table_columns()
 
         row_number = len(self._rows) + 1
-        row_values = [str(row_number), time_value]
-        for index in range(len(self._header_fields)):
-            row_values.append(value_fields[index] if index < len(value_fields) else "")
+        time_value = self._pending_row_values.get(0, "")
+        value_fields = [self._pending_row_values.get(index, "") for index in range(1, len(self._header_fields))]
+        row_values = [str(row_number), time_value, *value_fields]
 
         self._rows.append(
             {
@@ -139,6 +173,8 @@ class BlackBoxTab(ttk.Frame):
             }
         )
         self.tree.insert("", "end", values=row_values)
+        self._pending_row_offset = None
+        self._pending_row_values = {}
         self._set_save_enabled(True)
         self.set_status(self.i18n.translate_text("Receiving black box records"), self.i18n.format_text("Received {count} row(s) so far.", count=len(self._rows)))
 
@@ -180,14 +216,15 @@ class BlackBoxTab(ttk.Frame):
         if not path:
             return
 
-        header = ["No.", "Time", *self._header_fields]
+        dynamic_headers = self._header_fields[1:] if self._header_fields[:1] == ["time"] else self._header_fields
+        header = ["No.", "Time", *dynamic_headers]
         with Path(path).open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(header)
             for row in self._rows:
                 values = row["values"]
                 csv_row = [row["row_number"], row["time"]]
-                for index in range(len(self._header_fields)):
+                for index in range(len(dynamic_headers)):
                     csv_row.append(values[index] if index < len(values) else "")
                 writer.writerow(csv_row)
 
@@ -205,13 +242,14 @@ class BlackBoxTab(ttk.Frame):
         self.tree.column("time", width=180, minwidth=140, anchor="center", stretch=False)
 
     def _configure_table_columns(self) -> None:
-        columns = ["no", "time", *[f"value_{index}" for index in range(len(self._header_fields))]]
+        value_column_count = max(0, len(self._header_fields) - 1)
+        columns = ["no", "time", *[f"value_{index}" for index in range(value_column_count)]]
         self.tree["columns"] = columns
         self.tree.heading("no", text=self.i18n.translate_text("No."))
         self.tree.heading("time", text=self.i18n.translate_text("Time"))
         self.tree.column("no", width=90, minwidth=70, anchor="center", stretch=False)
         self.tree.column("time", width=180, minwidth=140, anchor="center", stretch=False)
-        for index, field_name in enumerate(self._header_fields):
+        for index, field_name in enumerate(self._header_fields[1:]):
             column_id = f"value_{index}"
             self.tree.heading(column_id, text=field_name)
             self.tree.column(column_id, width=150, minwidth=120, anchor="center", stretch=True)
@@ -228,14 +266,6 @@ class BlackBoxTab(ttk.Frame):
 
     def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
         self._translatable_widgets.append((widget, source_text, option))
-
-    def _split_fields(self, raw_text: str) -> list[str]:
-        text = raw_text.strip()
-        if not text:
-            return []
-        if "\t" in text:
-            return [item.strip() for item in text.split("\t")]
-        return [item.strip() for item in re.split(r"\s{2,}", text) if item.strip()]
 
     def _format_utc_time(self, raw_value: str) -> str:
         text = raw_value.strip()
