@@ -1,6 +1,6 @@
 # FRAME
 
-Current release: `v1.2.1`
+Current release: `v1.2.2`
 
 一个面向 Windows 的串口调试上位机项目，使用 `Python + tkinter + pyserial` 开发。
 
@@ -289,7 +289,7 @@ build_frame_installer.bat
 构建完成后安装包位于：
 
 ```text
-dist/installer/FRAME-Setup-1.2.1.exe
+dist/installer/FRAME-Setup-1.2.2.exe
 
 ### 构建 `DR_SSIP_Monitor` 命名安装包
 
@@ -301,7 +301,7 @@ build_dr_ssip_monitor_installer.bat
 然后额外生成一个安装包文件名为：
 
 ```text
-dist/installer/DR_SSIP_Monitor-Setup-1.2.1.exe
+dist/installer/DR_SSIP_Monitor-Setup-1.2.2.exe
 ```
 ```
 

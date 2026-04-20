@@ -3,11 +3,22 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 set "APP_NAME=FRAME"
-set "APP_VERSION=1.2.1"
 set "PUBLISHER=LWX"
 set "ISS_FILE=%~dp0installer\frame_installer.iss"
 set "DIST_APP_DIR=%~dp0dist\frame"
 set "ISCC_EXE="
+set "BASE_APP_VERSION="
+set "BASE_APP_VERSION_RAW="
+
+for /f "tokens=2 delims==" %%I in ('findstr /B /C:"BASE_APP_VERSION" "serial_debug_assistant\constants.py"') do set "BASE_APP_VERSION_RAW=%%I"
+set "BASE_APP_VERSION=%BASE_APP_VERSION_RAW: =%"
+set "BASE_APP_VERSION=%BASE_APP_VERSION:"=%"
+if not defined BASE_APP_VERSION (
+    echo [ERROR] Failed to read BASE_APP_VERSION from serial_debug_assistant\constants.py
+    exit /b 1
+)
+
+set "APP_VERSION=%BASE_APP_VERSION%"
 
 echo [INFO] Building application bundle...
 set "FRAME_BUILD_SILENT=1"
