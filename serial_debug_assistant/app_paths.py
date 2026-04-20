@@ -6,8 +6,10 @@ from pathlib import Path
 import shutil
 import sys
 
+from serial_debug_assistant.branding import resolve_runtime_app_name
 
-APP_DIR_NAME = "FRAME"
+
+APP_DIR_NAME = resolve_runtime_app_name()
 
 
 @dataclass(frozen=True)

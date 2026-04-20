@@ -133,6 +133,7 @@
   - `PowerShell`
   - `.venv` 内的 `pyinstaller 6.19.0`
 - 构建安装包 `FRAME-Setup-1.1.0.exe`：
+- 构建 `DR_SSIP_Monitor` 命名安装包 `DR_SSIP_Monitor-Setup-1.1.0.exe`：
   - 上述目录版构建环境全部可用
   - `Inno Setup 6`
 

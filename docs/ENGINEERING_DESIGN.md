@@ -56,6 +56,7 @@ FRAME/
 
 - `build_frame_exe.bat` 负责准备虚拟环境、安装 `PyInstaller`、清理构建输出目录并生成 `dist/frame/frame.exe`。
 - `build_frame_installer.bat` 负责串联目录版构建和安装包编译流程。
+- `build_dr_ssip_monitor_installer.bat` 负责复用 `FRAME` 目录版产物并生成 `DR_SSIP_Monitor` 命名安装包。
 - `installer/frame_installer.iss` 定义 Windows 安装包的安装目录、快捷方式、卸载入口和覆盖升级行为。
 - `clean_build_artifacts.bat` 负责清理构建目录、缓存目录和 Python 编译产物。
 

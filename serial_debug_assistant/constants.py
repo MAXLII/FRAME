@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import serial
+from serial_debug_assistant.branding import resolve_runtime_app_name
 
 
 APP_VERSION = "1.2.1"
-APP_TITLE = f"Serial Debug Assistant v{APP_VERSION}"
+APP_NAME = resolve_runtime_app_name()
+APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_GEOMETRY = "1240x962"
 APP_MIN_WIDTH = 1080
 APP_MIN_HEIGHT = 700

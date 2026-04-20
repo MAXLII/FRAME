@@ -21,7 +21,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/3] Starting Serial Debug Assistant...
+echo [3/3] Starting FRAME...
 start "" ".venv\Scripts\python.exe" "main.py"
 
 endlocal

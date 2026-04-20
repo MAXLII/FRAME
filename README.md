@@ -290,6 +290,19 @@ build_frame_installer.bat
 
 ```text
 dist/installer/FRAME-Setup-1.2.1.exe
+
+### 构建 `DR_SSIP_Monitor` 命名安装包
+
+```bat
+build_dr_ssip_monitor_installer.bat
+```
+
+这个脚本会先复用默认的 `build_frame_exe.bat` 构建 `dist/frame/frame.exe`，
+然后额外生成一个安装包文件名为：
+
+```text
+dist/installer/DR_SSIP_Monitor-Setup-1.2.1.exe
+```
 ```
 
 ## 文档
