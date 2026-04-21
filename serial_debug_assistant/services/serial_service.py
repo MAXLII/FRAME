@@ -17,6 +17,7 @@ class SerialService:
         self.reader_thread: threading.Thread | None = None
         self.reader_stop = threading.Event()
         self.rx_queue: queue.Queue[SerialChunk] = queue.Queue()
+        self.demo_connected = False
 
     def list_ports(self) -> list[str]:
         return [port.device for port in serial.tools.list_ports.comports()]
@@ -108,11 +109,21 @@ class SerialService:
             except serial.SerialException:
                 pass
         self.serial_port = None
+        self.demo_connected = False
 
     def is_open(self) -> bool:
-        return bool(self.serial_port and self.serial_port.is_open)
+        return self.demo_connected or bool(self.serial_port and self.serial_port.is_open)
 
     def write(self, payload: bytes) -> int:
+        if self.demo_connected:
+            return len(payload)
         if not self.serial_port or not self.serial_port.is_open:
             raise serial.SerialException("Serial port is not open.")
         return self.serial_port.write(payload)
+
+    def enable_demo_connection(self) -> None:
+        self.reader_stop.clear()
+        self.demo_connected = True
+
+    def disable_demo_connection(self) -> None:
+        self.demo_connected = False

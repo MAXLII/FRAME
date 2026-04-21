@@ -62,6 +62,7 @@ from serial_debug_assistant.constants import (
     POLL_INTERVAL_MS,
     STOP_BITS_OPTIONS,
 )
+from serial_debug_assistant.demo_mode import DemoRuntime
 from serial_debug_assistant.debug_logger import DebugLogger
 from serial_debug_assistant.firmware_update import (
     CMD_SET_UPDATE,
@@ -186,13 +187,19 @@ SCOPE_LIST_TIMEOUT_MS = 1500
 
 
 class SerialDebugAssistant(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, *, demo_mode: bool = False) -> None:
         super().__init__()
+        self.demo_mode = demo_mode
+        self.demo_runtime = DemoRuntime() if demo_mode else None
+        self.demo_tick_job: str | None = None
         self.i18n = I18nManager("zh")
         self._translatable_widgets: list[tuple[object, str, str]] = []
         self.hidden_tab_ids = set(APP_HIDDEN_TABS)
+        if self.demo_mode:
+            self.hidden_tab_ids.update({"home", "factory_mode"})
         self._visible_notebook_tabs: list[tuple[object, str]] = []
-        self.title(APP_TITLE)
+        title = APP_TITLE if not demo_mode else f"{APP_TITLE} Demo"
+        self.title(title)
         self.geometry(APP_GEOMETRY)
         self.minsize(APP_MIN_WIDTH, APP_MIN_HEIGHT)
         self.configure(bg="#edf3f8")
@@ -226,6 +233,12 @@ class SerialDebugAssistant(tk.Tk):
         self.loaded_firmware: FirmwareImage | None = None
         self.update_session: FirmwareUpdateSession | None = None
         self.update_tick_job: str | None = None
+        self.demo_upgrade_job: str | None = None
+        self.demo_upgrade_step = 0
+        self.demo_black_box_job: str | None = None
+        self.demo_scope_pull_job: str | None = None
+        self.demo_param_list_job: str | None = None
+        self.demo_param_action_job: str | None = None
         self.home_refresh_job: str | None = None
         self.pending_home_info: dict[str, float | int] | None = None
         self.pending_home_fault_log: str | None = None
@@ -273,6 +286,8 @@ class SerialDebugAssistant(tk.Tk):
         for note in migration_notes:
             self.logger.log("APP", note)
         self.refresh_ports()
+        if self.demo_mode:
+            self._connect_demo_mode(initial=True)
         self.after(POLL_INTERVAL_MS, self.process_incoming_data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -510,7 +525,10 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("black_box", self.black_box_tab, "Black Box")
         self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
         self._add_notebook_tab("scope", self.scope_tab, "Scope")
-        self.notebook.select(self.home_tab)
+        if "parameter" not in self.hidden_tab_ids:
+            self.notebook.select(self.parameter_tab)
+        elif self._visible_notebook_tabs:
+            self.notebook.select(self._visible_notebook_tabs[0][0])
 
         footer = ttk.Frame(root, style="App.TFrame")
         footer.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -694,6 +712,14 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def refresh_ports(self) -> None:
+        if self.demo_mode:
+            demo_display = "DEMO - 演示模式"
+            self.port_display_map = {demo_display: "DEMO"}
+            self.port_combo["values"] = [demo_display]
+            self.port_var.set(demo_display)
+            self.set_status("演示模式已就绪，无需连接下位机")
+            self.logger.log("PORTS", "demo mode -> ['DEMO - 演示模式']")
+            return
         ports = self.serial_service.list_ports_with_details()
         display_values = [item["display"] for item in ports]
         self.port_display_map = {item["display"]: item["device"] for item in ports}
@@ -717,6 +743,9 @@ class SerialDebugAssistant(tk.Tk):
             self.open_connection()
 
     def open_connection(self) -> None:
+        if self.demo_mode:
+            self._connect_demo_mode(initial=False)
+            return
         if not self.port_var.get():
             self.set_status(self.i18n.translate_text("Please select a serial port."), error=True)
             return
@@ -758,6 +787,9 @@ class SerialDebugAssistant(tk.Tk):
             self.schedule_auto_send()
 
     def close_connection(self) -> None:
+        if self.demo_mode:
+            self._disconnect_demo_mode()
+            return
         self.cancel_auto_send()
         self.stop_upgrade(self.i18n.translate_text("串口已断开，升级已停止。"), user_initiated=False)
         self.serial_service.close()
@@ -770,6 +802,55 @@ class SerialDebugAssistant(tk.Tk):
 
     def _set_open_button_text(self, text: str) -> None:
         self.open_button.configure(text=self.i18n.translate_text(text))
+
+    def _connect_demo_mode(self, *, initial: bool) -> None:
+        self.serial_service.enable_demo_connection()
+        self.frame_parser = FrameParser()
+        self.wave_running = False
+        self.wave_tab.set_running(False)
+        self.pending_rx_hex_bytes.clear()
+        self.pending_wave_batch.clear()
+        self.wave_batch_open = False
+        self.upgrade_tab.set_connection_state(True, "DEMO")
+        self.parameter_tab.clear_parameters()
+        self.parameters.clear()
+        self.parameter_tab.set_message("演示模式已连接，请点击“读取参数列表”开始演示")
+        self._set_open_button_text("Close")
+        self.logger.log("DEMO", f"connect initial={initial}")
+        self._schedule_demo_tick()
+        if initial:
+            self.set_status("演示模式已启动，请点击参数加载或其他功能按钮开始演示")
+        else:
+            self.set_status("演示模式已重新连接")
+
+    def _disconnect_demo_mode(self) -> None:
+        self.cancel_auto_send()
+        self.wave_running = False
+        self.wave_tab.set_running(False)
+        if self.demo_upgrade_job is not None:
+            self.after_cancel(self.demo_upgrade_job)
+            self.demo_upgrade_job = None
+        if self.demo_black_box_job is not None:
+            self.after_cancel(self.demo_black_box_job)
+            self.demo_black_box_job = None
+        if self.demo_scope_pull_job is not None:
+            self.after_cancel(self.demo_scope_pull_job)
+            self.demo_scope_pull_job = None
+        if self.demo_param_list_job is not None:
+            self.after_cancel(self.demo_param_list_job)
+            self.demo_param_list_job = None
+        if self.demo_param_action_job is not None:
+            self.after_cancel(self.demo_param_action_job)
+            self.demo_param_action_job = None
+        if self.demo_tick_job is not None:
+            self.after_cancel(self.demo_tick_job)
+            self.demo_tick_job = None
+        self.serial_service.disable_demo_connection()
+        self.upgrade_tab.set_connection_state(False)
+        self.parameter_tab.set_message("演示模式已断开")
+        self._set_open_button_text("Open")
+        self.set_status("演示模式已停止")
+        self.logger.log("DEMO", "disconnect")
 
     def _on_parameter_message_changed(self, *_args) -> None:
         self.parameter_status_var.set(self.i18n.format_text("参数提示: {message}", message=self.parameter_tab.message_var.get()))
@@ -785,6 +866,28 @@ class SerialDebugAssistant(tk.Tk):
         self.set_status(f"Serial error: {exc}", error=True)
 
     def load_upgrade_firmware(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            image = self.demo_runtime.create_demo_firmware()
+            self.loaded_firmware = image
+            summary = {
+                "version": format_version(image.footer.version),
+                "compile_time": format_unix_time(image.footer.unix_time),
+                "file_size": f"{len(image.data)} byte",
+                "commit": image.footer.commit_id or "-",
+                "module": module_name(image.footer.module_id),
+                "footer_crc": "OK" if image.footer_crc_ok else "FAIL",
+            }
+            self.upgrade_tab.set_firmware(image, summary=summary)
+            self.upgrade_tab.clear_log()
+            self.upgrade_tab.set_progress(0, len(image.data))
+            self.upgrade_tab.reset_forward_progress("演示模式: 等待点击开始升级。")
+            self.upgrade_tab.append_log(f"Loaded demo firmware: {image.path}")
+            self.upgrade_tab.append_log(f"Version: {summary['version']}")
+            self.upgrade_tab.append_log(f"Build Time: {summary['compile_time']}")
+            self.upgrade_tab.append_log(f"Module: {summary['module']}")
+            self.upgrade_tab.set_status("Firmware loaded", "演示固件已就绪，可直接开始升级。", error_code="-")
+            self.set_status("演示模式: 已载入假固件")
+            return
         path = filedialog.askopenfilename(
             title="Select Firmware Image",
             filetypes=[("Binary Files", "*.bin"), (self.i18n.translate_text("All Files"), "*.*")],
@@ -834,6 +937,18 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_status("Firmware loaded", "Ready to start the upgrade.", error_code="-")
 
     def request_upgrade_device_version(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            try:
+                target_addr, _target_dynamic_addr = self.upgrade_tab.get_target_address()
+            except ValueError:
+                self.upgrade_tab.set_status("Cannot read device version", "Target and dynamic addresses must be integers.", error_code="ADDR")
+                return
+            version_text = self.demo_runtime.demo_device_version(target_addr)
+            self.upgrade_tab.set_device_version(version_text)
+            self.upgrade_tab.append_log(f"RX 0x17 ACK <- {version_text}")
+            self.upgrade_tab.set_status("Reading device version", "演示设备版本读取成功。", error_code="-")
+            self.set_status("演示模式: 已读取设备版本")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.upgrade_tab.set_status("Cannot read device version", "Connect the serial port first.", error_code="SERIAL")
@@ -867,6 +982,27 @@ class SerialDebugAssistant(tk.Tk):
         self.start_upgrade()
 
     def start_upgrade(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            if self.loaded_firmware is None:
+                self.upgrade_tab.set_status("Cannot start upgrade", "请先加载演示固件。", error_code="FILE")
+                return
+            self.update_session = FirmwareUpdateSession(
+                image=self.loaded_firmware,
+                target_addr=int(self.upgrade_tab.download_addr_var.get() or "2"),
+                target_dynamic_addr=int(self.upgrade_tab.download_dyn_addr_var.get() or "0"),
+                update_type=self.upgrade_tab.get_update_type(),
+            )
+            self.demo_upgrade_step = 0
+            self.upgrade_tab.clear_log()
+            self.upgrade_tab.set_running(True)
+            self.upgrade_tab.set_progress(0, len(self.loaded_firmware.data))
+            self.upgrade_tab.reset_forward_progress("演示模式: 等待主升级完成后再模拟转发。")
+            self.upgrade_tab.append_log(
+                f"Start demo upgrade -> module={module_name(self.loaded_firmware.footer.module_id)} target=0x{self.update_session.target_addr:02X}"
+            )
+            self.upgrade_tab.set_status("Upgrade in progress", "演示升级已开始。", error_code="-")
+            self._schedule_demo_upgrade_step(180)
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.upgrade_tab.set_status("Cannot start upgrade", "Connect the serial port first.", error_code="SERIAL")
@@ -908,6 +1044,9 @@ class SerialDebugAssistant(tk.Tk):
         self._send_upgrade_info()
 
     def stop_upgrade(self, message: str, *, user_initiated: bool) -> None:
+        if self.demo_mode and self.demo_upgrade_job is not None:
+            self.after_cancel(self.demo_upgrade_job)
+            self.demo_upgrade_job = None
         if self.update_tick_job:
             self.after_cancel(self.update_tick_job)
             self.update_tick_job = None
@@ -1619,6 +1758,269 @@ class SerialDebugAssistant(tk.Tk):
             return
         self.home_refresh_job = self.after(HOME_REFRESH_INTERVAL_MS, self._flush_home_refresh)
 
+    def _schedule_demo_tick(self) -> None:
+        if not self.demo_mode or not self.serial_service.is_open():
+            return
+        if self.demo_tick_job is not None:
+            return
+        self.demo_tick_job = self.after(HOME_REFRESH_INTERVAL_MS, self._run_demo_tick)
+
+    def _schedule_demo_upgrade_step(self, delay_ms: int = 260) -> None:
+        if self.demo_upgrade_job is not None:
+            self.after_cancel(self.demo_upgrade_job)
+        self.demo_upgrade_job = self.after(delay_ms, self._run_demo_upgrade_step)
+
+    def _run_demo_upgrade_step(self) -> None:
+        self.demo_upgrade_job = None
+        if not self.demo_mode or self.update_session is None or self.loaded_firmware is None:
+            return
+        total = len(self.loaded_firmware.data)
+        self.demo_upgrade_step += 1
+        step = self.demo_upgrade_step
+        if step == 1:
+            self.upgrade_tab.set_status("Upgrade in progress", "演示流程: 发送升级信息 0x08", error_code="-")
+            self.upgrade_tab.append_log("TX 0x08 -> 演示发送升级信息")
+            self._schedule_demo_upgrade_step()
+            return
+        if step == 2:
+            self.upgrade_tab.set_status("Upgrade in progress", "演示流程: Boot Ready 应答 0x09", error_code="-")
+            self.upgrade_tab.append_log("RX 0x09 ACK <- Bootloader ready")
+            self._schedule_demo_upgrade_step()
+            return
+        packet_steps = 6
+        packet_end = 2 + packet_steps
+        if 3 <= step <= packet_end:
+            sent = min(int(total * (step - 2) / packet_steps), total)
+            self.upgrade_tab.set_progress(sent, total)
+            self.upgrade_tab.set_status("Upgrade in progress", f"演示流程: 正在发送固件块 {step - 2}/{packet_steps}", error_code="-")
+            self.upgrade_tab.append_log(f"TX 0x0A -> packet {step - 2}/{packet_steps}, progress={sent}/{total}")
+            self._schedule_demo_upgrade_step(220)
+            return
+        if step == packet_end + 1:
+            self.upgrade_tab.set_progress(total, total)
+            self.upgrade_tab.set_status("Upgrade in progress", "演示流程: 发送结束包 0x0B", error_code="-")
+            self.upgrade_tab.append_log("TX 0x0B -> send image CRC")
+            self.upgrade_tab.set_forward_progress(
+                status="LLC -> PFC forward progress is running",
+                detail="演示转发中，模拟主控向下一级模块分发固件。",
+                forwarded_bytes=int(total * 0.35),
+                total_bytes=total,
+                progress_permille=350,
+            )
+            self._schedule_demo_upgrade_step(320)
+            return
+        if step == packet_end + 2:
+            self.upgrade_tab.set_forward_progress(
+                status="LLC -> PFC forward progress is running",
+                detail="演示转发中，目标模块正在校验和写入。",
+                forwarded_bytes=int(total * 0.82),
+                total_bytes=total,
+                progress_permille=820,
+            )
+            self.upgrade_tab.append_log("RX 0x0D ACK <- forward stage=verifying")
+            self._schedule_demo_upgrade_step(320)
+            return
+        self.upgrade_tab.set_forward_progress(
+            status="LLC -> PFC forward progress is idle",
+            detail="演示转发完成，目标模块已切换到应用程序。",
+            forwarded_bytes=total,
+            total_bytes=total,
+            progress_permille=1000,
+        )
+        self._complete_upgrade("演示升级完成: 固件已写入并校验通过。")
+
+    def _schedule_demo_black_box_rows(
+        self,
+        *,
+        rows: list[list[str]],
+        meta: dict[str, int],
+        index: int = 0,
+    ) -> None:
+        if self.demo_black_box_job is not None:
+            self.after_cancel(self.demo_black_box_job)
+        self.demo_black_box_job = self.after(
+            90,
+            lambda: self._append_demo_black_box_rows(rows=rows, meta=meta, index=index),
+        )
+
+    def _append_demo_black_box_rows(
+        self,
+        *,
+        rows: list[list[str]],
+        meta: dict[str, int],
+        index: int,
+    ) -> None:
+        self.demo_black_box_job = None
+        if not self.demo_mode:
+            return
+        end_index = min(index + 3, len(rows))
+        for row in rows[index:end_index]:
+            self.black_box_tab.add_row(row_text="\t".join(row), record_offset=meta["start_offset"] + end_index * 16)
+        if end_index < len(rows):
+            self._schedule_demo_black_box_rows(rows=rows, meta=meta, index=end_index)
+            return
+        self.black_box_tab.finish_query(
+            start_offset=meta["start_offset"],
+            end_offset=meta["end_offset"],
+            scanned_bytes=meta["scanned_bytes"],
+            row_count=meta["row_count"],
+            has_more=meta["has_more"],
+        )
+        self.black_box_stream_active = False
+        self.set_status("演示模式: 黑匣子查询完成")
+
+    def _schedule_demo_scope_pull(self, *, scope_id: int, read_mode: int, current: int = 0, total: int = 5) -> None:
+        if self.demo_scope_pull_job is not None:
+            self.after_cancel(self.demo_scope_pull_job)
+        self.demo_scope_pull_job = self.after(
+            120,
+            lambda: self._run_demo_scope_pull(scope_id=scope_id, read_mode=read_mode, current=current, total=total),
+        )
+
+    def _run_demo_scope_pull(self, *, scope_id: int, read_mode: int, current: int, total: int) -> None:
+        self.demo_scope_pull_job = None
+        if not self.demo_mode or self.demo_runtime is None:
+            return
+        info = self.scope_info_by_id.get(scope_id)
+        scope_name = self.scope_tab.scope_var.get().strip() or f"Scope {scope_id}"
+        mode_name = self.i18n.translate_text("Force Pull" if read_mode == SCOPE_READ_MODE_FORCE else "Pull Capture")
+        next_current = current + 1
+        self.scope_tab.update_pull_progress(next_current, total, scope_name, mode_name)
+        if next_current < total:
+            self._schedule_demo_scope_pull(scope_id=scope_id, read_mode=read_mode, current=next_current, total=total)
+            return
+        capture = self.demo_runtime.build_scope_capture(scope_id, read_mode)
+        if capture is None:
+            self.scope_tab.fail_pull("演示录波当前没有可拉取的数据。")
+            return
+        capture.capture_index = self.scope_next_capture_index
+        self.scope_next_capture_index += 1
+        if info is not None:
+            capture.trigger_display_index = info.trigger_display_index
+            capture.sample_period_us = info.sample_period_us
+        self.scope_captures.append(capture)
+        self.scope_tab.finish_pull(capture)
+        self.set_status("演示模式: 软件录波采样已完成")
+
+    def _schedule_demo_parameter_loading(
+        self,
+        *,
+        items: list[tuple[str, ParameterEntry]],
+        index: int = 0,
+        batch_size: int = 1,
+    ) -> None:
+        if self.demo_param_list_job is not None:
+            self.after_cancel(self.demo_param_list_job)
+        self.demo_param_list_job = self.after(
+            150,
+            lambda: self._run_demo_parameter_loading(items=items, index=index, batch_size=batch_size),
+        )
+
+    def _run_demo_parameter_loading(
+        self,
+        *,
+        items: list[tuple[str, ParameterEntry]],
+        index: int,
+        batch_size: int,
+    ) -> None:
+        self.demo_param_list_job = None
+        if not self.demo_mode:
+            return
+        end_index = min(index + batch_size, len(items))
+        for name, entry in items[index:end_index]:
+            self.parameters[name] = entry
+            self.parameter_tab.add_or_update_parameter(entry)
+        self.parameter_tab.set_expected_count(end_index, len(items))
+        if end_index < len(items):
+            last_name = items[end_index - 1][0]
+            self.parameter_tab.set_message(self.i18n.format_text("演示加载中: 已刷新 {name}", name=last_name))
+            self.set_status(f"演示模式: 参数列表加载中 {end_index}/{len(items)}")
+            self._schedule_demo_parameter_loading(items=items, index=end_index, batch_size=batch_size)
+            return
+        self.sync_wave_selection()
+        self.parameter_tab.set_message("演示参数列表加载完成，可点击读取和写入")
+        self.set_status(f"演示模式: 已加载 {len(items)} 个参数")
+        self.logger.log("DEMO", f"load parameter list count={len(items)}")
+
+    def _schedule_demo_parameter_action(self, callback, delay_ms: int = 220) -> None:
+        if self.demo_param_action_job is not None:
+            self.after_cancel(self.demo_param_action_job)
+        self.demo_param_action_job = self.after(delay_ms, callback)
+
+    def _show_demo_parameter_message(self, message: str) -> None:
+        self.after(10, lambda: self.parameter_tab.set_message(message))
+
+    def _complete_demo_parameter_read(self, name: str) -> None:
+        self.demo_param_action_job = None
+        if self.demo_runtime is None:
+            return
+        entry = self.demo_runtime.read_parameter(name)
+        if entry is None:
+            self.parameter_tab.clear_busy(name)
+            self.set_status(f"演示参数不存在: {name}", error=True)
+            return
+        self.parameters[name] = entry
+        self.parameter_tab.update_parameter(entry)
+        self.parameter_tab.clear_busy(name)
+        self._show_demo_parameter_message(self.i18n.format_text("已读取演示参数: {name}", name=name))
+        self.set_status(f"演示模式: 已读取参数 {name}")
+        self.logger.log("DEMO", f"read parameter name={name}")
+
+    def _complete_demo_parameter_command(self, name: str) -> None:
+        self.demo_param_action_job = None
+        if self.demo_runtime is None:
+            return
+        detail = self.demo_runtime.execute_command(name)
+        refreshed = self.demo_runtime.read_parameter(name)
+        if refreshed is not None:
+            self.parameters[name] = refreshed
+            self.parameter_tab.update_parameter(refreshed)
+        self.parameter_tab.clear_busy(name)
+        self._show_demo_parameter_message(detail)
+        self.set_status(detail)
+        self.logger.log("DEMO", f"execute command name={name}")
+
+    def _complete_demo_parameter_write(self, name: str, raw_value: int, min_raw: int, max_raw: int) -> None:
+        self.demo_param_action_job = None
+        if self.demo_runtime is None:
+            return
+        updated = self.demo_runtime.write_parameter(
+            name,
+            data_raw=raw_value,
+            min_raw=min_raw,
+            max_raw=max_raw,
+        )
+        if updated is None:
+            self.parameter_tab.clear_busy(name)
+            self.set_status(f"演示参数不存在: {name}", error=True)
+            return
+        self.parameters[name] = updated
+        self.parameter_tab.update_parameter(updated)
+        self.parameter_tab.clear_busy(name)
+        self._show_demo_parameter_message(self.i18n.format_text("已写入演示参数: {name}", name=name))
+        self.set_status(f"演示模式: 已写入参数 {name}")
+        self.logger.log(
+            "DEMO",
+            f"write parameter name={name} raw=0x{raw_value:08X} min=0x{min_raw:08X} max=0x{max_raw:08X}",
+        )
+
+    def _run_demo_tick(self) -> None:
+        self.demo_tick_job = None
+        if not self.demo_mode or not self.serial_service.is_open() or self.demo_runtime is None:
+            return
+        info, fault_log, warning_log = self.demo_runtime.current_home_info()
+        self.home_tab.update_pcs_info(**info)
+        self.home_tab.set_fault_log(fault_log)
+        self.home_tab.set_warning_log(warning_log)
+        if self.wave_running:
+            selected_names = [name for name, entry in self.parameters.items() if entry.auto_report and not entry.is_command]
+            batch = self.demo_runtime.current_wave_batch(selected_names)
+            if batch:
+                self.wave_tab.append_batch(batch)
+                for name, value in batch.items():
+                    self.wave_tab.update_latest_value(name, f"{value:.3f}".rstrip("0").rstrip("."))
+        self._schedule_demo_tick()
+
     def _flush_home_refresh(self) -> None:
         self.home_refresh_job = None
         info = self.pending_home_info
@@ -1724,6 +2126,23 @@ class SerialDebugAssistant(tk.Tk):
         self._send_home_inv_cfg(ac_out_enable_trig=0xFF, ac_out_disable_trig=0xFF, ac_out_rms=0xFF, ac_out_freq=0xFF)
 
     def _send_home_inv_cfg(self, *, ac_out_enable_trig: int, ac_out_disable_trig: int, ac_out_rms: int, ac_out_freq: int) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            enabled: bool | None = None
+            if ac_out_enable_trig == 1:
+                enabled = True
+            elif ac_out_disable_trig == 1:
+                enabled = False
+            rms = None if ac_out_rms == 0xFF else ac_out_rms
+            freq = None if ac_out_freq == 0xFF else ac_out_freq
+            ack = self.demo_runtime.set_inv_cfg(enabled=enabled, rms=rms, freq=freq)
+            self.home_tab.apply_inv_cfg_ack(**ack)
+            self.set_status("演示模式: 已应用主页设置")
+            self.logger.log(
+                "DEMO",
+                "home inv cfg "
+                f"enable={enabled} rms={rms} freq={freq}",
+            )
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             return
@@ -2018,6 +2437,21 @@ class SerialDebugAssistant(tk.Tk):
         return ParameterEntry(name=name, type_id=type_id, data_raw=data, min_raw=data_min, max_raw=data_max, status=previous.status if previous else 0, auto_report=previous.auto_report if previous else False, important=previous.important if previous else False, dirty=False)
 
     def request_parameter_list(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            if self.demo_param_list_job is not None:
+                self.after_cancel(self.demo_param_list_job)
+                self.demo_param_list_job = None
+            self.expected_param_count = 0
+            all_parameters = self.demo_runtime.list_parameters()
+            ordered_items = sorted(all_parameters.items(), key=lambda item: item[0].lower())
+            self.parameters.clear()
+            self.parameter_tab.clear_parameters()
+            self.parameter_tab.set_expected_count(0, len(ordered_items))
+            self.parameter_tab.set_message("演示参数加载中，请观察列表逐条刷新")
+            self.set_status("演示模式: 正在逐条加载参数列表")
+            self._schedule_demo_parameter_loading(items=ordered_items, index=0, batch_size=1)
+            self.logger.log("DEMO", f"start staged parameter load count={len(ordered_items)}")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             return
@@ -2044,6 +2478,25 @@ class SerialDebugAssistant(tk.Tk):
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x01, payload=b"")
 
     def request_black_box_range_query(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            try:
+                start_offset, read_length = self.black_box_tab.get_query_range()
+            except ValueError:
+                self.set_status("Black box query range must be an integer.", error=True)
+                self.black_box_tab.set_status("Invalid black box query", "Start offset and read length must be valid integers.")
+                return
+            if start_offset < 0 or read_length <= 0:
+                self.set_status("Black box query range is invalid.", error=True)
+                self.black_box_tab.set_status("Invalid black box query", "Start offset must be >= 0 and read length must be > 0.")
+                return
+            header, rows, meta = self.demo_runtime.get_black_box_records(start_offset, read_length)
+            self.black_box_stream_active = True
+            self.black_box_tab.begin_query(start_offset=start_offset, read_length=read_length)
+            self.black_box_tab.set_query_ack(accepted=1, start_offset=start_offset, read_length=read_length)
+            self.black_box_tab.set_header("\t".join(header))
+            self._schedule_demo_black_box_rows(rows=rows, meta=meta, index=0)
+            self.logger.log("DEMO", f"black box query start=0x{start_offset:06X} length=0x{read_length:X} rows={len(rows)}")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.black_box_tab.set_status("Cannot start black box query", "Connect the serial port first.")
@@ -2077,6 +2530,14 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def request_scope_list(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self.scope_pending_list_items = []
+            self.scope_items = self.demo_runtime.list_scope_items()
+            self.scope_tab.set_scope_items(self.scope_items)
+            self.scope_tab.set_status("Scope list loaded", self.i18n.format_text("Loaded {count} scope object(s).", count=len(self.scope_items)))
+            self.set_status("演示模式: 已刷新软件录波对象")
+            self.logger.log("DEMO", f"scope list count={len(self.scope_items)}")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot refresh scope list", "Connect the serial port first.")
@@ -2112,6 +2573,22 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("SCOPE", "list query timeout: no response from device")
 
     def request_scope_info(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            try:
+                scope_id = self.scope_tab.get_selected_scope_id()
+            except ValueError as exc:
+                self.set_status(str(exc), error=True)
+                self.scope_tab.set_status("Scope selection is invalid", str(exc))
+                return
+            info = self.demo_runtime.get_scope_info(scope_id)
+            if info is None:
+                self.scope_tab.set_status("Cannot refresh scope info", "演示录波对象不存在。")
+                return
+            self.scope_info_by_id[scope_id] = info
+            self.scope_tab.set_scope_info(info)
+            self.scope_tab.set_status("Refreshing scope info", self.i18n.format_text("Loaded metadata for scope ID {scope_id}.", scope_id=scope_id))
+            self.set_status("演示模式: 已读取软件录波信息")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot refresh scope info", "Connect the serial port first.")
@@ -2135,6 +2612,19 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def request_scope_var_names(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            try:
+                scope_id = self.scope_tab.get_selected_scope_id()
+            except ValueError as exc:
+                self.set_status(str(exc), error=True)
+                self.scope_tab.set_status("Scope selection is invalid", str(exc))
+                return
+            names = self.demo_runtime.get_scope_var_names(scope_id)
+            self.scope_var_names_by_id[scope_id] = names
+            self.scope_tab.set_scope_var_names(names)
+            self.scope_tab.set_status("Reading scope variables", self.i18n.format_text("Loaded {count} variable name(s).", count=len(names)))
+            self.set_status("演示模式: 已读取软件录波变量")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot read scope variables", "Connect the serial port first.")
@@ -2178,9 +2668,15 @@ class SerialDebugAssistant(tk.Tk):
         self._send_scope_simple_command(CMD_WORD_SCOPE_RESET, "Scope reset command sent")
 
     def start_scope_pull_normal(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self._start_demo_scope_pull(SCOPE_READ_MODE_NORMAL)
+            return
         self._start_scope_pull(SCOPE_READ_MODE_NORMAL)
 
     def start_scope_pull_force(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self._start_demo_scope_pull(SCOPE_READ_MODE_FORCE)
+            return
         self._start_scope_pull(SCOPE_READ_MODE_FORCE)
 
     def clear_scope_captures(self) -> None:
@@ -2238,6 +2734,27 @@ class SerialDebugAssistant(tk.Tk):
         self.after(SCOPE_PULL_PREPARE_DELAY_MS, self._schedule_scope_pull_tick)
 
     def _send_scope_simple_command(self, cmd_word: int, status_text: str) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            try:
+                scope_id = self.scope_tab.get_selected_scope_id()
+            except ValueError as exc:
+                self.set_status(str(exc), error=True)
+                self.scope_tab.set_status("Scope selection is invalid", str(exc))
+                return
+            action_map = {
+                CMD_WORD_SCOPE_START: "start",
+                CMD_WORD_SCOPE_TRIGGER: "trigger",
+                CMD_WORD_SCOPE_STOP: "stop",
+                CMD_WORD_SCOPE_RESET: "reset",
+            }
+            info, detail = self.demo_runtime.scope_command(scope_id, action_map.get(cmd_word, "noop"))
+            if info is not None:
+                self.scope_info_by_id[scope_id] = info
+                self.scope_tab.set_scope_info(info)
+            self.scope_tab.set_status(status_text, detail)
+            self.set_status(f"演示模式: {detail}")
+            self.logger.log("DEMO", f"scope command cmd=0x{cmd_word:02X} scope_id={scope_id}")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot send scope command", "Connect the serial port first.")
@@ -2264,6 +2781,36 @@ class SerialDebugAssistant(tk.Tk):
         if self.scope_pull_job is not None:
             return
         self.scope_pull_job = self.after(SCOPE_PULL_INTERVAL_MS, self._scope_pull_tick)
+
+    def _start_demo_scope_pull(self, read_mode: int) -> None:
+        if self.demo_runtime is None:
+            return
+        try:
+            scope_id = self.scope_tab.get_selected_scope_id()
+            scope_name = self.scope_tab.scope_var.get().strip()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.scope_tab.fail_pull(str(exc))
+            return
+        info = self.scope_info_by_id.get(scope_id)
+        if info is None:
+            info = self.demo_runtime.get_scope_info(scope_id)
+            if info is not None:
+                self.scope_info_by_id[scope_id] = info
+                self.scope_tab.set_scope_info(info)
+        if info is None:
+            self.scope_tab.fail_pull("请先刷新软件录波信息。")
+            return
+        var_names = self.scope_var_names_by_id.get(scope_id)
+        if not var_names:
+            self.scope_tab.fail_pull("请先读取变量列表。")
+            return
+        if read_mode == SCOPE_READ_MODE_NORMAL and not info.data_ready:
+            self.scope_tab.fail_pull("当前没有完成的演示采样，请先 Trigger 或 Stop。")
+            return
+        mode_name = self.i18n.translate_text("Force Pull" if read_mode == SCOPE_READ_MODE_FORCE else "Pull Capture")
+        self.scope_tab.start_pull(scope_name, info.sample_count, mode_name)
+        self._schedule_demo_scope_pull(scope_id=scope_id, read_mode=read_mode, current=0, total=5)
 
     def _scope_pull_tick(self) -> None:
         self.scope_pull_job = None
@@ -2587,6 +3134,12 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def request_single_parameter(self, name: str) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self.parameter_tab.mark_busy(name)
+            self.parameter_tab.set_message(self.i18n.format_text("正在读取演示参数: {name}", name=name))
+            self.set_status(f"演示模式: 正在读取参数 {name}")
+            self._schedule_demo_parameter_action(lambda: self._complete_demo_parameter_read(name), delay_ms=260)
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             return
@@ -2601,6 +3154,12 @@ class SerialDebugAssistant(tk.Tk):
         if entry is None:
             return
         if entry.is_command:
+            if self.demo_mode and self.demo_runtime is not None:
+                self.parameter_tab.mark_busy(name)
+                self.parameter_tab.set_message(self.i18n.format_text("正在执行演示命令: {name}", name=name))
+                self.set_status(f"演示模式: 正在执行命令 {name}")
+                self._schedule_demo_parameter_action(lambda: self._complete_demo_parameter_command(name), delay_ms=320)
+                return
             payload = bytes([len(name.encode("utf-8"))]) + (0).to_bytes(4, "little") * 3 + name.encode("utf-8")
             self.parameter_tab.mark_busy(name)
             self.parameter_tab.set_message(self.i18n.format_text("正在执行: {name}", name=name))
@@ -2664,6 +3223,15 @@ class SerialDebugAssistant(tk.Tk):
             )
             return
         self.parameter_tab.clear_invalid(name)
+        if self.demo_mode and self.demo_runtime is not None:
+            self.parameter_tab.mark_busy(name)
+            self.parameter_tab.set_message(self.i18n.format_text("正在写入演示参数: {name}", name=name))
+            self.set_status(f"演示模式: 正在写入参数 {name}")
+            self._schedule_demo_parameter_action(
+                lambda: self._complete_demo_parameter_write(name, raw_value, min_raw, max_raw),
+                delay_ms=340,
+            )
+            return
         payload = (
             bytes([len(name.encode("utf-8"))])
             + raw_value.to_bytes(4, "little")
@@ -2681,6 +3249,18 @@ class SerialDebugAssistant(tk.Tk):
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x03, payload=payload)
 
     def toggle_auto_report(self, name: str, enabled: bool) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            if self.wave_running:
+                self.set_status("请先停止演示波形，再修改勾选项", error=True)
+                return
+            entry = self.demo_runtime.set_auto_report(name, enabled)
+            if entry is not None:
+                self.parameters[name] = entry
+                self.parameter_tab.update_wave_state(name, enabled)
+            self.sync_wave_selection()
+            self.parameter_tab.set_message(self.i18n.format_text("已更新演示波形勾选: {name}", name=name))
+            self.logger.log("DEMO", f"toggle auto report name={name} enabled={enabled}")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             return
@@ -2702,6 +3282,14 @@ class SerialDebugAssistant(tk.Tk):
         self.wave_tab.set_selected_parameters(sorted(names, key=str.lower))
 
     def apply_wave_period(self) -> None:
+        if self.demo_mode:
+            period_ms = self._get_wave_period_ms()
+            if period_ms is None:
+                return
+            self.wave_report_period_ms = period_ms
+            self.set_status(f"演示模式: 波形周期已设置为 {period_ms} ms")
+            self.logger.log("DEMO", f"set wave period {period_ms}ms")
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             return
@@ -2713,6 +3301,24 @@ class SerialDebugAssistant(tk.Tk):
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x06, payload=period_ms.to_bytes(4, "little"))
 
     def toggle_wave_run(self) -> None:
+        if self.demo_mode:
+            start = not self.wave_running
+            if start:
+                period_ms = self._get_wave_period_ms()
+                if period_ms is None:
+                    return
+                self.wave_report_period_ms = period_ms
+                self.pending_wave_batch.clear()
+                self.wave_batch_open = False
+                self.wave_tab.clear_plot()
+                self.logger.log("DEMO", f"start wave stream period={period_ms}ms")
+            else:
+                self.logger.log("DEMO", "stop wave stream")
+            self.wave_running = start
+            self.wave_tab.set_running(start)
+            self.set_status("演示模式: 波形演示已启动" if start else "演示模式: 波形演示已停止")
+            self._schedule_demo_tick()
+            return
         if not self.serial_service.is_open():
             self.set_status("Open the serial port first.", error=True)
             return
@@ -3024,6 +3630,24 @@ class SerialDebugAssistant(tk.Tk):
     def on_close(self) -> None:
         self.logger.log("APP", "shutdown")
         self.cancel_auto_send()
+        if self.demo_upgrade_job:
+            self.after_cancel(self.demo_upgrade_job)
+            self.demo_upgrade_job = None
+        if self.demo_black_box_job:
+            self.after_cancel(self.demo_black_box_job)
+            self.demo_black_box_job = None
+        if self.demo_scope_pull_job:
+            self.after_cancel(self.demo_scope_pull_job)
+            self.demo_scope_pull_job = None
+        if self.demo_param_list_job:
+            self.after_cancel(self.demo_param_list_job)
+            self.demo_param_list_job = None
+        if self.demo_param_action_job:
+            self.after_cancel(self.demo_param_action_job)
+            self.demo_param_action_job = None
+        if self.demo_tick_job:
+            self.after_cancel(self.demo_tick_job)
+            self.demo_tick_job = None
         if self.scope_list_request_job:
             self.after_cancel(self.scope_list_request_job)
             self.scope_list_request_job = None
@@ -3043,6 +3667,6 @@ class SerialDebugAssistant(tk.Tk):
         self.destroy()
 
 
-def launch_app() -> None:
-    app = SerialDebugAssistant()
+def launch_app(*, demo_mode: bool = False) -> None:
+    app = SerialDebugAssistant(demo_mode=demo_mode)
     app.mainloop()
