@@ -182,6 +182,7 @@ SCOPE_PULL_INTERVAL_MS = 50
 SCOPE_PULL_TIMEOUT_SECONDS = 1.5
 SCOPE_PULL_MAX_RETRIES = 3
 SCOPE_PULL_PREPARE_DELAY_MS = 120
+SCOPE_LIST_TIMEOUT_MS = 1500
 
 
 class SerialDebugAssistant(tk.Tk):
@@ -243,6 +244,7 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_pull_session: ScopePullSession | None = None
         self.scope_pull_job: str | None = None
         self.scope_next_capture_index = 1
+        self.scope_list_request_job: str | None = None
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD_RATE)
@@ -1424,15 +1426,23 @@ class SerialDebugAssistant(tk.Tk):
             return False
 
         if frame.cmd_word == CMD_WORD_SCOPE_LIST_QUERY and frame.is_ack == 0:
+            if self.scope_list_request_job is not None:
+                self.after_cancel(self.scope_list_request_job)
+                self.scope_list_request_job = None
             item = parse_scope_list_item_payload(frame.payload)
-            list_item = ScopeListItem(scope_id=int(item["scope_id"]), name=str(item["name"]))
-            self.scope_pending_list_items.append(list_item)
+            item_name = str(item["name"])
+            item_scope_id = int(item["scope_id"])
+            if item_name:
+                list_item = ScopeListItem(scope_id=item_scope_id, name=item_name)
+                self.scope_pending_list_items.append(list_item)
+                self.logger.log("SCOPE", f"list item id={list_item.scope_id} name={list_item.name!r} last={int(item['is_last'])}")
+            else:
+                self.logger.log("SCOPE", f"list terminator id={item_scope_id} last={int(item['is_last'])}")
             if int(item["is_last"]) == 1:
                 self.scope_items = list(self.scope_pending_list_items)
                 self.scope_pending_list_items = []
                 self.scope_tab.set_scope_items(self.scope_items)
                 self.scope_tab.set_status("Scope list loaded", self.i18n.format_text("Loaded {count} scope object(s).", count=len(self.scope_items)))
-            self.logger.log("SCOPE", f"list item id={list_item.scope_id} name={list_item.name!r} last={int(item['is_last'])}")
             return True
 
         if frame.cmd_word == CMD_WORD_SCOPE_INFO_QUERY and frame.is_ack == 1:
@@ -2082,6 +2092,9 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_items = []
         self.scope_tab.set_scope_items([])
         self.scope_tab.set_status("Refreshing scope list", "Waiting for scope objects from the device.")
+        if self.scope_list_request_job is not None:
+            self.after_cancel(self.scope_list_request_job)
+        self.scope_list_request_job = self.after(SCOPE_LIST_TIMEOUT_MS, self._handle_scope_list_timeout)
         self.logger.log("SCOPE", f"send list query dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
         self.send_protocol_frame(
             dst=dst,
@@ -2090,6 +2103,13 @@ class SerialDebugAssistant(tk.Tk):
             cmd_word=CMD_WORD_SCOPE_LIST_QUERY,
             payload=build_scope_list_query_payload(),
         )
+
+    def _handle_scope_list_timeout(self) -> None:
+        self.scope_list_request_job = None
+        if self.scope_items or self.scope_pending_list_items:
+            return
+        self.scope_tab.set_status("Cannot refresh scope list", "No scope object response was received from the device.")
+        self.logger.log("SCOPE", "list query timeout: no response from device")
 
     def request_scope_info(self) -> None:
         if not self.serial_service.is_open():
@@ -3004,6 +3024,9 @@ class SerialDebugAssistant(tk.Tk):
     def on_close(self) -> None:
         self.logger.log("APP", "shutdown")
         self.cancel_auto_send()
+        if self.scope_list_request_job:
+            self.after_cancel(self.scope_list_request_job)
+            self.scope_list_request_job = None
         if self.scope_pull_job:
             self.after_cancel(self.scope_pull_job)
             self.scope_pull_job = None
