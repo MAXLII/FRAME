@@ -180,6 +180,8 @@ MAX_RX_BYTES_PER_POLL = 262_144
 SAVE_FLUSH_INTERVAL_SECONDS = 0.4
 HOME_REFRESH_INTERVAL_MS = 120
 SCOPE_PULL_INTERVAL_MS = 50
+SCOPE_PULL_FAST_INTERVAL_MS = max(1, SCOPE_PULL_INTERVAL_MS // 10)
+SCOPE_PULL_RX_POLL_INTERVAL_MS = 1
 SCOPE_PULL_TIMEOUT_SECONDS = 1.5
 SCOPE_PULL_MAX_RETRIES = 3
 SCOPE_PULL_PREPARE_DELAY_MS = 120
@@ -1284,7 +1286,12 @@ class SerialDebugAssistant(tk.Tk):
                     self.last_save_flush_at = now
             if updated:
                 self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=self.total_rx_bytes))
-            next_delay = 1 if not self.serial_service.rx_queue.empty() else POLL_INTERVAL_MS
+            if not self.serial_service.rx_queue.empty():
+                next_delay = 1
+            elif self.scope_pull_session is not None:
+                next_delay = SCOPE_PULL_RX_POLL_INTERVAL_MS
+            else:
+                next_delay = POLL_INTERVAL_MS
         except Exception as exc:
             self.logger.log("ERROR", f"process incoming loop failed: {exc}")
             next_delay = POLL_INTERVAL_MS
@@ -2723,6 +2730,7 @@ class SerialDebugAssistant(tk.Tk):
             read_mode=read_mode,
             expected_capture_tag=info.capture_tag,
             sample_count=info.sample_count,
+            pull_interval_ms=SCOPE_PULL_INTERVAL_MS,
             samples=[],
             timeout_seconds=SCOPE_PULL_TIMEOUT_SECONDS,
             max_retries=SCOPE_PULL_MAX_RETRIES,
@@ -2780,7 +2788,10 @@ class SerialDebugAssistant(tk.Tk):
     def _schedule_scope_pull_tick(self) -> None:
         if self.scope_pull_job is not None:
             return
-        self.scope_pull_job = self.after(SCOPE_PULL_INTERVAL_MS, self._scope_pull_tick)
+        interval_ms = SCOPE_PULL_INTERVAL_MS
+        if self.scope_pull_session is not None:
+            interval_ms = max(1, int(self.scope_pull_session.pull_interval_ms))
+        self.scope_pull_job = self.after(interval_ms, self._scope_pull_tick)
 
     def _start_demo_scope_pull(self, read_mode: int) -> None:
         if self.demo_runtime is None:
@@ -2938,6 +2949,12 @@ class SerialDebugAssistant(tk.Tk):
         if session.samples is None:
             session.samples = []
         session.samples.append(values)
+        if session.pull_interval_ms != SCOPE_PULL_FAST_INTERVAL_MS:
+            session.pull_interval_ms = SCOPE_PULL_FAST_INTERVAL_MS
+            self.logger.log(
+                "SCOPE",
+                f"pull fast mode enabled scope_id={session.scope_id} interval_ms={session.pull_interval_ms}",
+            )
         session.next_sample_index += 1
         mode_name = self.i18n.translate_text("Force Pull" if session.read_mode == SCOPE_READ_MODE_FORCE else "Pull Capture")
         self.scope_tab.update_pull_progress(session.next_sample_index, session.sample_count, session.scope_name, mode_name)

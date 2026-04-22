@@ -53,6 +53,7 @@ class ScopePullSession:
     read_mode: int
     expected_capture_tag: int
     sample_count: int
+    pull_interval_ms: int = 50
     next_sample_index: int = 0
     waiting_ack: bool = False
     completed: bool = False
