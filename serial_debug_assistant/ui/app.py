@@ -131,7 +131,9 @@ from serial_debug_assistant.scope_protocol import (
     parse_scope_sample_ack_payload,
     parse_scope_var_ack_payload,
 )
+from serial_debug_assistant.services.can_service import CANService
 from serial_debug_assistant.services.serial_service import SerialService
+from serial_debug_assistant.services.transport_helpers import CAN_BITRATES, CAN_INTERFACES
 from serial_debug_assistant.ui.black_box_tab import BlackBoxTab
 from serial_debug_assistant.ui.factory_mode_tab import FactoryModeTab
 from serial_debug_assistant.ui.home_tab import HomeTab
@@ -211,6 +213,8 @@ class SerialDebugAssistant(tk.Tk):
         migration_notes = migrate_legacy_data(self.paths)
         self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
+        self.can_service = CANService()
+        self.connected_transport: str | None = None
         self.port_display_map: dict[str, str] = {}
         self.frame_parser = FrameParser()
         self.total_rx_bytes = 0
@@ -261,11 +265,14 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_next_capture_index = 1
         self.scope_list_request_job: str | None = None
 
+        self.transport_var = tk.StringVar(value="Serial")
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD_RATE)
         self.data_bits_var = tk.StringVar(value=DEFAULT_DATA_BITS)
         self.parity_var = tk.StringVar(value=DEFAULT_PARITY)
         self.stop_bits_var = tk.StringVar(value=DEFAULT_STOP_BITS)
+        self.can_interface_var = tk.StringVar(value=CAN_INTERFACES[0])
+        self.can_bitrate_var = tk.StringVar(value="500000")
         self.status_var = tk.StringVar(value=self.i18n.translate_text("Ready"))
         self.rx_count_var = tk.StringVar(value=self.i18n.format_text("Receive: {count} bytes", count=0))
         self.tx_count_var = tk.StringVar(value=self.i18n.format_text("Send: {count} bytes", count=0))
@@ -545,37 +552,69 @@ class SerialDebugAssistant(tk.Tk):
         self.status_label.grid(row=0, column=3, sticky="e")
 
     def _build_serial_bar(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(2, weight=1)
-        parent.columnconfigure(12, weight=1)
-        parent.columnconfigure(13, weight=0)
+        parent.columnconfigure(3, weight=1)
         serial_label = ttk.Label(parent, text=self.i18n.translate_text("Serial Port"), style="SidebarHeader.TLabel")
         serial_label.grid(row=0, column=0, sticky="w", padx=(0, 16))
         self._remember_text(serial_label, "Serial Port")
 
-        controls = [
+        transport_label = ttk.Label(parent, text=f"{self.i18n.translate_text('Transport')} :", style="Sidebar.TLabel")
+        transport_label.grid(row=0, column=1, sticky="w", padx=(0, 6))
+        self._translatable_widgets.append((transport_label, "Transport :", "text"))
+        self.transport_combo = ttk.Combobox(
+            parent,
+            textvariable=self.transport_var,
+            values=("Serial", "CAN"),
+            state="readonly",
+            width=10,
+        )
+        self.transport_combo.grid(row=0, column=2, sticky="w", padx=(0, 12))
+        self.transport_combo.bind("<<ComboboxSelected>>", self._on_transport_changed)
+
+        settings_host = ttk.Frame(parent, style="Sidebar.TFrame")
+        settings_host.grid(row=0, column=3, sticky="ew")
+        settings_host.columnconfigure(0, weight=1)
+
+        self.serial_settings_frame = ttk.Frame(settings_host, style="Sidebar.TFrame")
+        self.serial_settings_frame.grid(row=0, column=0, sticky="ew")
+        serial_controls = [
             ("Port Name", self._build_port_selector),
             ("Baud Rate", self._build_baud_selector),
             ("Data Bits", self._build_data_bits_selector),
             ("Parity", self._build_parity_selector),
             ("Stop Bits", self._build_stop_bits_selector),
         ]
-        col = 1
-        for label, builder in controls:
-            label_widget = ttk.Label(parent, text=f"{self.i18n.translate_text(label)} :", style="Sidebar.TLabel")
+        col = 0
+        for label, builder in serial_controls:
+            label_widget = ttk.Label(self.serial_settings_frame, text=f"{self.i18n.translate_text(label)} :", style="Sidebar.TLabel")
             label_widget.grid(row=0, column=col, sticky="w", padx=(0, 6))
             self._translatable_widgets.append((label_widget, f"{label} :", "text"))
-            builder(parent, 0, col + 1)
+            builder(self.serial_settings_frame, 0, col + 1)
+            col += 2
+
+        self.can_settings_frame = ttk.Frame(settings_host, style="Sidebar.TFrame")
+        self.can_settings_frame.grid(row=0, column=0, sticky="ew")
+        can_controls = [
+            ("CAN Interface", self._build_can_interface_selector),
+            ("CAN Channel", self._build_can_channel_selector),
+            ("CAN Bitrate", self._build_can_bitrate_selector),
+        ]
+        col = 0
+        for label, builder in can_controls:
+            label_widget = ttk.Label(self.can_settings_frame, text=f"{label} :", style="Sidebar.TLabel")
+            label_widget.grid(row=0, column=col, sticky="w", padx=(0, 6))
+            builder(self.can_settings_frame, 0, col + 1)
             col += 2
 
         self.open_button = ttk.Button(parent, text=self.i18n.translate_text("Open"), command=self.toggle_connection, style="Accent.TButton")
-        self.open_button.grid(row=0, column=11, sticky="w", padx=(12, 0))
+        self.open_button.grid(row=0, column=4, sticky="w", padx=(12, 0))
         self._remember_text(self.open_button, "Open")
         language_label = ttk.Label(parent, text=self.i18n.translate_text("Language"), style="Sidebar.TLabel")
-        language_label.grid(row=0, column=12, sticky="e", padx=(12, 6))
+        language_label.grid(row=0, column=5, sticky="e", padx=(12, 6))
         self._remember_text(language_label, "Language")
         self.language_combo = ttk.Combobox(parent, textvariable=self.language_var, state="readonly", values=self.i18n.get_language_labels(), width=12)
-        self.language_combo.grid(row=0, column=13, sticky="e")
+        self.language_combo.grid(row=0, column=6, sticky="e")
         self.language_combo.bind("<<ComboboxSelected>>", self._on_language_changed)
+        self._update_transport_ui()
 
     def _build_monitor_settings(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -655,6 +694,19 @@ class SerialDebugAssistant(tk.Tk):
     def _build_stop_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         ttk.Combobox(parent, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
 
+    def _build_can_interface_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        self.can_interface_combo = ttk.Combobox(parent, textvariable=self.can_interface_var, values=CAN_INTERFACES, state="readonly", width=12)
+        self.can_interface_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.can_interface_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_ports())
+
+    def _build_can_channel_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        self.can_channel_combo = ttk.Combobox(parent, textvariable=self.port_var, width=18)
+        self.can_channel_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+
+    def _build_can_bitrate_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        self.can_bitrate_combo = ttk.Combobox(parent, textvariable=self.can_bitrate_var, values=CAN_BITRATES, width=10)
+        self.can_bitrate_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+
     def _add_notebook_tab(self, tab_id: str, widget: object, title: str) -> None:
         if tab_id in self.hidden_tab_ids:
             return
@@ -666,6 +718,23 @@ class SerialDebugAssistant(tk.Tk):
         self.language_var.set(self.i18n.get_label_for_language(self.i18n.language))
         self._apply_language()
 
+    def _on_transport_changed(self, _event=None) -> None:
+        self._update_transport_ui()
+        self.refresh_ports()
+
+    def _update_transport_ui(self) -> None:
+        is_can = self.transport_var.get() == "CAN"
+        if is_can:
+            self.serial_settings_frame.grid_remove()
+            self.can_settings_frame.grid()
+            if hasattr(self, "auto_break_check"):
+                self.auto_break_check.state(["disabled"])
+        else:
+            self.can_settings_frame.grid_remove()
+            self.serial_settings_frame.grid()
+            if hasattr(self, "auto_break_check"):
+                self.auto_break_check.state(["!disabled"])
+
     def _apply_language(self) -> None:
         for widget, source_text, option in self._translatable_widgets:
             if source_text.endswith(" :"):
@@ -674,7 +743,7 @@ class SerialDebugAssistant(tk.Tk):
             else:
                 widget.configure(**{option: self.i18n.translate_text(source_text)})
         self.language_combo.configure(values=self.i18n.get_language_labels())
-        self._set_open_button_text("Close" if self.serial_service.is_open() else "Open")
+        self._set_open_button_text("Close" if self._is_connected() else "Open")
         for widget, title in self._visible_notebook_tabs:
             self.notebook.tab(widget, text=self.i18n.translate_text(title))
         self.home_tab.refresh_texts()
@@ -695,6 +764,35 @@ class SerialDebugAssistant(tk.Tk):
 
     def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
         self._translatable_widgets.append((widget, source_text, option))
+
+    def _selected_transport(self) -> str:
+        if self.demo_mode:
+            return "demo"
+        return "can" if self.transport_var.get() == "CAN" else "serial"
+
+    def _active_transport(self) -> str | None:
+        return self.connected_transport
+
+    def _active_service(self):
+        if self.connected_transport in {"serial", "demo"}:
+            return self.serial_service
+        if self.connected_transport == "can":
+            return self.can_service
+        return None
+
+    def _is_connected(self) -> bool:
+        service = self._active_service()
+        return bool(service and service.is_open())
+
+    def _protocol_transport_available(self) -> bool:
+        return self.connected_transport in {"serial", "can", "demo"}
+
+    def _set_protocol_features_available(self, available: bool, endpoint: str | None = None) -> None:
+        if available:
+            endpoint_label = endpoint or "-"
+            self.upgrade_tab.set_connection_state(True, endpoint_label)
+        else:
+            self.upgrade_tab.set_connection_state(False)
 
     def _log_monitor_layout(self, layout: dict[str, int | str]) -> None:
         self.logger.log(
@@ -722,6 +820,15 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status("演示模式已就绪，无需连接下位机")
             self.logger.log("PORTS", "demo mode -> ['DEMO - 演示模式']")
             return
+        if self.transport_var.get() == "CAN":
+            channels = self.can_service.list_common_channels(self.can_interface_var.get())
+            self.port_display_map = {channel: channel for channel in channels}
+            self.can_channel_combo["values"] = channels
+            if channels and self.port_var.get() not in channels:
+                self.port_var.set(channels[0])
+            self.set_status(self.i18n.format_text("Ready | {count} port(s) found", count=len(channels)))
+            self.logger.log("CAN", f"refresh interface={self.can_interface_var.get()} channels={channels}")
+            return
         ports = self.serial_service.list_ports_with_details()
         display_values = [item["display"] for item in ports]
         self.port_display_map = {item["display"]: item["device"] for item in ports}
@@ -739,7 +846,7 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("PORTS", f"refresh -> {display_values}")
 
     def toggle_connection(self) -> None:
-        if self.serial_service.is_open():
+        if self._is_connected():
             self.close_connection()
         else:
             self.open_connection()
@@ -752,26 +859,42 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status(self.i18n.translate_text("Please select a serial port."), error=True)
             return
         selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
+        selected_transport = self._selected_transport()
         try:
-            self.serial_service.open(
-                port=selected_port,
-                baudrate=int(self.baud_var.get()),
-                data_bits=self.data_bits_var.get(),
-                parity=self.parity_var.get(),
-                stop_bits=self.stop_bits_var.get(),
-            )
-        except (ValueError, KeyError) as exc:
-            self.set_status(f"Serial settings are invalid: {exc}", error=True)
+            if selected_transport == "can":
+                self.can_service.open(
+                    interface=self.can_interface_var.get().strip(),
+                    channel=selected_port.strip(),
+                    bitrate=int(self.can_bitrate_var.get()),
+                )
+                self.can_service.configure_tx_arbitration(0x100, is_extended_id=False)
+                self.can_service.configure_rx_filter(0x101, is_extended_id=False)
+            else:
+                self.serial_service.open(
+                    port=selected_port,
+                    baudrate=int(self.baud_var.get()),
+                    data_bits=self.data_bits_var.get(),
+                    parity=self.parity_var.get(),
+                    stop_bits=self.stop_bits_var.get(),
+                )
+        except (RuntimeError, ValueError, KeyError) as exc:
+            self.set_status(f"Open failed: {exc}", error=True)
             return
         except serial.SerialException as exc:
             self.set_status(f"Open failed: {exc}", error=True)
             return
 
-        self.serial_service.start_reader(
-            auto_break_enabled_supplier=lambda: self.auto_break_var.get(),
-            break_ms_supplier=self._current_break_ms,
-            error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_serial_error(error_message)),
-        )
+        if selected_transport == "can":
+            self.can_service.start_reader(
+                error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("CAN", error_message)),
+            )
+        else:
+            self.serial_service.start_reader(
+                auto_break_enabled_supplier=lambda: self.auto_break_var.get(),
+                break_ms_supplier=self._current_break_ms,
+                error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("Serial", error_message)),
+            )
+        self.connected_transport = selected_transport
         self.frame_parser = FrameParser()
         self.wave_running = False
         self.wave_tab.set_running(False)
@@ -779,11 +902,21 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
         self.set_status(self.i18n.format_text("Connected to {port}", port=selected_port))
-        self.upgrade_tab.set_connection_state(True, selected_port)
+        self._set_protocol_features_available(True, selected_port)
         self.parameter_tab.set_message("串口已连接，已向广播地址发送停止波形上传命令")
+        if selected_transport == "can":
+            self.parameter_tab.set_message("CAN connected. Data is handled like serial bytes and TX frames are padded to 8 bytes with 0xFF.")
+        else:
+            self.parameter_tab.set_message("Serial connected, protocol features are available.")
         self._set_open_button_text("Close")
-        self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
-        self.logger.log("WAVE", "send broadcast stop on connect dst=0x00 d_dst=0x00")
+        if selected_transport == "can":
+            self.logger.log(
+                "CAN",
+                f"open interface={self.can_interface_var.get()} channel={selected_port} bitrate={self.can_bitrate_var.get()} tx_id=0x100 standard",
+            )
+        else:
+            self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
+            self.logger.log("WAVE", "send broadcast stop on connect dst=0x00 d_dst=0x00")
         self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
         if self.auto_send_var.get():
             self.schedule_auto_send()
@@ -794,26 +927,34 @@ class SerialDebugAssistant(tk.Tk):
             return
         self.cancel_auto_send()
         self.stop_upgrade(self.i18n.translate_text("串口已断开，升级已停止。"), user_initiated=False)
-        self.serial_service.close()
+        transport = self.connected_transport
+        if transport == "can":
+            self.can_service.close()
+        else:
+            self.serial_service.close()
+        self.connected_transport = None
         self.pending_rx_hex_bytes.clear()
-        self.upgrade_tab.set_connection_state(False)
+        self._set_protocol_features_available(False)
         self.set_status(self.i18n.translate_text("Disconnected"))
         self.parameter_tab.set_message("串口已断开")
+        if transport == "can":
+            self.parameter_tab.set_message("CAN disconnected.")
         self._set_open_button_text("Open")
-        self.logger.log("SERIAL", "close")
+        self.logger.log("CAN" if transport == "can" else "SERIAL", "close")
 
     def _set_open_button_text(self, text: str) -> None:
         self.open_button.configure(text=self.i18n.translate_text(text))
 
     def _connect_demo_mode(self, *, initial: bool) -> None:
         self.serial_service.enable_demo_connection()
+        self.connected_transport = "demo"
         self.frame_parser = FrameParser()
         self.wave_running = False
         self.wave_tab.set_running(False)
         self.pending_rx_hex_bytes.clear()
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
-        self.upgrade_tab.set_connection_state(True, "DEMO")
+        self._set_protocol_features_available(True, "DEMO")
         self.parameter_tab.clear_parameters()
         self.parameters.clear()
         self.parameter_tab.set_message("演示模式已连接，请点击“读取参数列表”开始演示")
@@ -848,7 +989,8 @@ class SerialDebugAssistant(tk.Tk):
             self.after_cancel(self.demo_tick_job)
             self.demo_tick_job = None
         self.serial_service.disable_demo_connection()
-        self.upgrade_tab.set_connection_state(False)
+        self.connected_transport = None
+        self._set_protocol_features_available(False)
         self.parameter_tab.set_message("演示模式已断开")
         self._set_open_button_text("Open")
         self.set_status("演示模式已停止")
@@ -862,10 +1004,13 @@ class SerialDebugAssistant(tk.Tk):
         if hasattr(self, "status_label"):
             self.status_label.configure(style="ErrorStatus.TLabel" if error else "Status.TLabel")
 
-    def _handle_serial_error(self, exc: str) -> None:
-        self.logger.log("ERROR", f"serial error: {exc}")
+    def _handle_transport_error(self, transport_name: str, exc: str) -> None:
+        self.logger.log("ERROR", f"{transport_name.lower()} error: {exc}")
         self.close_connection()
-        self.set_status(f"Serial error: {exc}", error=True)
+        self.set_status(f"{transport_name} error: {exc}", error=True)
+
+    def _handle_serial_error(self, exc: str) -> None:
+        self._handle_transport_error("Serial", exc)
 
     def load_upgrade_firmware(self) -> None:
         if self.demo_mode and self.demo_runtime is not None:
@@ -951,7 +1096,7 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_status("Reading device version", "演示设备版本读取成功。", error_code="-")
             self.set_status("演示模式: 已读取设备版本")
             return
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             self.upgrade_tab.set_status("Cannot read device version", "Connect the serial port first.", error_code="SERIAL")
             return
@@ -1005,7 +1150,7 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_status("Upgrade in progress", "演示升级已开始。", error_code="-")
             self._schedule_demo_upgrade_step(180)
             return
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             self.upgrade_tab.set_status("Cannot start upgrade", "Connect the serial port first.", error_code="SERIAL")
             return
@@ -1232,6 +1377,7 @@ class SerialDebugAssistant(tk.Tk):
     def process_incoming_data(self) -> None:
         next_delay = POLL_INTERVAL_MS
         try:
+            active_service = self._active_service()
             updated = False
             processed_chunks = 0
             processed_bytes = 0
@@ -1239,7 +1385,9 @@ class SerialDebugAssistant(tk.Tk):
             save_buffer = bytearray()
             while processed_chunks < MAX_RX_CHUNKS_PER_POLL and processed_bytes < MAX_RX_BYTES_PER_POLL:
                 try:
-                    chunk = self.serial_service.rx_queue.get_nowait()
+                    if active_service is None:
+                        break
+                    chunk = active_service.rx_queue.get_nowait()
                 except queue.Empty:
                     break
                 if chunk.data == b"\n":
@@ -1252,23 +1400,42 @@ class SerialDebugAssistant(tk.Tk):
                     self.logger.log("RX", chunk.data.hex(" ").upper())
                 if not self.black_box_stream_active:
                     receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
-                try:
-                    frames = self.frame_parser.feed(chunk.data)
-                except Exception as exc:
-                    self.logger.log("ERROR", f"frame parser error: {exc}")
-                    self.frame_parser = FrameParser()
-                    frames = []
-                for frame in frames:
-                    self._log_protocol_frame(frame)
+                if self._protocol_transport_available():
+                    parser_buffer_before = len(self.frame_parser.buffer)
                     try:
-                        self.handle_protocol_frame(frame)
+                        frames = self.frame_parser.feed(chunk.data)
                     except Exception as exc:
-                        self.logger.log(
-                            "ERROR",
-                            "handle frame failed "
-                            f"cmd_set=0x{frame.cmd_set:02X} cmd_word=0x{frame.cmd_word:02X} "
-                            f"is_ack={frame.is_ack} err={exc}",
-                        )
+                        self.logger.log("ERROR", f"frame parser error: {exc}")
+                        self.frame_parser = FrameParser()
+                        frames = []
+                    parser_buffer_after = len(self.frame_parser.buffer)
+                    if self.connected_transport == "can":
+                        if frames:
+                            self.logger.log(
+                                "CANPARSE",
+                                f"chunk_len={len(chunk.data)} parsed={len(frames)} "
+                                f"buffer_before={parser_buffer_before} buffer_after={parser_buffer_after} "
+                                f"chunk={chunk.data.hex(' ').upper()}",
+                            )
+                        elif parser_buffer_after or 0xE8 in chunk.data or b'\r\n' in chunk.data:
+                            buffer_preview = bytes(self.frame_parser.buffer[:24]).hex(" ").upper()
+                            self.logger.log(
+                                "CANPARSE",
+                                f"chunk_len={len(chunk.data)} parsed=0 "
+                                f"buffer_before={parser_buffer_before} buffer_after={parser_buffer_after} "
+                                f"chunk={chunk.data.hex(' ').upper()} buffer_head={buffer_preview}",
+                            )
+                    for frame in frames:
+                        self._log_protocol_frame(frame)
+                        try:
+                            self.handle_protocol_frame(frame)
+                        except Exception as exc:
+                            self.logger.log(
+                                "ERROR",
+                                "handle frame failed "
+                                f"cmd_set=0x{frame.cmd_set:02X} cmd_word=0x{frame.cmd_word:02X} "
+                                f"is_ack={frame.is_ack} err={exc}",
+                            )
                 updated = True
                 if self.save_handle:
                     save_buffer.extend(chunk.data)
@@ -1286,7 +1453,7 @@ class SerialDebugAssistant(tk.Tk):
                     self.last_save_flush_at = now
             if updated:
                 self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=self.total_rx_bytes))
-            if not self.serial_service.rx_queue.empty():
+            if active_service is not None and not active_service.rx_queue.empty():
                 next_delay = 1
             elif self.scope_pull_session is not None:
                 next_delay = SCOPE_PULL_RX_POLL_INTERVAL_MS
@@ -1380,6 +1547,8 @@ class SerialDebugAssistant(tk.Tk):
                 elif current_count == self.expected_param_count:
                     self.sync_wave_selection()
                 self.logger.log("PARAM", f"list item name={entry.name} type={entry.type_id} raw={entry.data_raw}")
+            else:
+                self.logger.log("PARAM", f"list item parse failed payload={frame.payload.hex(' ').upper()}")
             return
         if frame.cmd_word == 0x02 and frame.is_ack == 1 and len(frame.payload) >= 6:
             entry = self._parse_single_parameter(frame.payload)
@@ -1442,6 +1611,13 @@ class SerialDebugAssistant(tk.Tk):
             if time.monotonic() < self.ignore_wave_frames_until:
                 return
             self._handle_wave_report_payload(frame.payload)
+            return
+        if self.connected_transport == "can":
+            self.logger.log(
+                "PARAM",
+                f"unhandled frame on CAN cmd_set=0x{frame.cmd_set:02X} cmd_word=0x{frame.cmd_word:02X} "
+                f"is_ack={frame.is_ack} len={len(frame.payload)} payload={frame.payload.hex(' ').upper()}",
+            )
 
     def _handle_home_protocol_frame(self, frame: ProtocolFrame) -> bool:
         if frame.cmd_set != 0x02:
@@ -2150,7 +2326,7 @@ class SerialDebugAssistant(tk.Tk):
                 f"enable={enabled} rms={rms} freq={freq}",
             )
             return
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             return
         payload = bytes([ac_out_enable_trig, ac_out_disable_trig, ac_out_rms, ac_out_freq])
@@ -2409,7 +2585,10 @@ class SerialDebugAssistant(tk.Tk):
     def _parse_parameter_list_item(self, payload: bytes) -> ParameterEntry | None:
         name_len = payload[0]
         if len(payload) < 15 + name_len:
-            self.logger.log("WARN", f"list item payload too short len={len(payload)} name_len={name_len}")
+            self.logger.log(
+                "WARN",
+                f"list item payload too short len={len(payload)} name_len={name_len} payload={payload.hex(' ').upper()}",
+            )
             return None
         type_id = payload[1]
         data = int.from_bytes(payload[2:6], "little")
@@ -2417,6 +2596,11 @@ class SerialDebugAssistant(tk.Tk):
         data_min = int.from_bytes(payload[10:14], "little")
         status = payload[14]
         name = payload[15 : 15 + name_len].decode("utf-8", errors="replace")
+        self.logger.log(
+            "PARAMDBG",
+            f"list item decoded name_len={name_len} type={type_id} status=0x{status:02X} "
+            f"data=0x{data:08X} min=0x{data_min:08X} max=0x{data_max:08X} name={name!r}",
+        )
         return ParameterEntry(name=name, type_id=type_id, data_raw=data, min_raw=data_min, max_raw=data_max, status=status, auto_report=bool(status & 0x01), important=bool(status & 0x02), dirty=False)
 
     def _parse_single_parameter(self, payload: bytes) -> ParameterEntry | None:
@@ -2459,7 +2643,7 @@ class SerialDebugAssistant(tk.Tk):
             self._schedule_demo_parameter_loading(items=ordered_items, index=0, batch_size=1)
             self.logger.log("DEMO", f"start staged parameter load count={len(ordered_items)}")
             return
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             return
         if self.parameter_list_request_job is not None:
@@ -2504,7 +2688,7 @@ class SerialDebugAssistant(tk.Tk):
             self._schedule_demo_black_box_rows(rows=rows, meta=meta, index=0)
             self.logger.log("DEMO", f"black box query start=0x{start_offset:06X} length=0x{read_length:X} rows={len(rows)}")
             return
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             self.black_box_tab.set_status("Cannot start black box query", "Connect the serial port first.")
             return
@@ -2545,7 +2729,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status("演示模式: 已刷新软件录波对象")
             self.logger.log("DEMO", f"scope list count={len(self.scope_items)}")
             return
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot refresh scope list", "Connect the serial port first.")
             return
@@ -2596,7 +2780,7 @@ class SerialDebugAssistant(tk.Tk):
             self.scope_tab.set_status("Refreshing scope info", self.i18n.format_text("Loaded metadata for scope ID {scope_id}.", scope_id=scope_id))
             self.set_status("演示模式: 已读取软件录波信息")
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot refresh scope info", "Connect the serial port first.")
             return
@@ -2632,7 +2816,7 @@ class SerialDebugAssistant(tk.Tk):
             self.scope_tab.set_status("Reading scope variables", self.i18n.format_text("Loaded {count} variable name(s).", count=len(names)))
             self.set_status("演示模式: 已读取软件录波变量")
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot read scope variables", "Connect the serial port first.")
             return
@@ -2691,7 +2875,7 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_tab.clear_captures()
 
     def _start_scope_pull(self, read_mode: int) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.fail_pull("Connect the serial port first.")
             return
@@ -2763,7 +2947,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status(f"演示模式: {detail}")
             self.logger.log("DEMO", f"scope command cmd=0x{cmd_word:02X} scope_id={scope_id}")
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.scope_tab.set_status("Cannot send scope command", "Connect the serial port first.")
             return
@@ -2985,7 +3169,7 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_pull_session = None
 
     def _prepare_scope_pull_link(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             return
         if self.wave_running:
             self.wave_running = False
@@ -2994,7 +3178,7 @@ class SerialDebugAssistant(tk.Tk):
         self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
 
     def request_factory_time_read(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.factory_mode_tab.set_status("Cannot read device time", "Connect the serial port first.")
             return
@@ -3038,7 +3222,7 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def send_factory_current_pc_time(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.factory_mode_tab.set_status("Cannot set device time", "Connect the serial port first.")
             return
@@ -3056,7 +3240,7 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def apply_factory_timezone(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.factory_mode_tab.set_status("Cannot apply timezone", "Connect the serial port first.")
             return
@@ -3077,7 +3261,7 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def request_factory_cali_read(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.factory_mode_tab.set_cali_status("Cannot read calibration", "Connect the serial port first.")
             return
@@ -3100,7 +3284,7 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def send_factory_cali_write(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.factory_mode_tab.set_cali_status("Cannot write calibration", "Connect the serial port first.")
             return
@@ -3129,7 +3313,7 @@ class SerialDebugAssistant(tk.Tk):
         )
 
     def send_factory_cali_save(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             self.factory_mode_tab.set_cali_status("Cannot save calibration", "Connect the serial port first.")
             return
@@ -3157,7 +3341,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status(f"演示模式: 正在读取参数 {name}")
             self._schedule_demo_parameter_action(lambda: self._complete_demo_parameter_read(name), delay_ms=260)
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             return
         payload = bytes([len(name.encode("utf-8"))]) + name.encode("utf-8")
@@ -3278,7 +3462,7 @@ class SerialDebugAssistant(tk.Tk):
             self.parameter_tab.set_message(self.i18n.format_text("已更新演示波形勾选: {name}", name=name))
             self.logger.log("DEMO", f"toggle auto report name={name} enabled={enabled}")
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             return
         if self.wave_running:
@@ -3307,7 +3491,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status(f"演示模式: 波形周期已设置为 {period_ms} ms")
             self.logger.log("DEMO", f"set wave period {period_ms}ms")
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             return
         period_ms = self._get_wave_period_ms()
@@ -3336,7 +3520,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status("演示模式: 波形演示已启动" if start else "演示模式: 波形演示已停止")
             self._schedule_demo_tick()
             return
-        if not self.serial_service.is_open():
+        if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
             return
         start = not self.wave_running
@@ -3389,6 +3573,9 @@ class SerialDebugAssistant(tk.Tk):
         dst: int | None = None,
         d_dst: int | None = None,
     ) -> None:
+        if not self._protocol_transport_available():
+            self.set_status("Protocol features are not available right now.", error=True)
+            return
         if dst is None or d_dst is None:
             try:
                 dst, d_dst = self.parameter_tab.get_target_address()
@@ -3399,9 +3586,12 @@ class SerialDebugAssistant(tk.Tk):
         frame = build_frame(dst=dst, d_dst=d_dst, cmd_set=cmd_set, cmd_word=cmd_word, payload=payload)
         self.logger.log("TX", f"dst=0x{dst:02X} d_dst=0x{d_dst:02X} cmd_set=0x{cmd_set:02X} cmd_word=0x{cmd_word:02X} frame={frame.hex(' ').upper()}")
         try:
-            sent = self.serial_service.write(frame)
-        except serial.SerialException as exc:
-            self._handle_serial_error(str(exc))
+            if self.connected_transport == "can":
+                sent = self.can_service.send_bytes(frame)
+            else:
+                sent = self.serial_service.write(frame)
+        except (RuntimeError, serial.SerialException) as exc:
+            self._handle_transport_error("CAN" if self.connected_transport == "can" else "Serial", str(exc))
             return
         self.total_tx_bytes += sent
         self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
@@ -3531,7 +3721,7 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("UI", "stop save receive stream")
 
     def send_payload(self) -> None:
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             return
         raw_text = self.monitor_tab.get_send_text()
@@ -3539,14 +3729,18 @@ class SerialDebugAssistant(tk.Tk):
             return
         try:
             payload = self.build_send_bytes(raw_text, hex_mode=self.monitor_tab.send_hex_enabled(), append_crlf=self.line_mode_var.get())
-            self.logger.log("TX", f"manual send frame={payload.hex(' ').upper()}")
-            sent = self.serial_service.write(payload)
+            if self.connected_transport == "can":
+                self.logger.log("CAN", f"manual send bytes={payload.hex(' ').upper()}")
+                sent = self.can_service.send_bytes(payload)
+            else:
+                self.logger.log("TX", f"manual send frame={payload.hex(' ').upper()}")
+                sent = self.serial_service.write(payload)
         except ValueError as exc:
             self.set_status(str(exc), error=True)
             self.logger.log("ERROR", f"manual send parse error: {exc}")
             return
-        except serial.SerialException as exc:
-            self._handle_serial_error(str(exc))
+        except (RuntimeError, serial.SerialException) as exc:
+            self._handle_transport_error("CAN" if self.connected_transport == "can" else "Serial", str(exc))
             return
         self.total_tx_bytes += sent
         self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
@@ -3554,7 +3748,7 @@ class SerialDebugAssistant(tk.Tk):
         self.set_status(f"Sent {sent} byte(s)")
 
     def send_preset_payload(self, index: int, raw_text: str, hex_mode: bool, append_crlf: bool) -> None:
-        if not self.serial_service.is_open():
+        if not self._is_connected():
             self.set_status("Open the serial port first.", error=True)
             return
         if not raw_text.strip():
@@ -3562,14 +3756,18 @@ class SerialDebugAssistant(tk.Tk):
             return
         try:
             payload = self.build_send_bytes(raw_text, hex_mode=hex_mode, append_crlf=append_crlf)
-            self.logger.log("TX", f"preset send index={index + 1} frame={payload.hex(' ').upper()}")
-            sent = self.serial_service.write(payload)
+            if self.connected_transport == "can":
+                self.logger.log("CAN", f"preset send index={index + 1} bytes={payload.hex(' ').upper()}")
+                sent = self.can_service.send_bytes(payload)
+            else:
+                self.logger.log("TX", f"preset send index={index + 1} frame={payload.hex(' ').upper()}")
+                sent = self.serial_service.write(payload)
         except ValueError as exc:
             self.set_status(str(exc), error=True)
             self.logger.log("ERROR", f"preset send parse error index={index + 1}: {exc}")
             return
-        except serial.SerialException as exc:
-            self._handle_serial_error(str(exc))
+        except (RuntimeError, serial.SerialException) as exc:
+            self._handle_transport_error("CAN" if self.connected_transport == "can" else "Serial", str(exc))
             return
         self.total_tx_bytes += sent
         self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
@@ -3615,7 +3813,7 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("UI", f"auto send enabled interval_ms={interval_ms}")
 
     def _auto_send_tick(self) -> None:
-        if self.auto_send_var.get() and self.serial_service.is_open():
+        if self.auto_send_var.get() and self._is_connected():
             self.send_payload()
             self.schedule_auto_send()
         else:
@@ -3676,6 +3874,7 @@ class SerialDebugAssistant(tk.Tk):
         if saved_path is not None:
             self.logger.log("WAVE", f"auto save on app close -> {saved_path}")
         self.serial_service.close()
+        self.can_service.close()
         if self.save_handle:
             self.save_handle.flush()
             self.save_handle.close()
