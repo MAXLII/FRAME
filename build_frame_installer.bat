@@ -6,6 +6,7 @@ set "APP_NAME=FRAME"
 set "PUBLISHER=LWX"
 set "ISS_FILE=%~dp0installer\frame_installer.iss"
 set "DIST_APP_DIR=%~dp0dist\frame"
+set "BRAND_FILE=%DIST_APP_DIR%\app_brand.txt"
 set "ISCC_EXE="
 set "BASE_APP_VERSION="
 set "BASE_APP_VERSION_RAW="
@@ -30,6 +31,16 @@ if errorlevel 1 (
 
 if not exist "%DIST_APP_DIR%\frame.exe" (
     echo [ERROR] Expected executable was not found: "%DIST_APP_DIR%\frame.exe"
+    exit /b 1
+)
+
+> "%BRAND_FILE%" (
+    echo app_name=FRAME
+    echo app_version=%APP_VERSION%
+    echo hidden_tabs=home
+)
+if errorlevel 1 (
+    echo [ERROR] Failed to create brand marker file: "%BRAND_FILE%"
     exit /b 1
 )
 
