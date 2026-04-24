@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import queue
 import struct
 from pathlib import Path
 import time
@@ -62,6 +61,7 @@ from serial_debug_assistant.constants import (
     POLL_INTERVAL_MS,
     STOP_BITS_OPTIONS,
 )
+from serial_debug_assistant.comm import CommunicationManager
 from serial_debug_assistant.demo_mode import DemoRuntime
 from serial_debug_assistant.debug_logger import DebugLogger
 from serial_debug_assistant.firmware_update import (
@@ -99,8 +99,6 @@ from serial_debug_assistant.models import (
     ScopePullSession,
 )
 from serial_debug_assistant.protocol import (
-    FrameParser,
-    build_frame,
     format_value,
     u32_to_value,
     value_to_u32,
@@ -214,9 +212,15 @@ class SerialDebugAssistant(tk.Tk):
         self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
         self.can_service = CANService()
+        self.comm = CommunicationManager(
+            serial_service=self.serial_service,
+            can_service=self.can_service,
+            logger=self.logger,
+        )
+        self.comm.set_frame_logger(self._log_protocol_frame)
+        self.comm.router.register_fallback(self.handle_protocol_frame)
         self.connected_transport: str | None = None
         self.port_display_map: dict[str, str] = {}
-        self.frame_parser = FrameParser()
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
         self.auto_send_job: str | None = None
@@ -771,21 +775,16 @@ class SerialDebugAssistant(tk.Tk):
         return "can" if self.transport_var.get() == "CAN" else "serial"
 
     def _active_transport(self) -> str | None:
-        return self.connected_transport
+        return self.comm.connected_transport
 
     def _active_service(self):
-        if self.connected_transport in {"serial", "demo"}:
-            return self.serial_service
-        if self.connected_transport == "can":
-            return self.can_service
-        return None
+        return self.comm.active_service()
 
     def _is_connected(self) -> bool:
-        service = self._active_service()
-        return bool(service and service.is_open())
+        return self.comm.is_open()
 
     def _protocol_transport_available(self) -> bool:
-        return self.connected_transport in {"serial", "can", "demo"}
+        return self.comm.protocol_available()
 
     def _set_protocol_features_available(self, available: bool, endpoint: str | None = None) -> None:
         if available:
@@ -862,40 +861,35 @@ class SerialDebugAssistant(tk.Tk):
         selected_transport = self._selected_transport()
         try:
             if selected_transport == "can":
-                self.can_service.open(
+                self.comm.open_can(
                     interface=self.can_interface_var.get().strip(),
                     channel=selected_port.strip(),
                     bitrate=int(self.can_bitrate_var.get()),
+                    error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("CAN", error_message)),
                 )
-                self.can_service.configure_tx_arbitration(0x100, is_extended_id=False)
-                self.can_service.configure_rx_filter(0x101, is_extended_id=False)
             else:
-                self.serial_service.open(
+                self.comm.open_serial(
                     port=selected_port,
                     baudrate=int(self.baud_var.get()),
                     data_bits=self.data_bits_var.get(),
                     parity=self.parity_var.get(),
                     stop_bits=self.stop_bits_var.get(),
+                    auto_break_enabled_supplier=lambda: self.auto_break_var.get(),
+                    break_ms_supplier=self._current_break_ms,
+                    error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("Serial", error_message)),
                 )
-        except (RuntimeError, ValueError, KeyError) as exc:
+        except (RuntimeError, ValueError, KeyError, serial.SerialException) as exc:
+            self.comm.close()
+            self.logger.log("ERROR", f"open {selected_transport} failed: {exc}")
             self.set_status(f"Open failed: {exc}", error=True)
             return
-        except serial.SerialException as exc:
+        except Exception as exc:
+            self.comm.close()
+            self.logger.log("ERROR", f"open {selected_transport} unexpected failure: {exc}")
             self.set_status(f"Open failed: {exc}", error=True)
             return
 
-        if selected_transport == "can":
-            self.can_service.start_reader(
-                error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("CAN", error_message)),
-            )
-        else:
-            self.serial_service.start_reader(
-                auto_break_enabled_supplier=lambda: self.auto_break_var.get(),
-                break_ms_supplier=self._current_break_ms,
-                error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("Serial", error_message)),
-            )
-        self.connected_transport = selected_transport
-        self.frame_parser = FrameParser()
+        self.connected_transport = self.comm.connected_transport
         self.wave_running = False
         self.wave_tab.set_running(False)
         self.pending_rx_hex_bytes.clear()
@@ -928,10 +922,7 @@ class SerialDebugAssistant(tk.Tk):
         self.cancel_auto_send()
         self.stop_upgrade(self.i18n.translate_text("串口已断开，升级已停止。"), user_initiated=False)
         transport = self.connected_transport
-        if transport == "can":
-            self.can_service.close()
-        else:
-            self.serial_service.close()
+        self.comm.close()
         self.connected_transport = None
         self.pending_rx_hex_bytes.clear()
         self._set_protocol_features_available(False)
@@ -946,9 +937,8 @@ class SerialDebugAssistant(tk.Tk):
         self.open_button.configure(text=self.i18n.translate_text(text))
 
     def _connect_demo_mode(self, *, initial: bool) -> None:
-        self.serial_service.enable_demo_connection()
-        self.connected_transport = "demo"
-        self.frame_parser = FrameParser()
+        self.comm.enable_demo()
+        self.connected_transport = self.comm.connected_transport
         self.wave_running = False
         self.wave_tab.set_running(False)
         self.pending_rx_hex_bytes.clear()
@@ -988,7 +978,7 @@ class SerialDebugAssistant(tk.Tk):
         if self.demo_tick_job is not None:
             self.after_cancel(self.demo_tick_job)
             self.demo_tick_job = None
-        self.serial_service.disable_demo_connection()
+        self.comm.disable_demo()
         self.connected_transport = None
         self._set_protocol_features_available(False)
         self.parameter_tab.set_message("演示模式已断开")
@@ -1377,68 +1367,26 @@ class SerialDebugAssistant(tk.Tk):
     def process_incoming_data(self) -> None:
         next_delay = POLL_INTERVAL_MS
         try:
-            active_service = self._active_service()
-            updated = False
-            processed_chunks = 0
-            processed_bytes = 0
             receive_fragments: list[str] = []
             save_buffer = bytearray()
-            while processed_chunks < MAX_RX_CHUNKS_PER_POLL and processed_bytes < MAX_RX_BYTES_PER_POLL:
-                try:
-                    if active_service is None:
-                        break
-                    chunk = active_service.rx_queue.get_nowait()
-                except queue.Empty:
-                    break
+
+            def handle_raw_chunk(chunk) -> None:
                 if chunk.data == b"\n":
                     receive_fragments.append("\n")
-                    continue
+                    return
                 self.total_rx_bytes += len(chunk.data)
-                processed_bytes += len(chunk.data)
-                processed_chunks += 1
                 if not self.wave_running and not self.black_box_stream_active:
                     self.logger.log("RX", chunk.data.hex(" ").upper())
                 if not self.black_box_stream_active:
                     receive_fragments.append(self.format_incoming(chunk.timestamp, chunk.data))
-                if self._protocol_transport_available():
-                    parser_buffer_before = len(self.frame_parser.buffer)
-                    try:
-                        frames = self.frame_parser.feed(chunk.data)
-                    except Exception as exc:
-                        self.logger.log("ERROR", f"frame parser error: {exc}")
-                        self.frame_parser = FrameParser()
-                        frames = []
-                    parser_buffer_after = len(self.frame_parser.buffer)
-                    if self.connected_transport == "can":
-                        if frames:
-                            self.logger.log(
-                                "CANPARSE",
-                                f"chunk_len={len(chunk.data)} parsed={len(frames)} "
-                                f"buffer_before={parser_buffer_before} buffer_after={parser_buffer_after} "
-                                f"chunk={chunk.data.hex(' ').upper()}",
-                            )
-                        elif parser_buffer_after or 0xE8 in chunk.data or b'\r\n' in chunk.data:
-                            buffer_preview = bytes(self.frame_parser.buffer[:24]).hex(" ").upper()
-                            self.logger.log(
-                                "CANPARSE",
-                                f"chunk_len={len(chunk.data)} parsed=0 "
-                                f"buffer_before={parser_buffer_before} buffer_after={parser_buffer_after} "
-                                f"chunk={chunk.data.hex(' ').upper()} buffer_head={buffer_preview}",
-                            )
-                    for frame in frames:
-                        self._log_protocol_frame(frame)
-                        try:
-                            self.handle_protocol_frame(frame)
-                        except Exception as exc:
-                            self.logger.log(
-                                "ERROR",
-                                "handle frame failed "
-                                f"cmd_set=0x{frame.cmd_set:02X} cmd_word=0x{frame.cmd_word:02X} "
-                                f"is_ack={frame.is_ack} err={exc}",
-                            )
-                updated = True
                 if self.save_handle:
                     save_buffer.extend(chunk.data)
+
+            rx_result = self.comm.process_rx(
+                max_chunks=MAX_RX_CHUNKS_PER_POLL,
+                max_bytes=MAX_RX_BYTES_PER_POLL,
+                raw_chunk_handler=handle_raw_chunk,
+            )
             if receive_fragments:
                 self.monitor_tab.append_receive_batch(
                     receive_fragments,
@@ -1451,9 +1399,9 @@ class SerialDebugAssistant(tk.Tk):
                 if now - self.last_save_flush_at >= SAVE_FLUSH_INTERVAL_SECONDS:
                     self.save_handle.flush()
                     self.last_save_flush_at = now
-            if updated:
+            if rx_result.updated:
                 self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=self.total_rx_bytes))
-            if active_service is not None and not active_service.rx_queue.empty():
+            if rx_result.has_more:
                 next_delay = 1
             elif self.scope_pull_session is not None:
                 next_delay = SCOPE_PULL_RX_POLL_INTERVAL_MS
@@ -3583,13 +3531,14 @@ class SerialDebugAssistant(tk.Tk):
                 self.set_status("模块地址和动态地址必须是整数。", error=True)
                 self.logger.log("ERROR", "invalid target address")
                 return
-        frame = build_frame(dst=dst, d_dst=d_dst, cmd_set=cmd_set, cmd_word=cmd_word, payload=payload)
-        self.logger.log("TX", f"dst=0x{dst:02X} d_dst=0x{d_dst:02X} cmd_set=0x{cmd_set:02X} cmd_word=0x{cmd_word:02X} frame={frame.hex(' ').upper()}")
         try:
-            if self.connected_transport == "can":
-                sent = self.can_service.send_bytes(frame)
-            else:
-                sent = self.serial_service.write(frame)
+            sent, frame = self.comm.send_protocol(
+                dst=dst,
+                d_dst=d_dst,
+                cmd_set=cmd_set,
+                cmd_word=cmd_word,
+                payload=payload,
+            )
         except (RuntimeError, serial.SerialException) as exc:
             self._handle_transport_error("CAN" if self.connected_transport == "can" else "Serial", str(exc))
             return
@@ -3729,12 +3678,7 @@ class SerialDebugAssistant(tk.Tk):
             return
         try:
             payload = self.build_send_bytes(raw_text, hex_mode=self.monitor_tab.send_hex_enabled(), append_crlf=self.line_mode_var.get())
-            if self.connected_transport == "can":
-                self.logger.log("CAN", f"manual send bytes={payload.hex(' ').upper()}")
-                sent = self.can_service.send_bytes(payload)
-            else:
-                self.logger.log("TX", f"manual send frame={payload.hex(' ').upper()}")
-                sent = self.serial_service.write(payload)
+            sent = self.comm.send_raw_debug_bytes(payload)
         except ValueError as exc:
             self.set_status(str(exc), error=True)
             self.logger.log("ERROR", f"manual send parse error: {exc}")
@@ -3756,12 +3700,8 @@ class SerialDebugAssistant(tk.Tk):
             return
         try:
             payload = self.build_send_bytes(raw_text, hex_mode=hex_mode, append_crlf=append_crlf)
-            if self.connected_transport == "can":
-                self.logger.log("CAN", f"preset send index={index + 1} bytes={payload.hex(' ').upper()}")
-                sent = self.can_service.send_bytes(payload)
-            else:
-                self.logger.log("TX", f"preset send index={index + 1} frame={payload.hex(' ').upper()}")
-                sent = self.serial_service.write(payload)
+            self.logger.log("TX", f"preset send index={index + 1}")
+            sent = self.comm.send_raw_debug_bytes(payload)
         except ValueError as exc:
             self.set_status(str(exc), error=True)
             self.logger.log("ERROR", f"preset send parse error index={index + 1}: {exc}")
@@ -3873,8 +3813,7 @@ class SerialDebugAssistant(tk.Tk):
         saved_path = self.wave_tab.auto_save_waveform_file(reason="application close")
         if saved_path is not None:
             self.logger.log("WAVE", f"auto save on app close -> {saved_path}")
-        self.serial_service.close()
-        self.can_service.close()
+        self.comm.close()
         if self.save_handle:
             self.save_handle.flush()
             self.save_handle.close()

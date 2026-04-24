@@ -48,14 +48,27 @@ class CANService:
         except ImportError as exc:
             raise RuntimeError("python-can is not installed. Please install dependencies again.") from exc
 
+        self.close()
+        interface_key = interface.lower().strip()
+        channel = channel.strip()
         kwargs = {
-            "interface": interface,
+            "interface": interface_key,
             "channel": channel,
             "bitrate": bitrate,
         }
-        if interface.lower().strip() in {"pcan", "vector", "kvaser", "usb2can", "socketcan"}:
+        if interface_key in {"pcan", "vector", "kvaser", "usb2can", "socketcan"}:
             kwargs["receive_own_messages"] = False
-        self.bus = can.Bus(**kwargs)
+
+        try:
+            self.bus = can.Bus(**kwargs)
+        except Exception as exc:
+            self.bus = None
+            self.reader_stop.set()
+            message = f"CAN open failed ({interface_key}/{channel}, {bitrate}): {exc}"
+            if interface_key == "pcan":
+                message += " | Close PCAN-View or other tools using this channel, then unplug/replug PCAN-USB if needed."
+            raise RuntimeError(message) from exc
+
         self.reader_stop.clear()
 
     def configure_tx_arbitration(self, arbitration_id: int, *, is_extended_id: bool = False) -> None:
@@ -75,10 +88,13 @@ class CANService:
         self.reader_thread.start()
 
     def _reader_loop(self, *, error_callback) -> None:
-        while not self.reader_stop.is_set() and self.bus is not None:
+        bus = self.bus
+        while not self.reader_stop.is_set() and bus is not None:
             try:
-                message = self.bus.recv(timeout=0.1)
+                message = bus.recv(timeout=0.1)
             except Exception as exc:
+                if self.reader_stop.is_set():
+                    break
                 error_callback(str(exc))
                 break
 
@@ -102,12 +118,17 @@ class CANService:
 
     def close(self) -> None:
         self.reader_stop.set()
-        if self.bus is not None:
+        bus = self.bus
+        self.bus = None
+        if bus is not None:
             try:
-                self.bus.shutdown()
+                bus.shutdown()
             except Exception:
                 pass
-        self.bus = None
+        reader_thread = self.reader_thread
+        self.reader_thread = None
+        if reader_thread is not None and reader_thread.is_alive() and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=0.5)
 
     def is_open(self) -> bool:
         return self.bus is not None

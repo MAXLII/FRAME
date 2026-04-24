@@ -11,6 +11,23 @@ EOP_BYTES_ALT = b"\x0D\x0A"
 PROTOCOL_VERSION = 0x01
 PC_SRC = 0x01
 PC_DYN_SRC = 0x00
+MAX_PAYLOAD_LEN = 2048
+PC_DST = 0x01
+VALID_COMMANDS = {
+    0x01: set(range(0x01, 0x20)),
+    0x02: {0x01, 0x02},
+}
+
+STA_SOP = 0
+STA_VER = 1
+STA_SRC = 2
+STA_DST = 3
+STA_CMD = 4
+STA_ACK = 5
+STA_LEN = 6
+STA_DATA = 7
+STA_CRC = 8
+STA_EOP = 9
 
 TYPE_NAMES = {
     0: "INT8",
@@ -27,12 +44,17 @@ TYPE_NAMES = {
 def crc16_ccitt(data: bytes, init: int = 0xFFFF, poly: int = 0x1021) -> int:
     crc = init
     for byte in data:
-        crc ^= byte << 8
-        for _ in range(8):
-            if crc & 0x8000:
-                crc = ((crc << 1) ^ poly) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
+        crc = crc16_update(crc, byte, poly=poly)
+    return crc & 0xFFFF
+
+
+def crc16_update(crc: int, data: int, poly: int = 0x1021) -> int:
+    crc ^= (data & 0xFF) << 8
+    for _ in range(8):
+        if crc & 0x8000:
+            crc = ((crc << 1) ^ poly) & 0xFFFF
+        else:
+            crc = (crc << 1) & 0xFFFF
     return crc & 0xFFFF
 
 
@@ -69,66 +91,213 @@ def build_frame(
 class FrameParser:
     def __init__(self) -> None:
         self.buffer = bytearray()
+        self.dropped_incomplete_frames = 0
+        self.last_drop_reason = ""
+        self.last_drop_state = ""
+        self.last_drop_expected_payload_len = 0
+        self.last_drop_received_payload_len = 0
+        self.last_drop_preview = b""
+        self.reset()
+
+    def reset(self) -> None:
+        self.buffer = bytearray()
+        self.status = STA_SOP
+        self.index = 0
+        self.remaining_len = 0
+        self.crc = 0
+        self.sop = 0
+        self.version = 0
+        self.src = 0
+        self.d_src = 0
+        self.dst = 0
+        self.d_dst = 0
+        self.cmd_set = 0
+        self.cmd_word = 0
+        self.is_ack = 0
+        self.payload_len = 0
+        self.payload = bytearray()
+        self.recv_crc = 0
+        self.eop = 0
+        self.src_flag = 0
+        self.dst_flag = 0
+        self.cmd_flag = 0
+        self.len_flag = 0
+        self.eop_flag = 0
 
     def feed(self, data: bytes) -> list[ProtocolFrame]:
-        self.buffer.extend(data)
         frames: list[ProtocolFrame] = []
-
-        while True:
-            frame = self._extract_one()
-            if frame is None:
-                break
-            frames.append(frame)
-
+        for byte in data:
+            frames.extend(self._run_byte(byte))
         return frames
 
-    def _extract_one(self) -> ProtocolFrame | None:
-        while self.buffer and self.buffer[0] != SOP:
-            del self.buffer[0]
+    def _start_frame(self, data: int) -> None:
+        self.reset()
+        self.sop = data
+        self.buffer.append(data)
+        self.crc = crc16_update(0xFFFF, data)
+        self.status = STA_VER
 
-        min_len = 14
-        if len(self.buffer) < min_len:
-            return None
+    def _reset_after_error(self, reason: str) -> list[ProtocolFrame]:
+        discarded = bytes(self.buffer)
+        self._drop_incomplete_frame(reason)
+        self.reset()
+        next_sop = discarded.find(bytes([SOP]), 1)
+        if next_sop == -1:
+            return []
+        return self.feed(discarded[next_sop:])
 
-        payload_len = int.from_bytes(self.buffer[9:11], "little")
-        body_len = 11 + payload_len
-        crc_start = body_len
-        total_len_1 = body_len + 2 + 1
-        total_len_2 = body_len + 2 + 2
-        if len(self.buffer) < total_len_1:
-            return None
+    def _drop_incomplete_frame(self, reason: str) -> None:
+        self.dropped_incomplete_frames += 1
+        self.last_drop_reason = reason
+        self.last_drop_state = self._status_name()
+        self.last_drop_expected_payload_len = self.payload_len
+        self.last_drop_received_payload_len = len(self.payload)
+        self.last_drop_preview = bytes(self.buffer[:48])
 
-        if len(self.buffer) >= total_len_2 and bytes(self.buffer[crc_start + 2 : total_len_2]) == EOP_BYTES_ALT:
-            raw = bytes(self.buffer[:total_len_2])
-            eop_len = 2
-        elif bytes(self.buffer[crc_start + 2 : total_len_1]) == EOP_BYTE:
-            raw = bytes(self.buffer[:total_len_1])
-            eop_len = 1
-        else:
-            del self.buffer[0]
-            return self._extract_one()
+    def _status_name(self) -> str:
+        names = {
+            STA_SOP: "SOP",
+            STA_VER: "VER",
+            STA_SRC: "SRC",
+            STA_DST: "DST",
+            STA_CMD: "CMD",
+            STA_ACK: "ACK",
+            STA_LEN: "LEN",
+            STA_DATA: "DATA",
+            STA_CRC: "CRC",
+            STA_EOP: "EOP",
+        }
+        return names.get(self.status, f"UNKNOWN({self.status})")
 
-        body = raw[:body_len]
-        recv_crc = int.from_bytes(raw[crc_start : crc_start + 2], "little")
-        calc_crc = crc16_ccitt(body)
-        if recv_crc != calc_crc:
-            del self.buffer[0]
-            return self._extract_one()
+    def _run_byte(self, data: int) -> list[ProtocolFrame]:
+        data &= 0xFF
+        frames: list[ProtocolFrame] = []
 
-        del self.buffer[: body_len + 2 + eop_len]
-        return ProtocolFrame(
-            sop=raw[0],
-            version=raw[1],
-            src=raw[2],
-            d_src=raw[3],
-            dst=raw[4],
-            d_dst=raw[5],
-            cmd_set=raw[6],
-            cmd_word=raw[7],
-            is_ack=raw[8],
-            payload=raw[11 : 11 + payload_len],
-            crc=recv_crc,
-        )
+        if self.status == STA_SOP:
+            if data == SOP:
+                self._start_frame(data)
+            return frames
+
+        self.buffer.append(data)
+
+        if self.status == STA_VER:
+            self.version = data
+            self.crc = crc16_update(self.crc, data)
+            if self.version != PROTOCOL_VERSION:
+                return self._reset_after_error("invalid version")
+            self.src_flag = 0
+            self.status = STA_SRC
+            return frames
+
+        if self.status == STA_SRC:
+            self.crc = crc16_update(self.crc, data)
+            if self.src_flag == 0:
+                self.src = data
+                self.src_flag = 1
+            else:
+                self.d_src = data
+                self.dst_flag = 0
+                self.status = STA_DST
+            return frames
+
+        if self.status == STA_DST:
+            self.crc = crc16_update(self.crc, data)
+            if self.dst_flag == 0:
+                self.dst = data
+                if self.dst != PC_DST:
+                    return self._reset_after_error("invalid destination")
+                self.dst_flag = 1
+            else:
+                self.d_dst = data
+                self.cmd_flag = 0
+                self.status = STA_CMD
+            return frames
+
+        if self.status == STA_CMD:
+            self.crc = crc16_update(self.crc, data)
+            if self.cmd_flag == 0:
+                self.cmd_set = data
+                if self.cmd_set not in VALID_COMMANDS:
+                    return self._reset_after_error("invalid command set")
+                self.cmd_flag = 1
+            else:
+                self.cmd_word = data
+                if self.cmd_word not in VALID_COMMANDS[self.cmd_set]:
+                    return self._reset_after_error("invalid command word")
+                self.status = STA_ACK
+            return frames
+
+        if self.status == STA_ACK:
+            self.is_ack = data
+            self.crc = crc16_update(self.crc, data)
+            self.payload_len = 0
+            self.len_flag = 0
+            self.status = STA_LEN
+            return frames
+
+        if self.status == STA_LEN:
+            self.crc = crc16_update(self.crc, data)
+            if self.len_flag == 0:
+                self.payload_len = data
+                self.len_flag = 1
+            else:
+                self.payload_len |= data << 8
+                if self.payload_len > MAX_PAYLOAD_LEN:
+                    return self._reset_after_error("payload too long")
+                self.remaining_len = self.payload_len
+                self.index = 0
+                self.payload = bytearray()
+                self.status = STA_DATA
+            return frames
+
+        if self.status == STA_DATA:
+            if self.remaining_len != 0:
+                self.payload.append(data)
+                self.index += 1
+                self.remaining_len -= 1
+                self.crc = crc16_update(self.crc, data)
+            else:
+                self.recv_crc = data
+                self.status = STA_CRC
+            return frames
+
+        if self.status == STA_CRC:
+            self.recv_crc |= data << 8
+            if self.crc != self.recv_crc:
+                return self._reset_after_error("crc mismatch")
+            self.eop = 0
+            self.eop_flag = 0
+            self.status = STA_EOP
+            return frames
+
+        if self.status == STA_EOP:
+            if self.eop_flag == 0:
+                self.eop = data
+                self.eop_flag = 1
+                return frames
+
+            self.eop |= data << 8
+            if self.eop != 0x0A0D:
+                return self._reset_after_error("invalid eop")
+
+            frame = ProtocolFrame(
+                sop=self.sop,
+                version=self.version,
+                src=self.src,
+                d_src=self.d_src,
+                dst=self.dst,
+                d_dst=self.d_dst,
+                cmd_set=self.cmd_set,
+                cmd_word=self.cmd_word,
+                is_ack=self.is_ack,
+                payload=bytes(self.payload),
+                crc=self.recv_crc,
+            )
+            self.reset()
+            frames.append(frame)
+            return frames
+
+        return self._reset_after_error("invalid parser state")
 
 
 def u32_to_value(raw: int, type_id: int) -> int | float:

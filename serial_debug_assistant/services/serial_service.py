@@ -49,6 +49,7 @@ class SerialService:
         parity_value = PARITY_OPTIONS[parity]
         stopbits = STOP_BITS_OPTIONS[stop_bits]
 
+        self.close()
         self.serial_port = serial.Serial(
             port=port,
             baudrate=baudrate,
@@ -80,11 +81,14 @@ class SerialService:
 
     def _reader_loop(self, *, auto_break_enabled_supplier, break_ms_supplier, error_callback) -> None:
         last_chunk_time = 0.0
+        serial_port = self.serial_port
 
-        while not self.reader_stop.is_set() and self.serial_port:
+        while not self.reader_stop.is_set() and serial_port:
             try:
-                chunk = self.serial_port.read(self.serial_port.in_waiting or 1)
+                chunk = serial_port.read(serial_port.in_waiting or 1)
             except (serial.SerialException, OSError) as exc:
+                if self.reader_stop.is_set():
+                    break
                 error_callback(str(exc))
                 break
 
@@ -102,13 +106,18 @@ class SerialService:
 
     def close(self) -> None:
         self.reader_stop.set()
-        if self.serial_port:
+        serial_port = self.serial_port
+        self.serial_port = None
+        if serial_port:
             try:
-                if self.serial_port.is_open:
-                    self.serial_port.close()
+                if serial_port.is_open:
+                    serial_port.close()
             except serial.SerialException:
                 pass
-        self.serial_port = None
+        reader_thread = self.reader_thread
+        self.reader_thread = None
+        if reader_thread is not None and reader_thread.is_alive() and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=0.5)
         self.demo_connected = False
 
     def is_open(self) -> bool:

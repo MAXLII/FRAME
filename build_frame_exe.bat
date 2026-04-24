@@ -60,7 +60,7 @@ if exist "%DIST_APP_DIR%" (
 )
 
 echo [INFO] Building frame.exe...
-call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame --distpath "dist" --workpath "build" "main.py"
+call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame --distpath "dist" --workpath "build" --collect-submodules can.interfaces "main.py"
 if errorlevel 1 (
     echo [ERROR] Build failed
     if "%FRAME_INTERACTIVE%"=="1" pause
