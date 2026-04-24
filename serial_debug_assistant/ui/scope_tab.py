@@ -74,12 +74,17 @@ class ScopeTab(ttk.Frame):
         self.capture_tag_var = tk.StringVar(value="-")
         self.pull_status_var = tk.StringVar(value=self.i18n.translate_text("No scope capture has been pulled yet."))
         self.capture_summary_var = tk.StringVar(value=self.i18n.translate_text("Local captures: 0"))
+        self.var_scale_input_var = tk.StringVar(value="1")
 
         self._scope_choices: list[ScopeListItem] = []
         self._scope_name_to_id: dict[str, int] = {}
+        self._scope_var_names: list[str] = []
         self._captures: list[ScopeCapture] = []
         self._selected_capture_index: int | None = None
         self._visible_var_states: list[tk.BooleanVar] = []
+        self._selected_var_states: list[tk.BooleanVar] = []
+        self._var_scale_labels: list[tk.StringVar] = []
+        self._var_scale_by_name: dict[str, float] = {}
         self._capture_visible_states: list[tk.BooleanVar] = []
         self._capture_row_frames: list[tk.Frame] = []
         self._last_hover_text = self.i18n.translate_text("Move the mouse over the scope plot to inspect values.")
@@ -214,6 +219,9 @@ class ScopeTab(ttk.Frame):
         self.hide_all_button = ttk.Button(vars_toolbar, text=self.i18n.translate_text("Hide All"), command=self.hide_all_variables, width=12)
         self.hide_all_button.grid(row=0, column=1, padx=(8, 0), sticky="w")
         self._remember_text(self.hide_all_button, "Hide All")
+        ttk.Label(vars_toolbar, text="倍率").grid(row=0, column=2, padx=(12, 4), sticky="w")
+        ttk.Entry(vars_toolbar, textvariable=self.var_scale_input_var, width=10).grid(row=0, column=3, sticky="w")
+        ttk.Button(vars_toolbar, text="应用倍率", command=self.apply_selected_variable_scale, width=10).grid(row=0, column=4, padx=(8, 0), sticky="w")
 
         self.vars_canvas = tk.Canvas(vars_frame, bg="#ffffff", highlightthickness=1, highlightbackground="#d8e3ef", width=280)
         self.vars_canvas.grid(row=1, column=0, sticky="nsew")
@@ -352,18 +360,37 @@ class ScopeTab(ttk.Frame):
         for child in self.vars_inner.winfo_children():
             child.destroy()
 
+        self._scope_var_names = list(var_names)
         self._visible_var_states = []
+        self._selected_var_states = []
+        self._var_scale_labels = []
+        if var_names:
+            ttk.Label(self.vars_inner, text=self.i18n.translate_text("Visible")).grid(row=0, column=0, sticky="w", padx=(0, 8))
+            ttk.Label(self.vars_inner, text=self.i18n.translate_text("Selected")).grid(row=0, column=1, sticky="w", padx=(0, 8))
+            ttk.Label(self.vars_inner, text=self.i18n.translate_text("Variables")).grid(row=0, column=2, sticky="w", padx=(0, 8))
+            ttk.Label(self.vars_inner, text="倍率").grid(row=0, column=3, sticky="w")
         for index, name in enumerate(var_names):
             visible_var = tk.BooleanVar(value=True)
+            selected_var = tk.BooleanVar(value=False)
+            scale_var = tk.StringVar(value=self._format_scale_label(self._var_scale_by_name.get(name, 1.0)))
             self._visible_var_states.append(visible_var)
-            checkbox = ttk.Checkbutton(
+            self._selected_var_states.append(selected_var)
+            self._var_scale_labels.append(scale_var)
+            visible_checkbox = ttk.Checkbutton(
                 self.vars_inner,
-                text=name,
                 variable=visible_var,
                 command=self.redraw_plot,
                 style="TCheckbutton",
             )
-            checkbox.grid(row=index, column=0, sticky="w", pady=2)
+            visible_checkbox.grid(row=index + 1, column=0, sticky="w", pady=2, padx=(0, 8))
+            selected_checkbox = ttk.Checkbutton(
+                self.vars_inner,
+                variable=selected_var,
+                style="TCheckbutton",
+            )
+            selected_checkbox.grid(row=index + 1, column=1, sticky="w", pady=2, padx=(0, 8))
+            ttk.Label(self.vars_inner, text=name).grid(row=index + 1, column=2, sticky="w", pady=2, padx=(0, 8))
+            ttk.Label(self.vars_inner, textvariable=scale_var).grid(row=index + 1, column=3, sticky="w", pady=2)
 
         if not var_names:
             ttk.Label(self.vars_inner, text=self.i18n.translate_text("No scope variables loaded yet.")).grid(row=0, column=0, sticky="w")
@@ -453,6 +480,30 @@ class ScopeTab(ttk.Frame):
     def hide_all_variables(self) -> None:
         for variable in self._visible_var_states:
             variable.set(False)
+        self.redraw_plot()
+
+    def apply_selected_variable_scale(self) -> None:
+        try:
+            scale = float(self.var_scale_input_var.get().strip() or "1")
+        except ValueError:
+            self.set_pull_status("倍率输入无效。")
+            return
+
+        applied_names: list[str] = []
+        for index, selected in enumerate(self._selected_var_states):
+            if not selected.get():
+                continue
+            if index >= len(self._scope_var_names):
+                continue
+            name = self._scope_var_names[index]
+            self._var_scale_by_name[name] = scale
+            if index < len(self._var_scale_labels):
+                self._var_scale_labels[index].set(self._format_scale_label(scale))
+            applied_names.append(name)
+        if not applied_names:
+            self.set_pull_status("请先选中录波变量。")
+            return
+        self.set_pull_status(f"已将 {len(applied_names)} 个变量的倍率设置为 {scale:g}")
         self.redraw_plot()
 
     def show_all_captures(self) -> None:
@@ -623,6 +674,17 @@ class ScopeTab(ttk.Frame):
     def _get_visible_var_indices(self) -> list[int]:
         return [index for index, variable in enumerate(self._visible_var_states) if variable.get()]
 
+    def _get_var_scale(self, capture: ScopeCapture, var_index: int) -> float:
+        if var_index >= len(capture.var_names):
+            return 1.0
+        return self._var_scale_by_name.get(capture.var_names[var_index], 1.0)
+
+    def _scale_value(self, capture: ScopeCapture, var_index: int, value: float) -> float:
+        return value * self._get_var_scale(capture, var_index)
+
+    def _format_scale_label(self, scale: float) -> str:
+        return f"x {scale:g}"
+
     def _get_visible_capture_indices(self) -> list[int]:
         visible_indices: list[int] = []
         for index, variable in enumerate(self._capture_visible_states):
@@ -694,7 +756,7 @@ class ScopeTab(ttk.Frame):
                 for var_index in visible_var_indices:
                     if var_index >= len(sample_values):
                         continue
-                    value = sample_values[var_index]
+                    value = self._scale_value(capture, var_index, sample_values[var_index])
                     if math.isfinite(value):
                         flattened.append((x_value, value))
             x_offset = capture_end_x + max(1.0, capture.sample_period_us * 10 / 1000.0)
@@ -765,7 +827,7 @@ class ScopeTab(ttk.Frame):
                 for var_index in visible_var_indices:
                     if var_index >= len(sample_values):
                         continue
-                    value = sample_values[var_index]
+                    value = self._scale_value(capture, var_index, sample_values[var_index])
                     if not math.isfinite(value):
                         continue
                     series_points.setdefault(var_index, []).extend((x_canvas, map_y(value)))
@@ -776,6 +838,9 @@ class ScopeTab(ttk.Frame):
                     canvas.create_line(*points, fill=color, width=1.5, smooth=False)
                 if capture_index == visible_capture_indices[-1]:
                     label = capture.var_names[var_index] if var_index < len(capture.var_names) else f"var{var_index}"
+                    scale = self._get_var_scale(capture, var_index)
+                    if abs(scale - 1.0) > 1e-12:
+                        label = f"{label} x{scale:g}"
                     legend_entries.append((label, color))
 
         legend_x = plot_right - 180
@@ -825,7 +890,8 @@ class ScopeTab(ttk.Frame):
             if var_index >= len(values):
                 continue
             name = capture.var_names[var_index] if var_index < len(capture.var_names) else f"var{var_index}"
-            value_parts.append(f"{name}={values[var_index]:.4f}")
+            scaled_value = self._scale_value(capture, var_index, values[var_index])
+            value_parts.append(f"{name}={scaled_value:.4f}")
         if len(visible_var_indices) > 4:
             value_parts.append("...")
         detail = ", ".join(value_parts) if value_parts else "-"
@@ -1055,7 +1121,7 @@ class ScopeTab(ttk.Frame):
         for var_index in self._get_visible_var_indices():
             if var_index >= len(values):
                 continue
-            value = values[var_index]
+            value = self._scale_value(capture, var_index, values[var_index])
             if not math.isfinite(value):
                 continue
             label = capture.var_names[var_index] if var_index < len(capture.var_names) else f"var{var_index}"
