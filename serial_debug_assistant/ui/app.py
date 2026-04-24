@@ -272,7 +272,7 @@ class SerialDebugAssistant(tk.Tk):
         self.parity_var = tk.StringVar(value=DEFAULT_PARITY)
         self.stop_bits_var = tk.StringVar(value=DEFAULT_STOP_BITS)
         self.can_interface_var = tk.StringVar(value=CAN_INTERFACES[0])
-        self.can_bitrate_var = tk.StringVar(value="500000")
+        self.can_bitrate_var = tk.StringVar(value="1000000")
         self.status_var = tk.StringVar(value=self.i18n.translate_text("Ready"))
         self.rx_count_var = tk.StringVar(value=self.i18n.format_text("Receive: {count} bytes", count=0))
         self.tx_count_var = tk.StringVar(value=self.i18n.format_text("Send: {count} bytes", count=0))
