@@ -1371,7 +1371,7 @@ class SerialDebugAssistant(tk.Tk):
             save_buffer = bytearray()
 
             def handle_raw_chunk(chunk) -> None:
-                if chunk.data == b"\n":
+                if chunk.synthetic and chunk.data == b"\n":
                     receive_fragments.append("\n")
                     return
                 self.total_rx_bytes += len(chunk.data)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class SerialChunk:
     timestamp: float
     data: bytes
+    synthetic: bool = False
 
 
 @dataclass(slots=True)

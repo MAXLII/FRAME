@@ -99,7 +99,7 @@ class SerialService:
             if auto_break_enabled_supplier():
                 gap_ms = break_ms_supplier()
                 if last_chunk_time and (now - last_chunk_time) * 1000.0 >= gap_ms:
-                    self.rx_queue.put(SerialChunk(timestamp=now, data=b"\n"))
+                    self.rx_queue.put(SerialChunk(timestamp=now, data=b"\n", synthetic=True))
 
             self.rx_queue.put(SerialChunk(timestamp=now, data=chunk))
             last_chunk_time = now

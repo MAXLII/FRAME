@@ -191,7 +191,7 @@ class CommunicationManager:
             if raw_chunk_handler is not None:
                 raw_chunk_handler(chunk)
 
-            if chunk.data == b"\n":
+            if chunk.synthetic and chunk.data == b"\n":
                 continue
 
             result.processed_chunks += 1
