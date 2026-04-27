@@ -377,8 +377,6 @@ class WaveformTab(ttk.Frame):
 
         for stale_name in list(self.series_data):
             if stale_name not in current_names:
-                del self.series_data[stale_name]
-                self.latest_values.pop(stale_name, None)
                 self.visible_names.discard(stale_name)
         for stale_name in list(self._row_widgets):
             if stale_name not in current_names:
@@ -582,9 +580,10 @@ class WaveformTab(ttk.Frame):
             "series_data": {
                 name: [
                     {"timestamp": timestamp, "value": value}
-                    for timestamp, value in self.series_data.get(name, [])
+                    for timestamp, value in samples
                 ]
-                for name in self.selected_names
+                for name, samples in sorted(self.series_data.items(), key=lambda item: item[0].lower())
+                if samples
             },
         }
 

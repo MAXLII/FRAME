@@ -178,6 +178,7 @@ WARNING_MESSAGES = {
 MAX_RX_CHUNKS_PER_POLL = 200
 MAX_RX_BYTES_PER_POLL = 262_144
 SAVE_FLUSH_INTERVAL_SECONDS = 0.4
+WAVE_BATCH_MARKERS = {0xAAAAAAAA, 0x55555555}
 HOME_REFRESH_INTERVAL_MS = 120
 SCOPE_PULL_INTERVAL_MS = 50
 SCOPE_PULL_FAST_INTERVAL_MS = max(1, SCOPE_PULL_INTERVAL_MS // 10)
@@ -234,6 +235,7 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_rx_hex_bytes = bytearray()
         self.pending_wave_batch: dict[str, float] = {}
         self.wave_batch_open = False
+        self.wave_batch_start_marker: int | None = None
         self.wave_batch_counter = 0
         self.wave_debug_batches_remaining = 0
         self.wave_debug_frame_budget = 0
@@ -895,6 +897,7 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_rx_hex_bytes.clear()
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
+        self.wave_batch_start_marker = None
         self.set_status(self.i18n.format_text("Connected to {port}", port=selected_port))
         self._set_protocol_features_available(True, selected_port)
         self.parameter_tab.set_message("串口已连接，已向广播地址发送停止波形上传命令")
@@ -944,6 +947,7 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_rx_hex_bytes.clear()
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
+        self.wave_batch_start_marker = None
         self._set_protocol_features_available(True, "DEMO")
         self.parameter_tab.clear_parameters()
         self.parameters.clear()
@@ -1420,10 +1424,13 @@ class SerialDebugAssistant(tk.Tk):
                 name_len = payload[0]
                 type_id = payload[1]
                 data_raw = int.from_bytes(payload[2:6], "little")
-                if name_len == 0 and type_id == 0 and data_raw == 0x55555555:
-                    self.logger.log("FRAME", "wave batch start")
-                elif name_len == 0 and type_id == 0 and data_raw == 0xAAAAAAAA:
-                    self.logger.log("FRAME", "wave batch end")
+                if name_len == 0 and type_id == 0 and data_raw in WAVE_BATCH_MARKERS:
+                    marker = "AAAA" if data_raw == 0xAAAAAAAA else "5555"
+                    if self.wave_batch_open:
+                        role = "batch end" if data_raw != self.wave_batch_start_marker else "nested batch start"
+                    else:
+                        role = "batch start"
+                    self.logger.log("FRAME", f"wave {role} marker={marker}")
                 elif self.wave_debug_frame_budget > 0 and len(payload) >= 6 + name_len:
                     name = payload[6 : 6 + name_len].decode("utf-8", errors="replace")
                     self.logger.log(
@@ -2487,27 +2494,35 @@ class SerialDebugAssistant(tk.Tk):
         name_len = payload[0]
         type_id = payload[1]
         data_raw = int.from_bytes(payload[2:6], "little")
-        if name_len == 0 and type_id == 0 and data_raw == 0x55555555:
-            if self.wave_batch_open and self.pending_wave_batch:
-                self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
-                self._log_wave_batch_summary("flushed-before-nested-start", dict(self.pending_wave_batch))
+        if name_len == 0 and type_id == 0 and data_raw in WAVE_BATCH_MARKERS:
+            marker = "AAAA" if data_raw == 0xAAAAAAAA else "5555"
+            if not self.wave_batch_open:
+                self.pending_wave_batch = {}
+                self.wave_batch_open = True
+                self.wave_batch_start_marker = data_raw
                 if self.wave_debug_batches_remaining > 0:
-                    self.logger.log("WAVE", f"nested batch start, flushed partial batch size={len(self.pending_wave_batch)}")
-            self.pending_wave_batch = {}
-            self.wave_batch_open = True
-            if self.wave_debug_batches_remaining > 0:
-                self.logger.log("WAVE", "batch start")
-            return
-        if name_len == 0 and type_id == 0 and data_raw == 0xAAAAAAAA:
+                    self.logger.log("WAVE", f"batch start marker={marker}")
+                return
+
+            if data_raw == self.wave_batch_start_marker:
+                if self.pending_wave_batch:
+                    self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
+                    self._log_wave_batch_summary("flushed-before-nested-start", dict(self.pending_wave_batch))
+                    if self.wave_debug_batches_remaining > 0:
+                        self.logger.log("WAVE", f"nested batch start marker={marker}, flushed partial batch size={len(self.pending_wave_batch)}")
+                self.pending_wave_batch = {}
+                return
+
             if self.pending_wave_batch:
                 self.wave_tab.append_batch(dict(self.pending_wave_batch), batch_time=time.time())
-                self._log_wave_batch_summary("batch-end", dict(self.pending_wave_batch))
+                self._log_wave_batch_summary(f"batch-end-{marker}", dict(self.pending_wave_batch))
                 if self.wave_debug_batches_remaining > 0:
-                    self.logger.log("WAVE", f"batch end size={len(self.pending_wave_batch)}")
+                    self.logger.log("WAVE", f"batch end marker={marker} size={len(self.pending_wave_batch)}")
                 self.pending_wave_batch.clear()
-            elif not self.wave_batch_open and self.wave_debug_batches_remaining > 0:
-                self.logger.log("WAVE", "stray batch end ignored")
+            elif self.wave_debug_batches_remaining > 0:
+                self.logger.log("WAVE", f"empty batch end marker={marker}")
             self.wave_batch_open = False
+            self.wave_batch_start_marker = None
             return
         if len(payload) < 6 + name_len:
             self.logger.log("WARN", f"wave payload too short len={len(payload)} name_len={name_len}")
@@ -2518,6 +2533,20 @@ class SerialDebugAssistant(tk.Tk):
             entry.data_raw = data_raw
             if not entry.is_command:
                 self.wave_tab.update_latest_value(name, format_value(entry.data_raw, entry.type_id))
+        elif type_id != 7:
+            entry = ParameterEntry(
+                name=name,
+                type_id=type_id,
+                data_raw=data_raw,
+                min_raw=0,
+                max_raw=0,
+                auto_report=True,
+            )
+            self.parameters[name] = entry
+            self.parameter_tab.add_or_update_parameter(entry)
+            self.sync_wave_selection()
+            self.wave_tab.update_latest_value(name, format_value(data_raw, type_id))
+            self.logger.log("WAVE", f"auto add reported parameter name={name} type={type_id}")
         if type_id == 7:
             return
         value = u32_to_value(data_raw, type_id)
@@ -3399,9 +3428,6 @@ class SerialDebugAssistant(tk.Tk):
 
     def toggle_auto_report(self, name: str, enabled: bool) -> None:
         if self.demo_mode and self.demo_runtime is not None:
-            if self.wave_running:
-                self.set_status("请先停止演示波形，再修改勾选项", error=True)
-                return
             entry = self.demo_runtime.set_auto_report(name, enabled)
             if entry is not None:
                 self.parameters[name] = entry
@@ -3412,9 +3438,6 @@ class SerialDebugAssistant(tk.Tk):
             return
         if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
-            return
-        if self.wave_running:
-            self.set_status("Please stop waveform streaming before changing selections.", error=True)
             return
         payload = bytes([len(name.encode("utf-8")), 1 if enabled else 0]) + name.encode("utf-8")
         entry = self.parameters.get(name)
@@ -3459,6 +3482,7 @@ class SerialDebugAssistant(tk.Tk):
                 self.wave_report_period_ms = period_ms
                 self.pending_wave_batch.clear()
                 self.wave_batch_open = False
+                self.wave_batch_start_marker = None
                 self.wave_tab.clear_plot()
                 self.logger.log("DEMO", f"start wave stream period={period_ms}ms")
             else:
@@ -3484,6 +3508,7 @@ class SerialDebugAssistant(tk.Tk):
         if start:
             self.pending_wave_batch.clear()
             self.wave_batch_open = False
+            self.wave_batch_start_marker = None
             self.wave_batch_counter = 0
             self.wave_debug_batches_remaining = 8
             self.wave_debug_frame_budget = 120
@@ -3509,6 +3534,7 @@ class SerialDebugAssistant(tk.Tk):
     def clear_wave_data(self) -> None:
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
+        self.wave_batch_start_marker = None
         self.wave_tab.clear_plot()
         self.logger.log("WAVE", "clear waveform")
 
