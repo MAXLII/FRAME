@@ -3,7 +3,7 @@
 #define MyAppName "FRAME"
 #define MyAppExeName "frame.exe"
 #ifndef MyAppVersion
-#define MyAppVersion "1.4.5"
+#define MyAppVersion "1.5.0"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "LWX"
