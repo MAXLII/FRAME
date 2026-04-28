@@ -98,6 +98,27 @@ from serial_debug_assistant.models import (
     ScopeListItem,
     ScopePullSession,
 )
+from serial_debug_assistant.perf_protocol import (
+    CMD_SET_PERF,
+    CMD_WORD_PERF_INFO_QUERY,
+    CMD_WORD_PERF_RECORD_ITEM_REPORT,
+    CMD_WORD_PERF_RECORD_LIST_END,
+    CMD_WORD_PERF_RECORD_LIST_QUERY,
+    CMD_WORD_PERF_RESET_PEAK,
+    CMD_WORD_PERF_SUMMARY_QUERY,
+    PERF_FILTER_ALL,
+    PERF_FILTER_CODE,
+    PERF_FILTER_INTERRUPT,
+    PERF_FILTER_TASK,
+    build_perf_record_list_query_payload,
+    describe_perf_filter,
+    parse_perf_info_payload,
+    parse_perf_record_item_payload,
+    parse_perf_record_list_ack_payload,
+    parse_perf_record_list_end_payload,
+    parse_perf_success_payload,
+    parse_perf_summary_payload,
+)
 from serial_debug_assistant.protocol import (
     format_value,
     u32_to_value,
@@ -137,6 +158,7 @@ from serial_debug_assistant.ui.factory_mode_tab import FactoryModeTab
 from serial_debug_assistant.ui.home_tab import HomeTab
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
+from serial_debug_assistant.ui.perf_tab import PerfTab
 from serial_debug_assistant.ui.scope_tab import ScopeTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
@@ -270,6 +292,9 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_pull_job: str | None = None
         self.scope_next_capture_index = 1
         self.scope_list_request_job: str | None = None
+        self.perf_pull_sequence: int | None = None
+        self.perf_periodic_job: str | None = None
+        self.perf_periodic_running = False
 
         self.transport_var = tk.StringVar(value="Serial")
         self.port_var = tk.StringVar()
@@ -531,6 +556,18 @@ class SerialDebugAssistant(tk.Tk):
             export_dir=self.paths.exports_dir,
             i18n=self.i18n,
         )
+        self.perf_tab = PerfTab(
+            self.notebook,
+            on_refresh_all=lambda: self.request_perf_records(PERF_FILTER_ALL),
+            on_refresh_task=lambda: self.request_perf_records(PERF_FILTER_TASK),
+            on_refresh_interrupt=lambda: self.request_perf_records(PERF_FILTER_INTERRUPT),
+            on_refresh_code=lambda: self.request_perf_records(PERF_FILTER_CODE),
+            on_refresh_summary=self.request_perf_summary,
+            on_reset_peak=self.send_perf_reset_peak,
+            on_toggle_periodic=self.toggle_perf_periodic_query,
+            export_dir=self.paths.exports_dir,
+            i18n=self.i18n,
+        )
 
         self._add_notebook_tab("home", self.home_tab, "主页")
         self._add_notebook_tab("monitor", monitor_page, "串口调试")
@@ -540,6 +577,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("black_box", self.black_box_tab, "Black Box")
         self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
         self._add_notebook_tab("scope", self.scope_tab, "Scope")
+        self._add_notebook_tab("perf", self.perf_tab, "Perf")
         if "parameter" not in self.hidden_tab_ids:
             self.notebook.select(self.parameter_tab)
         elif self._visible_notebook_tabs:
@@ -760,6 +798,7 @@ class SerialDebugAssistant(tk.Tk):
         self.black_box_tab.refresh_texts()
         self.factory_mode_tab.refresh_texts()
         self.scope_tab.refresh_texts()
+        self.perf_tab.refresh_texts()
         self._update_counter_labels()
         self._on_parameter_message_changed()
         self.set_status(self.status_var.get(), error=self.status_label.cget("style") == "ErrorStatus.TLabel")
@@ -1479,6 +1518,8 @@ class SerialDebugAssistant(tk.Tk):
             return
         if self._handle_scope_protocol_frame(frame):
             return
+        if self._handle_perf_protocol_frame(frame):
+            return
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
             self.parameters.clear()
@@ -1816,6 +1857,101 @@ class SerialDebugAssistant(tk.Tk):
                 f"sample ack id={int(sample['scope_id'])} status={int(sample['status'])} "
                 f"index={int(sample['sample_index'])} values={len(sample['values'])}",
             )
+            return True
+
+        return False
+
+    def _handle_perf_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_set != CMD_SET_PERF:
+            return False
+        if frame.cmd_word not in {
+            CMD_WORD_PERF_INFO_QUERY,
+            CMD_WORD_PERF_SUMMARY_QUERY,
+            CMD_WORD_PERF_RECORD_LIST_QUERY,
+            CMD_WORD_PERF_RECORD_ITEM_REPORT,
+            CMD_WORD_PERF_RECORD_LIST_END,
+            CMD_WORD_PERF_RESET_PEAK,
+        }:
+            return False
+
+        try:
+            if frame.cmd_word == CMD_WORD_PERF_INFO_QUERY and frame.is_ack == 1:
+                info = parse_perf_info_payload(frame.payload)
+                self.perf_tab.set_info(info)
+                self.logger.log(
+                    "PERF",
+                    f"info protocol={info.protocol_version} records={info.record_count} "
+                    f"unit_us={info.unit_us:.6g} cnt_per_tick={info.cnt_per_sys_tick} "
+                    f"window_ms={info.cpu_window_ms} flags=0x{info.flags:02X}",
+                )
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_SUMMARY_QUERY and frame.is_ack == 1:
+                summary = parse_perf_summary_payload(frame.payload)
+                self.perf_tab.set_summary(summary)
+                self.logger.log(
+                    "PERF",
+                    f"summary task={summary.task_load_percent:.3f}/{summary.task_peak_percent:.3f} "
+                    f"int={summary.interrupt_load_percent:.3f}/{summary.interrupt_peak_percent:.3f}",
+                )
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_RECORD_LIST_QUERY and frame.is_ack == 1:
+                ack = parse_perf_record_list_ack_payload(frame.payload)
+                if ack.accepted:
+                    self.perf_pull_sequence = ack.sequence
+                    self.perf_tab.start_pull(ack)
+                    self.logger.log(
+                        "PERF",
+                        f"list ack accepted filter={describe_perf_filter(ack.type_filter)} "
+                        f"records={ack.record_count} seq={ack.sequence}",
+                    )
+                else:
+                    self.perf_pull_sequence = None
+                    self.perf_tab.set_pull_rejected(ack)
+                    self.logger.log(
+                        "PERF",
+                        f"list ack rejected filter={ack.type_filter} reason={ack.reject_reason}",
+                    )
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_RECORD_ITEM_REPORT and frame.is_ack == 0:
+                record = parse_perf_record_item_payload(frame.payload)
+                if self.perf_pull_sequence is not None and record.sequence != self.perf_pull_sequence:
+                    self.logger.log(
+                        "PERF",
+                        f"ignore stale item seq={record.sequence} active={self.perf_pull_sequence} "
+                        f"index={record.index} name={record.name!r}",
+                    )
+                    return True
+                self.perf_tab.add_record(record)
+                self.logger.log(
+                    "PERF",
+                    f"item seq={record.sequence} index={record.index}/{record.record_count} "
+                    f"type={record.record_type} name={record.name!r} time={record.time_us} "
+                    f"max={record.max_time_us} load={record.load_percent:.3f} peak={record.peak_percent:.3f}",
+                )
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_RECORD_LIST_END and frame.is_ack == 0:
+                end = parse_perf_record_list_end_payload(frame.payload)
+                if self.perf_pull_sequence is not None and end.sequence != self.perf_pull_sequence:
+                    self.logger.log("PERF", f"ignore stale end seq={end.sequence} active={self.perf_pull_sequence}")
+                    return True
+                self.perf_pull_sequence = None
+                self.perf_tab.finish_pull(end)
+                self.logger.log("PERF", f"list end seq={end.sequence} records={end.record_count} status={end.status}")
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_RESET_PEAK and frame.is_ack == 1:
+                success = parse_perf_success_payload(frame.payload)
+                self.perf_tab.set_reset_result(success)
+                self.logger.log("PERF", f"reset peak ack success={success}")
+                return True
+
+        except ValueError as exc:
+            self.perf_tab.set_status(f"Perf payload parse failed: {exc}", error=True)
+            self.logger.log("ERROR", f"perf payload parse failed cmd_word=0x{frame.cmd_word:02X}: {exc}")
             return True
 
         return False
@@ -3154,6 +3290,98 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("SCOPE", "send broadcast stop waveform upload before scope pull")
         self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
 
+    def request_perf_info(self) -> None:
+        self._send_perf_command(CMD_WORD_PERF_INFO_QUERY, b"", "PERF", "Reading perf info")
+
+    def request_perf_summary(self) -> None:
+        self._send_perf_command(CMD_WORD_PERF_SUMMARY_QUERY, b"", "PERF", "Reading perf summary")
+
+    def request_perf_records(self, type_filter: int) -> None:
+        self.perf_tab.select_filter(type_filter)
+        payload = build_perf_record_list_query_payload(type_filter)
+        self._send_perf_command(CMD_WORD_PERF_INFO_QUERY, b"", "PERF", "Reading perf info")
+        self._send_perf_command(
+            CMD_WORD_PERF_RECORD_LIST_QUERY,
+            payload,
+            "PERF",
+            f"Pulling {describe_perf_filter(type_filter).lower()} perf records",
+        )
+
+    def send_perf_reset_peak(self) -> None:
+        self._send_perf_command(CMD_WORD_PERF_RESET_PEAK, b"", "PERF", "Resetting perf peak values")
+
+    def toggle_perf_periodic_query(self) -> None:
+        if self.perf_periodic_running:
+            self._stop_perf_periodic_query()
+            return
+        try:
+            interval_ms = self.perf_tab.get_periodic_interval_ms()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.perf_tab.set_status(str(exc), error=True)
+            return
+        self.perf_periodic_running = True
+        self.perf_tab.set_periodic_running(True)
+        self.perf_tab.set_status(
+            f"Periodic query started: {describe_perf_filter(self.perf_tab.selected_filter())}, {interval_ms} ms."
+        )
+        self.request_perf_summary()
+        self.request_perf_records(self.perf_tab.selected_filter())
+        self._schedule_perf_periodic_query(interval_ms)
+
+    def _schedule_perf_periodic_query(self, interval_ms: int | None = None) -> None:
+        if not self.perf_periodic_running:
+            return
+        if interval_ms is None:
+            try:
+                interval_ms = self.perf_tab.get_periodic_interval_ms()
+            except ValueError as exc:
+                self.set_status(str(exc), error=True)
+                self.perf_tab.set_status(str(exc), error=True)
+                self._stop_perf_periodic_query()
+                return
+        if self.perf_periodic_job is not None:
+            self.after_cancel(self.perf_periodic_job)
+        self.perf_periodic_job = self.after(interval_ms, self._run_perf_periodic_query)
+
+    def _run_perf_periodic_query(self) -> None:
+        self.perf_periodic_job = None
+        if not self.perf_periodic_running:
+            return
+        self.request_perf_summary()
+        self.request_perf_records(self.perf_tab.selected_filter())
+        self._schedule_perf_periodic_query()
+
+    def _stop_perf_periodic_query(self) -> None:
+        self.perf_periodic_running = False
+        if self.perf_periodic_job is not None:
+            self.after_cancel(self.perf_periodic_job)
+            self.perf_periodic_job = None
+        self.perf_tab.set_periodic_running(False)
+        self.perf_tab.set_status("Periodic query stopped.")
+
+    def _send_perf_command(self, cmd_word: int, payload: bytes, log_tag: str, status_text: str) -> bool:
+        if not self._protocol_transport_available():
+            self.set_status("Open the serial port first.", error=True)
+            self.perf_tab.set_status("Connect the serial port first.", error=True)
+            return False
+        try:
+            dst, d_dst = self.perf_tab.get_target_address()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.perf_tab.set_status(str(exc), error=True)
+            return False
+        self.perf_tab.set_status(status_text)
+        self.logger.log(log_tag, f"send cmd_word=0x{cmd_word:02X} dst=0x{dst:02X} d_dst=0x{d_dst:02X} len={len(payload)}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_PERF,
+            cmd_word=cmd_word,
+            payload=payload,
+        )
+        return True
+
     def request_factory_time_read(self) -> None:
         if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
@@ -3840,6 +4068,10 @@ class SerialDebugAssistant(tk.Tk):
         if self.scope_pull_job:
             self.after_cancel(self.scope_pull_job)
             self.scope_pull_job = None
+        if self.perf_periodic_job:
+            self.after_cancel(self.perf_periodic_job)
+            self.perf_periodic_job = None
+        self.perf_periodic_running = False
         self.stop_upgrade("Application closing, upgrade stopped.", user_initiated=False)
         saved_path = self.wave_tab.auto_save_waveform_file(reason="application close")
         if saved_path is not None:

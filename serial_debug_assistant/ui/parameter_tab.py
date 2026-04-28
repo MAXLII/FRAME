@@ -127,6 +127,8 @@ class ParameterReadWriteTab(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self.after_idle(self._update_action_bar))
         self.tree.bind("<Configure>", lambda _event: self.after_idle(self._update_action_bar))
         self.tree.bind("<MouseWheel>", lambda _event: self.after_idle(self._update_action_bar))
+        self.tree.bind("<Control-c>", self._copy_selected_name)
+        self.tree.bind("<Control-C>", self._copy_selected_name)
 
     def get_target_address(self) -> tuple[int, int]:
         return int(self.module_addr_var.get() or "0"), int(self.dynamic_addr_var.get() or "0")
@@ -183,6 +185,15 @@ class ParameterReadWriteTab(ttk.Frame):
         if not selection:
             return None
         return selection[0]
+
+    def _copy_selected_name(self, _event=None) -> str:
+        name = self.get_selected_name()
+        if not name:
+            return "break"
+        self.clipboard_clear()
+        self.clipboard_append(name)
+        self.message_var.set(self.i18n.format_text("已复制参数名称: {name}", name=name))
+        return "break"
 
     def _entry_values(self, entry: ParameterEntry) -> tuple[str, ...]:
         data_text = "/" if entry.is_command else format_value(entry.data_raw, entry.type_id)
