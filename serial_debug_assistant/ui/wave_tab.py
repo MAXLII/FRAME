@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 import json
 from pathlib import Path
 import math
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
+from typing import TextIO
 
 from serial_debug_assistant.i18n import I18nManager
 
@@ -15,11 +17,15 @@ REDRAW_MS = 40
 LIST_REFRESH_MS = 120
 MIN_ZOOM_SPAN_SECONDS = 0.2
 MIN_ZOOM_SPAN_VALUE = 1e-6
+MAX_POINTS_PER_PIXEL = 3
 SHIFT_MASK = 0x0001
 CTRL_MASK = 0x0004
 WAVE_FILE_EXTENSION = ".sda_wave"
 WAVE_FILE_FORMAT = "serial_debug_assistant.waveform"
 WAVE_FILE_VERSION = 1
+LIVE_WAVE_FILE_EXTENSION = ".sda_wave_live.jsonl"
+LIVE_WAVE_FILE_FORMAT = "serial_debug_assistant.waveform.live"
+LIVE_SAVE_FLUSH_SECONDS = 1.0
 WINDOW_OPTIONS = {
     "最近10秒": 10.0,
     "最近30秒": 30.0,
@@ -74,6 +80,8 @@ class WaveformTab(ttk.Frame):
         self.visible_names: set[str] = set()
         self.latest_values: dict[str, str] = {}
         self.series_data: dict[str, list[tuple[float, float | None]]] = {}
+        self._series_timestamps: dict[str, list[float]] = {}
+        self._series_timestamp_lengths: dict[str, int] = {}
         self.markers: list[tuple[float, str]] = []
         self.reference_lines: list[tuple[str, float]] = []
 
@@ -102,9 +110,15 @@ class WaveformTab(ttk.Frame):
         self._zoom_rect_start: tuple[float, float] | None = None
         self._zoom_rect_end: tuple[float, float] | None = None
         self._cached_visible_series: dict[str, list[tuple[float, float | None]]] = {}
+        self._cached_visible_timestamps: dict[str, list[float]] = {}
         self._pending_reference_line: str | None = None
         self._preview_reference_value: float | tuple[float, float] | None = None
         self._has_unsaved_changes = False
+        self._live_save_handle: TextIO | None = None
+        self._live_save_path: Path | None = None
+        self._live_save_started_at: str | None = None
+        self._live_save_last_flush_at = 0.0
+        self._live_save_batch_count = 0
 
         self._build()
         self.window_var.trace_add("write", self._on_window_changed)
@@ -389,6 +403,76 @@ class WaveformTab(ttk.Frame):
         self._queue_latest_refresh()
         self._queue_redraw()
 
+    def _invalidate_series_cache(self, name: str | None = None) -> None:
+        if name is None:
+            self._series_timestamps.clear()
+            self._series_timestamp_lengths.clear()
+            return
+        self._series_timestamps.pop(name, None)
+        self._series_timestamp_lengths.pop(name, None)
+
+    def _timestamps_for(self, name: str) -> list[float]:
+        series = self.series_data.get(name, [])
+        cached = self._series_timestamps.get(name)
+        if cached is not None and self._series_timestamp_lengths.get(name) == len(series):
+            return cached
+        timestamps = [timestamp for timestamp, _value in series]
+        self._series_timestamps[name] = timestamps
+        self._series_timestamp_lengths[name] = len(series)
+        return timestamps
+
+    def _series_window_indices(self, name: str, x_min: float, x_max: float) -> tuple[int, int]:
+        timestamps = self._timestamps_for(name)
+        if not timestamps:
+            return 0, 0
+        return bisect_left(timestamps, x_min), bisect_right(timestamps, x_max)
+
+    def _downsample_series(
+        self,
+        series: list[tuple[float, float | None]],
+        start: int,
+        end: int,
+        *,
+        plot_width: int,
+    ) -> list[tuple[float, float | None]]:
+        count = max(0, end - start)
+        max_points = max(plot_width * MAX_POINTS_PER_PIXEL, 300)
+        if count <= max_points:
+            return series[start:end]
+
+        bucket_size = max(1, math.ceil(count / max_points))
+        sampled: list[tuple[float, float | None]] = []
+        index = start
+        while index < end:
+            bucket_end = min(index + bucket_size, end)
+            first: tuple[float, float | None] | None = None
+            last: tuple[float, float | None] | None = None
+            min_item: tuple[float, float] | None = None
+            max_item: tuple[float, float] | None = None
+            has_gap = False
+            for item_index in range(index, bucket_end):
+                item = series[item_index]
+                timestamp, value = item
+                if first is None:
+                    first = item
+                last = item
+                if value is None or not math.isfinite(value):
+                    has_gap = True
+                    continue
+                if min_item is None or value < min_item[1]:
+                    min_item = (timestamp, value)
+                if max_item is None or value > max_item[1]:
+                    max_item = (timestamp, value)
+            if has_gap:
+                sampled.append((series[index][0], None))
+            candidates: list[tuple[float, float | None]] = []
+            for item in (first, min_item, max_item, last):
+                if item is not None and item not in candidates:
+                    candidates.append(item)
+            sampled.extend(sorted(candidates, key=lambda item: item[0]))
+            index = bucket_end
+        return sampled
+
     def update_latest_value(self, name: str, value_text: str) -> None:
         self.latest_values[name] = value_text
         self._queue_list_refresh()
@@ -398,16 +482,20 @@ class WaveformTab(ttk.Frame):
         timestamp = batch_time if batch_time is not None else datetime.now().timestamp()
         for name, value in batch.items():
             self.series_data.setdefault(name, []).append((timestamp, value))
+            self._invalidate_series_cache(name)
             self.latest_values[name] = self._format_numeric(value)
         if batch:
             self._has_unsaved_changes = True
+            self._append_realtime_batch(batch, timestamp)
         self._queue_list_refresh()
         self._queue_latest_refresh()
         self._queue_redraw()
 
     def clear_plot(self) -> None:
+        self.stop_realtime_save(reason="clear waveform")
         for data in self.series_data.values():
             data.clear()
+        self._invalidate_series_cache()
         self.latest_values.clear()
         self.markers.clear()
         self.reference_lines.clear()
@@ -564,6 +652,85 @@ class WaveformTab(ttk.Frame):
         self.export_dir.mkdir(parents=True, exist_ok=True)
         return self.export_dir / f"waveform_{datetime.now():%Y%m%d_%H%M%S}{WAVE_FILE_EXTENSION}"
 
+    def _default_live_save_path(self) -> Path:
+        self.export_dir.mkdir(parents=True, exist_ok=True)
+        return self.export_dir / f"waveform_live_{datetime.now():%Y%m%d_%H%M%S}{LIVE_WAVE_FILE_EXTENSION}"
+
+    def start_realtime_save(self) -> Path:
+        if self._live_save_handle is not None and self._live_save_path is not None:
+            return self._live_save_path
+        self._live_save_path = self._default_live_save_path()
+        self._live_save_started_at = datetime.now().isoformat(timespec="seconds")
+        self._live_save_batch_count = 0
+        self._live_save_last_flush_at = time.monotonic()
+        try:
+            self._live_save_handle = self._live_save_path.open("a", encoding="utf-8")
+        except OSError as exc:
+            failed_path = self._live_save_path
+            self._live_save_path = None
+            self._live_save_started_at = None
+            self.on_status(f"实时保存波形文件创建失败: {exc}", True)
+            return failed_path
+        header = {
+            "format": LIVE_WAVE_FILE_FORMAT,
+            "version": WAVE_FILE_VERSION,
+            "type": "header",
+            "started_at": self._live_save_started_at,
+            "period_ms": self.period_var.get(),
+            "selected_names": self.selected_names,
+            "visible_names": sorted(self.visible_names),
+        }
+        self._write_live_save_line(header)
+        self._live_save_handle.flush()
+        self.on_status(f"实时保存波形文件: {self._live_save_path}", False)
+        return self._live_save_path
+
+    def stop_realtime_save(self, *, reason: str) -> Path | None:
+        if self._live_save_handle is None:
+            path = self._live_save_path
+            self._live_save_path = None
+            self._live_save_started_at = None
+            return path
+        path = self._live_save_path
+        try:
+            footer = {
+                "type": "end",
+                "reason": reason,
+                "ended_at": datetime.now().isoformat(timespec="seconds"),
+                "batch_count": self._live_save_batch_count,
+            }
+            self._write_live_save_line(footer)
+            self._live_save_handle.flush()
+        except OSError as exc:
+            self.on_status(f"实时保存波形文件关闭失败: {exc}", True)
+        finally:
+            self._live_save_handle.close()
+            self._live_save_handle = None
+            self._live_save_path = None
+            self._live_save_started_at = None
+        return path
+
+    def _write_live_save_line(self, payload: dict[str, object]) -> None:
+        if self._live_save_handle is None:
+            return
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self._live_save_handle.write(line + "\n")
+
+    def _append_realtime_batch(self, batch: dict[str, float], timestamp: float) -> None:
+        try:
+            self.start_realtime_save()
+            if self._live_save_handle is None:
+                return
+            self._write_live_save_line({"type": "batch", "timestamp": timestamp, "values": batch})
+            self._live_save_batch_count += 1
+            now = time.monotonic()
+            if now - self._live_save_last_flush_at >= LIVE_SAVE_FLUSH_SECONDS and self._live_save_handle is not None:
+                self._live_save_handle.flush()
+                self._live_save_last_flush_at = now
+        except OSError as exc:
+            self.on_status(f"实时保存波形文件失败: {exc}", True)
+            self.stop_realtime_save(reason="write error")
+
     def _build_export_payload(self) -> dict[str, object]:
         return {
             "format": WAVE_FILE_FORMAT,
@@ -595,9 +762,14 @@ class WaveformTab(ttk.Frame):
         return file_path
 
     def auto_save_waveform_file(self, *, reason: str) -> Path | None:
-        if not self.has_waveform_data() or not self._has_unsaved_changes:
+        if not self.has_waveform_data():
+            self.stop_realtime_save(reason=reason)
+            return None
+        if not self._has_unsaved_changes:
+            self.stop_realtime_save(reason=reason)
             return None
         file_path = self.save_waveform_file(self._default_export_path())
+        self.stop_realtime_save(reason=reason)
         self.on_status(f"Waveform file auto-saved ({reason}): {file_path}", False)
         return file_path
 
@@ -621,21 +793,84 @@ class WaveformTab(ttk.Frame):
         self.save_waveform_file(file_path)
         self.on_status(f"已导出波形文件: {file_path}", False)
 
+    def _read_waveform_payload(self, file_path: Path) -> dict[str, object]:
+        text = file_path.read_text(encoding="utf-8")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return self._read_live_waveform_payload(text)
+
+    def _read_live_waveform_payload(self, text: str) -> dict[str, object]:
+        selected_names: list[str] = []
+        visible_names: list[str] = []
+        period_ms = self.period_var.get()
+        series_data: dict[str, list[dict[str, float | None]]] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            item_type = item.get("type")
+            if item_type == "header":
+                if item.get("format") != LIVE_WAVE_FILE_FORMAT:
+                    raise ValueError("live waveform format mismatch")
+                selected_names = [str(name) for name in item.get("selected_names", [])]
+                visible_names = [str(name) for name in item.get("visible_names", [])]
+                period_ms = str(item.get("period_ms", period_ms))
+                continue
+            if item_type != "batch":
+                continue
+            try:
+                timestamp = float(item["timestamp"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            values = item.get("values", {})
+            if not isinstance(values, dict):
+                continue
+            for name, raw_value in values.items():
+                series_name = str(name)
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    value = None
+                series_data.setdefault(series_name, []).append({"timestamp": timestamp, "value": value})
+        if not series_data:
+            raise ValueError("live waveform file contains no samples")
+        if not selected_names:
+            selected_names = list(series_data.keys())
+        if not visible_names:
+            visible_names = selected_names
+        return {
+            "format": WAVE_FILE_FORMAT,
+            "version": WAVE_FILE_VERSION,
+            "period_ms": period_ms,
+            "selected_names": selected_names,
+            "visible_names": visible_names,
+            "markers": [],
+            "reference_lines": [],
+            "series_data": series_data,
+        }
+
     def import_waveform_file(self) -> None:
         self.export_dir.mkdir(parents=True, exist_ok=True)
         path = filedialog.askopenfilename(
             title="导入波形文件",
             initialdir=str(self.export_dir),
-            filetypes=[("波形数据文件", f"*{WAVE_FILE_EXTENSION}"), ("所有文件", "*.*")],
+            filetypes=[
+                ("波形数据文件", f"*{WAVE_FILE_EXTENSION}"),
+                ("实时波形文件", f"*{LIVE_WAVE_FILE_EXTENSION}"),
+                ("所有文件", "*.*"),
+            ],
         )
         if not path:
             self.on_status("已取消导入波形文件", False)
             return
 
         file_path = Path(path)
+        self.stop_realtime_save(reason="import waveform")
         try:
-            payload = json.loads(file_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = self._read_waveform_payload(file_path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
             self.on_status(f"导入波形文件失败: {exc}", True)
             return
 
@@ -670,6 +905,7 @@ class WaveformTab(ttk.Frame):
         self.selected_names = []
         self.visible_names = {str(name) for name in payload.get("visible_names", []) if str(name) in selected_names}
         self.series_data = {}
+        self._invalidate_series_cache()
         self.latest_values.clear()
         self.markers = []
         self.reference_lines = []
@@ -708,6 +944,7 @@ class WaveformTab(ttk.Frame):
         self.set_selected_parameters(selected_names)
         for name, samples in imported_series.items():
             self.series_data[name] = samples
+            self._invalidate_series_cache(name)
             for _timestamp, value in reversed(samples):
                 if value is not None and math.isfinite(value):
                     self.latest_values[name] = self._format_numeric(value)
@@ -899,6 +1136,7 @@ class WaveformTab(ttk.Frame):
         self._x_range = None
         self._y_range = None
         self._cached_visible_series = {}
+        self._cached_visible_timestamps = {}
 
         width = max(self.canvas.winfo_width(), 100)
         height = max(self.canvas.winfo_height(), 100)
@@ -917,33 +1155,59 @@ class WaveformTab(ttk.Frame):
             self.view_var.set(self.i18n.translate_text("查看窗口: 无数据"))
             return
 
-        full_samples: list[tuple[float, float]] = []
         visible_names = [name for name in self.selected_names if name in self.visible_names]
         if not visible_names:
             self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("当前没有勾选任何可显示的波形，请先在左侧勾选。"), fill="#64748b", font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 已全部隐藏"))
             return
 
+        time_bounds: list[tuple[float, float]] = []
         for name in visible_names:
-            for timestamp, value in self.series_data.get(name, ()):
-                if value is not None and math.isfinite(value):
-                    full_samples.append((timestamp, value))
-        if not full_samples:
+            timestamps = self._timestamps_for(name)
+            if timestamps:
+                time_bounds.append((timestamps[0], timestamps[-1]))
+        if not time_bounds:
             self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("已选择参数，但暂时还没有收到波形数据。"), fill="#64748b", font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 等待数据"))
             return
 
-        data_x_min = min(ts for ts, _ in full_samples)
-        data_x_max = max(ts for ts, _ in full_samples)
+        data_x_min = min(start for start, _end in time_bounds)
+        data_x_max = max(end for _start, end in time_bounds)
         x_min, x_max = self._resolve_x_range(data_x_min, data_x_max)
 
+        plot_width = max(int(plot_right - plot_left), 1)
+        per_series_windows: dict[str, tuple[int, int, list[tuple[float, float | None]]]] = {}
         visible_samples: list[tuple[float, float]] = []
-        for timestamp, value in full_samples:
-            if x_min <= timestamp <= x_max:
-                visible_samples.append((timestamp, value))
+        for name in visible_names:
+            series = self.series_data.get(name, [])
+            start, end = self._series_window_indices(name, x_min, x_max)
+            if start >= end:
+                continue
+            sampled = self._downsample_series(series, start, end, plot_width=plot_width)
+            per_series_windows[name] = (start, end, sampled)
+            visible_samples.extend(
+                (timestamp, value)
+                for timestamp, value in sampled
+                if value is not None and math.isfinite(value)
+            )
         if not visible_samples:
-            visible_samples = full_samples
             x_min, x_max = data_x_min, data_x_max
+            per_series_windows = {}
+            for name in visible_names:
+                series = self.series_data.get(name, [])
+                if not series:
+                    continue
+                sampled = self._downsample_series(series, 0, len(series), plot_width=plot_width)
+                per_series_windows[name] = (0, len(series), sampled)
+                visible_samples.extend(
+                    (timestamp, value)
+                    for timestamp, value in sampled
+                    if value is not None and math.isfinite(value)
+                )
+        if not visible_samples:
+            self.canvas.create_text(width / 2, height / 2, text="Selected parameters have no numeric waveform data.", fill="#64748b", font=("Segoe UI", 12))
+            self.view_var.set("View window: waiting for data")
+            return
 
         y_min, y_max = self._resolve_y_range(visible_samples)
         self._plot_bounds = (plot_left, plot_top, plot_right, plot_bottom)
@@ -976,19 +1240,21 @@ class WaveformTab(ttk.Frame):
         latest_points: list[tuple[str, str, float]] = []
         for idx, name in enumerate(visible_names):
             color = SERIES_COLORS[idx % len(SERIES_COLORS)]
-            visible_series = [
-                (timestamp, value)
-                for timestamp, value in self.series_data.get(name, [])
-                if x_min <= timestamp <= x_max
-            ]
-            self._cached_visible_series[name] = visible_series
-            if len(visible_series) < 2:
+            series = self.series_data.get(name, [])
+            start, end, draw_series = per_series_windows.get(name, (0, 0, []))
+            if end - start <= max(plot_width * MAX_POINTS_PER_PIXEL, 300):
+                hover_series = series[start:end]
+            else:
+                hover_series = draw_series
+            self._cached_visible_series[name] = hover_series
+            self._cached_visible_timestamps[name] = [timestamp for timestamp, _value in hover_series]
+            if len(draw_series) < 2:
                 continue
 
             points: list[float] = []
             latest_xy: tuple[float, float] | None = None
             active_segment = False
-            for timestamp, value in visible_series:
+            for timestamp, value in draw_series:
                 if value is None or not math.isfinite(value):
                     if active_segment and len(points) >= 4:
                         self.canvas.create_line(*points, fill=color, width=2, smooth=False)
@@ -1427,14 +1693,14 @@ class WaveformTab(ttk.Frame):
         self.redraw()
 
     def _find_hover_index(self, canvas_x: float) -> int | None:
-        reference = self._reference_series()
+        reference_name, reference = self._reference_series_with_name()
         if not reference or not self._plot_bounds or not self._x_range:
             return None
         plot_left, _, plot_right, _ = self._plot_bounds
         x_min, x_max = self._x_range
         ratio = (canvas_x - plot_left) / max(plot_right - plot_left, 1)
         target_ts = x_min + (x_max - x_min) * ratio
-        timestamps = [timestamp for timestamp, _ in reference]
+        timestamps = self._cached_visible_timestamps.get(reference_name, [])
         index = bisect_left(timestamps, target_ts)
         if index <= 0:
             return 0
@@ -1444,12 +1710,16 @@ class WaveformTab(ttk.Frame):
         after = timestamps[index]
         return index - 1 if abs(target_ts - before) <= abs(after - target_ts) else index
 
-    def _reference_series(self) -> list[tuple[float, float | None]] | None:
+    def _reference_series_with_name(self) -> tuple[str, list[tuple[float, float | None]] | None]:
         for name in self.selected_names:
             visible = self._cached_visible_series.get(name)
             if visible:
-                return visible
-        return None
+                return name, visible
+        return "", None
+
+    def _reference_series(self) -> list[tuple[float, float | None]] | None:
+        _name, series = self._reference_series_with_name()
+        return series
 
     def _update_reference_preview(self, canvas_x: float, canvas_y: float) -> None:
         if not self._pending_reference_line or not self._plot_bounds or not self._x_range or not self._y_range:
@@ -1547,7 +1817,7 @@ class WaveformTab(ttk.Frame):
         visible_names = [name for name in self.selected_names if name in self.visible_names]
         for idx, name in enumerate(visible_names):
             series = self._cached_visible_series.get(name, [])
-            sample = self._nearest_sample(series, timestamp)
+            sample = self._nearest_sample(series, timestamp, self._cached_visible_timestamps.get(name))
             if sample is None:
                 continue
             _, value = sample
@@ -1607,10 +1877,16 @@ class WaveformTab(ttk.Frame):
     ) -> None:
         return
 
-    def _nearest_sample(self, series: list[tuple[float, float | None]], target_ts: float) -> tuple[float, float | None] | None:
+    def _nearest_sample(
+        self,
+        series: list[tuple[float, float | None]],
+        target_ts: float,
+        timestamps: list[float] | None = None,
+    ) -> tuple[float, float | None] | None:
         if not series:
             return None
-        timestamps = [timestamp for timestamp, _ in series]
+        if timestamps is None:
+            timestamps = [timestamp for timestamp, _ in series]
         index = bisect_left(timestamps, target_ts)
         if index <= 0:
             return series[0]

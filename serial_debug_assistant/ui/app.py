@@ -3484,8 +3484,12 @@ class SerialDebugAssistant(tk.Tk):
                 self.wave_batch_open = False
                 self.wave_batch_start_marker = None
                 self.wave_tab.clear_plot()
+                self.wave_tab.start_realtime_save()
                 self.logger.log("DEMO", f"start wave stream period={period_ms}ms")
             else:
+                saved_path = self.wave_tab.auto_save_waveform_file(reason="stop demo stream")
+                if saved_path is not None:
+                    self.logger.log("DEMO", f"auto save on stop -> {saved_path}")
                 self.logger.log("DEMO", "stop wave stream")
             self.wave_running = start
             self.wave_tab.set_running(start)
@@ -3512,6 +3516,7 @@ class SerialDebugAssistant(tk.Tk):
             self.wave_batch_counter = 0
             self.wave_debug_batches_remaining = 8
             self.wave_debug_frame_budget = 120
+            self.wave_tab.start_realtime_save()
             self.logger.log("WAVE", "armed detailed batch capture for first 8 batches")
         else:
             saved_path = self.wave_tab.auto_save_waveform_file(reason="stop stream")
