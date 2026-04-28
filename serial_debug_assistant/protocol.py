@@ -13,10 +13,21 @@ PC_SRC = 0x01
 PC_DYN_SRC = 0x00
 MAX_PAYLOAD_LEN = 2048
 PC_DST = 0x01
+PC_BROADCAST_DST = 0x00
+PC_DYN_DST = 0x01
+PC_DYN_BROADCAST_DST = 0x00
 VALID_COMMANDS = {
     0x01: set(range(0x01, 0x20)),
     0x02: {0x01, 0x02},
 }
+
+
+def is_frame_addressed_to_pc(dst: int, d_dst: int) -> bool:
+    if dst == PC_BROADCAST_DST:
+        return d_dst == PC_DYN_BROADCAST_DST
+    if dst == PC_DST:
+        return d_dst in {PC_DYN_BROADCAST_DST, PC_DYN_DST}
+    return False
 
 STA_SOP = 0
 STA_VER = 1
@@ -204,11 +215,13 @@ class FrameParser:
             self.crc = crc16_update(self.crc, data)
             if self.dst_flag == 0:
                 self.dst = data
-                if self.dst != PC_DST:
+                if self.dst not in {PC_BROADCAST_DST, PC_DST}:
                     return self._reset_after_error("invalid destination")
                 self.dst_flag = 1
             else:
                 self.d_dst = data
+                if not is_frame_addressed_to_pc(self.dst, self.d_dst):
+                    return self._reset_after_error("invalid dynamic destination")
                 self.cmd_flag = 0
                 self.status = STA_CMD
             return frames
