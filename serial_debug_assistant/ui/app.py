@@ -246,6 +246,10 @@ class SerialDebugAssistant(tk.Tk):
         self.port_display_map: dict[str, str] = {}
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
+        self.last_rate_rx_bytes = 0
+        self.last_rate_tx_bytes = 0
+        self.last_rate_update_at = time.monotonic()
+        self.rate_update_job: str | None = None
         self.auto_send_job: str | None = None
         self.save_handle = None
         self.save_path: Path | None = None
@@ -307,6 +311,8 @@ class SerialDebugAssistant(tk.Tk):
         self.status_var = tk.StringVar(value=self.i18n.translate_text("Ready"))
         self.rx_count_var = tk.StringVar(value=self.i18n.format_text("Receive: {count} bytes", count=0))
         self.tx_count_var = tk.StringVar(value=self.i18n.format_text("Send: {count} bytes", count=0))
+        self.rx_rate_var = tk.StringVar(value="接收速率: 0 B/s")
+        self.tx_rate_var = tk.StringVar(value="发送速率: 0 B/s")
         self.break_ms_var = tk.StringVar(value=DEFAULT_BREAK_MS)
         self.auto_send_seconds_var = tk.StringVar(value=DEFAULT_AUTO_SEND_SECONDS)
         self.send_hex_var = tk.BooleanVar(value=False)
@@ -329,6 +335,7 @@ class SerialDebugAssistant(tk.Tk):
         if self.demo_mode:
             self._connect_demo_mode(initial=True)
         self.after(POLL_INTERVAL_MS, self.process_incoming_data)
+        self._schedule_rate_update()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _configure_styles(self) -> None:
@@ -565,6 +572,7 @@ class SerialDebugAssistant(tk.Tk):
             on_refresh_summary=self.request_perf_summary,
             on_reset_peak=self.send_perf_reset_peak,
             on_toggle_periodic=self.toggle_perf_periodic_query,
+            on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
             export_dir=self.paths.exports_dir,
             i18n=self.i18n,
         )
@@ -585,15 +593,19 @@ class SerialDebugAssistant(tk.Tk):
 
         footer = ttk.Frame(root, style="App.TFrame")
         footer.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        footer.columnconfigure(0, weight=1)
-        footer.columnconfigure(1, weight=1)
-        footer.columnconfigure(2, weight=1)
-        footer.columnconfigure(3, weight=1)
+        footer.columnconfigure(0, weight=0, minsize=130)
+        footer.columnconfigure(1, weight=0, minsize=130)
+        footer.columnconfigure(2, weight=0, minsize=130)
+        footer.columnconfigure(3, weight=0, minsize=130)
+        footer.columnconfigure(4, weight=1)
+        footer.columnconfigure(5, weight=1)
         ttk.Label(footer, textvariable=self.tx_count_var, style="Status.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(footer, textvariable=self.rx_count_var, style="Status.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Label(footer, textvariable=self.parameter_status_var, style="Status.TLabel").grid(row=0, column=2, sticky="w")
+        ttk.Label(footer, textvariable=self.tx_rate_var, style="Status.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Label(footer, textvariable=self.rx_count_var, style="Status.TLabel").grid(row=0, column=2, sticky="w")
+        ttk.Label(footer, textvariable=self.rx_rate_var, style="Status.TLabel").grid(row=0, column=3, sticky="w")
+        ttk.Label(footer, textvariable=self.parameter_status_var, style="Status.TLabel").grid(row=0, column=4, sticky="w")
         self.status_label = ttk.Label(footer, textvariable=self.status_var, style="Status.TLabel")
-        self.status_label.grid(row=0, column=3, sticky="e")
+        self.status_label.grid(row=0, column=5, sticky="e")
 
     def _build_serial_bar(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(3, weight=1)
@@ -806,6 +818,31 @@ class SerialDebugAssistant(tk.Tk):
     def _update_counter_labels(self) -> None:
         self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=self.total_rx_bytes))
         self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
+
+    def _schedule_rate_update(self) -> None:
+        if self.rate_update_job is not None:
+            return
+        self.rate_update_job = self.after(1000, self._update_rate_labels)
+
+    def _update_rate_labels(self) -> None:
+        self.rate_update_job = None
+        now = time.monotonic()
+        elapsed = max(now - self.last_rate_update_at, 1e-6)
+        tx_rate = (self.total_tx_bytes - self.last_rate_tx_bytes) / elapsed
+        rx_rate = (self.total_rx_bytes - self.last_rate_rx_bytes) / elapsed
+        self.last_rate_tx_bytes = self.total_tx_bytes
+        self.last_rate_rx_bytes = self.total_rx_bytes
+        self.last_rate_update_at = now
+        self.tx_rate_var.set(f"发送速率: {self._format_byte_rate(tx_rate)}")
+        self.rx_rate_var.set(f"接收速率: {self._format_byte_rate(rx_rate)}")
+        self._schedule_rate_update()
+
+    def _format_byte_rate(self, value: float) -> str:
+        if value >= 1024 * 1024:
+            return f"{value / (1024 * 1024):.2f} MB/s"
+        if value >= 1024:
+            return f"{value / 1024:.1f} KB/s"
+        return f"{value:.0f} B/s"
 
     def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
         self._translatable_widgets.append((widget, source_text, option))
@@ -2766,14 +2803,9 @@ class SerialDebugAssistant(tk.Tk):
         self.expected_param_count = 0
         self.parameters.clear()
         self.parameter_tab.clear_parameters()
-        self.parameter_tab.set_message("正在停止波形上报并准备读取参数列表")
+        self.parameter_tab.set_message("正在准备读取参数列表")
         self.sync_wave_selection()
-        self.wave_running = False
-        self.wave_tab.set_running(False)
-        self.ignore_wave_frames_until = time.monotonic() + 0.8
-        self.logger.log("PARAM", "auto stop wave upload before reading parameter list")
-        self.send_protocol_frame(cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
-        self.parameter_list_request_job = self.after(180, self._send_parameter_list_request)
+        self.parameter_list_request_job = self.after(1, self._send_parameter_list_request)
 
     def _send_parameter_list_request(self) -> None:
         self.parameter_list_request_job = None
@@ -3282,13 +3314,7 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_pull_session = None
 
     def _prepare_scope_pull_link(self) -> None:
-        if not self._protocol_transport_available():
-            return
-        if self.wave_running:
-            self.wave_running = False
-            self.wave_tab.set_running(False)
-        self.logger.log("SCOPE", "send broadcast stop waveform upload before scope pull")
-        self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
+        self.logger.log("SCOPE", "scope pull will run without stopping waveform upload")
 
     def request_perf_info(self) -> None:
         self._send_perf_command(CMD_WORD_PERF_INFO_QUERY, b"", "PERF", "Reading perf info")
@@ -4027,8 +4053,12 @@ class SerialDebugAssistant(tk.Tk):
     def reset_counters(self) -> None:
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
-        self.rx_count_var.set(self.i18n.format_text("Receive: {count} bytes", count=0))
-        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=0))
+        self.last_rate_rx_bytes = 0
+        self.last_rate_tx_bytes = 0
+        self.last_rate_update_at = time.monotonic()
+        self._update_counter_labels()
+        self.rx_rate_var.set("接收速率: 0 B/s")
+        self.tx_rate_var.set("发送速率: 0 B/s")
         self.set_status(self.i18n.translate_text("Counters reset"))
         self.logger.log("UI", "reset counters")
 
@@ -4068,6 +4098,9 @@ class SerialDebugAssistant(tk.Tk):
         if self.scope_pull_job:
             self.after_cancel(self.scope_pull_job)
             self.scope_pull_job = None
+        if self.rate_update_job:
+            self.after_cancel(self.rate_update_job)
+            self.rate_update_job = None
         if self.perf_periodic_job:
             self.after_cancel(self.perf_periodic_job)
             self.perf_periodic_job = None

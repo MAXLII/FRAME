@@ -26,6 +26,17 @@ from serial_debug_assistant.perf_protocol import (
 )
 
 PERF_PERIODIC_INTERVAL_MS = 1000
+PERF_BG = "#08161b"
+PERF_PANEL = "#0d1b22"
+PERF_PANEL_ALT = "#101f27"
+PERF_BORDER = "#263b45"
+PERF_TEXT = "#d8e2e7"
+PERF_MUTED = "#8fa3ad"
+PERF_CYAN = "#2ec7f0"
+PERF_PURPLE = "#8b6df6"
+PERF_ORANGE = "#ff9f2f"
+PERF_GREEN = "#62d26f"
+PERF_BLUE_SELECT = "#123552"
 
 
 class PerfTab(ttk.Frame):
@@ -40,10 +51,11 @@ class PerfTab(ttk.Frame):
         on_refresh_summary,
         on_reset_peak,
         on_toggle_periodic,
+        on_status,
         export_dir: Path,
         i18n: I18nManager,
     ) -> None:
-        super().__init__(master, style="Panel.TFrame", padding=12)
+        super().__init__(master, style="Perf.TFrame", padding=16)
         self.i18n = i18n
         self.export_dir = export_dir
         self.on_refresh_all = on_refresh_all
@@ -53,6 +65,7 @@ class PerfTab(ttk.Frame):
         self.on_refresh_summary = on_refresh_summary
         self.on_reset_peak = on_reset_peak
         self.on_toggle_periodic = on_toggle_periodic
+        self.on_status = on_status
         self._translatable_widgets: list[tuple[object, str, str]] = []
 
         self.target_addr_var = tk.StringVar(value="2")
@@ -77,67 +90,93 @@ class PerfTab(ttk.Frame):
         self._periodic_running = False
         self._selected_filter = PERF_FILTER_ALL
 
+        self._configure_perf_styles()
         self._build()
+
+    def _configure_perf_styles(self) -> None:
+        style = ttk.Style(self)
+        style.configure("Perf.TFrame", background=PERF_BG)
+        style.configure("Perf.Panel.TFrame", background=PERF_PANEL)
+        style.configure("Perf.Toolbar.TFrame", background=PERF_PANEL_ALT)
+        style.configure("Perf.TLabel", background=PERF_BG, foreground=PERF_TEXT, font=("Segoe UI", 10))
+        style.configure("Perf.Muted.TLabel", background=PERF_BG, foreground=PERF_MUTED, font=("Segoe UI", 9))
+        style.configure("Perf.Panel.TLabel", background=PERF_PANEL, foreground=PERF_TEXT, font=("Segoe UI", 10))
+        style.configure("Perf.PanelMuted.TLabel", background=PERF_PANEL, foreground=PERF_MUTED, font=("Segoe UI", 9))
+        style.configure("Perf.Title.TLabel", background=PERF_BG, foreground=PERF_TEXT, font=("Segoe UI Semibold", 18))
+        style.configure("Perf.Header.TLabel", background=PERF_BG, foreground=PERF_TEXT, font=("Segoe UI Semibold", 11))
+        style.configure("Perf.Value.TLabel", background=PERF_PANEL, foreground=PERF_TEXT, font=("Segoe UI Semibold", 19))
+        style.configure("Perf.Cyan.TLabel", background=PERF_BG, foreground=PERF_CYAN, font=("Segoe UI Semibold", 10))
+        style.configure("Perf.Status.TLabel", background=PERF_PANEL_ALT, foreground=PERF_CYAN, font=("Segoe UI Semibold", 10))
+        style.configure("Perf.TButton", background=PERF_PANEL_ALT, foreground=PERF_TEXT, bordercolor=PERF_BORDER, padding=(12, 7))
+        style.map("Perf.TButton", background=[("active", "#162a34"), ("pressed", "#1b3440")])
+        style.configure("Perf.Accent.TButton", background="#123a4c", foreground=PERF_TEXT, bordercolor=PERF_CYAN, padding=(12, 7))
+        style.map("Perf.Accent.TButton", background=[("active", "#174b62"), ("pressed", "#1d5c78")])
+        style.configure("Perf.TEntry", fieldbackground="#0b151b", foreground=PERF_TEXT, insertcolor=PERF_TEXT, bordercolor=PERF_BORDER)
+        style.configure("Perf.Treeview", background=PERF_PANEL, fieldbackground=PERF_PANEL, foreground=PERF_TEXT, bordercolor=PERF_BORDER, rowheight=34)
+        style.configure("Perf.Treeview.Heading", background="#0a151b", foreground=PERF_MUTED, font=("Segoe UI Semibold", 10), bordercolor=PERF_BORDER)
+        style.map(
+            "Perf.Treeview",
+            background=[("selected", PERF_BLUE_SELECT)],
+            foreground=[("selected", PERF_TEXT)],
+        )
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
 
-        toolbar = ttk.LabelFrame(self, text="Perf Target", style="Section.TLabelframe", padding=12)
+        toolbar = ttk.Frame(self, style="Perf.Toolbar.TFrame", padding=(16, 12))
         toolbar.grid(row=0, column=0, sticky="ew")
-        for column in range(10):
-            toolbar.columnconfigure(column, weight=1 if column in {1, 3, 5} else 0)
+        for column in range(12):
+            toolbar.columnconfigure(column, weight=1 if column == 5 else 0)
 
-        ttk.Label(toolbar, text="Target Address").grid(row=0, column=0, sticky="w")
-        ttk.Entry(toolbar, textvariable=self.target_addr_var, width=8).grid(row=0, column=1, sticky="ew", padx=(8, 14))
-        ttk.Label(toolbar, text="Dynamic Address").grid(row=0, column=2, sticky="w")
-        ttk.Entry(toolbar, textvariable=self.dynamic_addr_var, width=8).grid(row=0, column=3, sticky="ew", padx=(8, 14))
-        ttk.Label(toolbar, text="Search").grid(row=0, column=4, sticky="w")
-        search_entry = ttk.Entry(toolbar, textvariable=self.search_var, width=28)
-        search_entry.grid(row=0, column=5, sticky="ew", padx=(8, 14))
+        ttk.Label(toolbar, text="FRAME 任务时间查看器", style="Perf.Header.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 18))
+        ttk.Label(toolbar, text="Target", style="Perf.PanelMuted.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Entry(toolbar, textvariable=self.target_addr_var, width=6, style="Perf.TEntry").grid(row=0, column=2, sticky="w", padx=(6, 12))
+        ttk.Label(toolbar, text="Dyn", style="Perf.PanelMuted.TLabel").grid(row=0, column=3, sticky="w")
+        ttk.Entry(toolbar, textvariable=self.dynamic_addr_var, width=6, style="Perf.TEntry").grid(row=0, column=4, sticky="w", padx=(6, 16))
+        search_entry = ttk.Entry(toolbar, textvariable=self.search_var, width=42, style="Perf.TEntry")
+        search_entry.grid(row=0, column=5, sticky="ew", padx=(0, 16))
         self.search_var.trace_add("write", lambda *_args: self._refresh_rows())
 
-        ttk.Button(toolbar, text="All", command=self.on_refresh_all, style="Accent.TButton", width=10).grid(row=0, column=6, sticky="ew")
-        ttk.Button(toolbar, text="Task", command=self.on_refresh_task, width=10).grid(row=0, column=7, padx=(8, 0), sticky="ew")
-        ttk.Button(toolbar, text="Interrupt", command=self.on_refresh_interrupt, width=12).grid(row=0, column=8, padx=(8, 0), sticky="ew")
-        ttk.Button(toolbar, text="Code", command=self.on_refresh_code, width=10).grid(row=0, column=9, padx=(8, 0), sticky="ew")
+        ttk.Button(toolbar, text="拉取全部", command=self.on_refresh_all, style="Perf.Accent.TButton", width=10).grid(row=0, column=6, sticky="ew")
+        ttk.Button(toolbar, text="Task", command=self.on_refresh_task, style="Perf.TButton", width=9).grid(row=0, column=7, padx=(8, 0), sticky="ew")
+        ttk.Button(toolbar, text="Interrupt", command=self.on_refresh_interrupt, style="Perf.TButton", width=11).grid(row=0, column=8, padx=(8, 0), sticky="ew")
+        ttk.Button(toolbar, text="Code", command=self.on_refresh_code, style="Perf.TButton", width=9).grid(row=0, column=9, padx=(8, 0), sticky="ew")
+        self.periodic_button = ttk.Button(toolbar, text="自动刷新 1s", command=self.on_toggle_periodic, style="Perf.TButton", width=12)
+        self.periodic_button.grid(row=0, column=10, padx=(8, 0), sticky="ew")
+        ttk.Button(toolbar, text="导出 CSV", command=self.export_csv, style="Perf.TButton", width=11).grid(row=0, column=11, padx=(8, 0), sticky="ew")
 
-        actions = ttk.Frame(toolbar, style="Panel.TFrame")
-        actions.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(12, 0))
-        ttk.Button(actions, text="Summary", command=self.on_refresh_summary, width=12).grid(row=0, column=0)
-        ttk.Button(actions, text="Reset Peak", command=self.on_reset_peak, width=12).grid(row=0, column=1, padx=(8, 0))
-        ttk.Button(actions, text="Export CSV", command=self.export_csv, width=12).grid(row=0, column=2, padx=(8, 0))
-        ttk.Label(actions, text="Interval").grid(row=0, column=3, sticky="w", padx=(14, 6))
-        ttk.Entry(actions, textvariable=self.periodic_interval_var, width=8, state="readonly").grid(row=0, column=4, sticky="w")
-        ttk.Label(actions, text="ms").grid(row=0, column=5, sticky="w", padx=(4, 0))
-        self.periodic_button = ttk.Button(actions, text="Periodic Query", command=self.on_toggle_periodic, width=14)
-        self.periodic_button.grid(row=0, column=6, padx=(8, 0))
-        ttk.Label(actions, textvariable=self.status_var, style="Header.TLabel").grid(row=0, column=7, sticky="w", padx=(18, 0))
-        actions.columnconfigure(7, weight=1)
+        title_row = ttk.Frame(self, style="Perf.TFrame")
+        title_row.grid(row=1, column=0, sticky="ew", pady=(18, 10))
+        title_row.columnconfigure(0, weight=1)
+        ttk.Label(title_row, text="任务时间", style="Perf.Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(title_row, text="Summary", command=self.on_refresh_summary, style="Perf.TButton", width=10).grid(row=0, column=1, sticky="e", padx=(0, 8))
+        ttk.Button(title_row, text="Reset Peak", command=self.on_reset_peak, style="Perf.TButton", width=11).grid(row=0, column=2, sticky="e", padx=(0, 12))
+        ttk.Label(title_row, textvariable=self.info_var, style="Perf.Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
-        summary = ttk.LabelFrame(self, text="CPU Load", style="Section.TLabelframe", padding=12)
-        summary.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        for column in range(8):
+        summary = ttk.Frame(self, style="Perf.TFrame")
+        summary.grid(row=2, column=0, sticky="ew")
+        for column in range(4):
             summary.columnconfigure(column, weight=1)
-        self._add_metric(summary, "Task Current", self.task_load_var, 0, 0)
-        self._add_metric(summary, "Task Peak", self.task_peak_var, 0, 2)
-        self._add_metric(summary, "Interrupt Current", self.interrupt_load_var, 0, 4)
-        self._add_metric(summary, "Interrupt Peak", self.interrupt_peak_var, 0, 6)
-        ttk.Label(summary, textvariable=self.info_var).grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        self._add_metric(summary, "任务总占用", self.task_load_var, 0, 0, PERF_CYAN)
+        self._add_metric(summary, "任务峰值", self.task_peak_var, 0, 1, PERF_PURPLE)
+        self._add_metric(summary, "中断总占用", self.interrupt_load_var, 0, 2, PERF_ORANGE)
+        self._add_metric(summary, "中断峰值", self.interrupt_peak_var, 0, 3, "#ffbf3d")
 
-        content = ttk.Frame(self, style="Panel.TFrame")
-        content.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
+        content = ttk.Frame(self, style="Perf.TFrame")
+        content.grid(row=3, column=0, sticky="nsew", pady=(18, 0))
         content.columnconfigure(0, weight=3)
         content.columnconfigure(1, weight=2)
         content.rowconfigure(0, weight=1)
 
-        table_frame = ttk.LabelFrame(content, text="Records", style="Section.TLabelframe", padding=10)
+        table_frame = ttk.Frame(content, style="Perf.Panel.TFrame", padding=1)
         table_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+        table_frame.rowconfigure(1, weight=1)
+        ttk.Label(table_frame, text="Records", style="Perf.Panel.TLabel").grid(row=0, column=0, sticky="w", padx=12, pady=(10, 8))
 
         columns = ("type", "name", "time", "max", "load", "peak")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse", style="Perf.Treeview")
         headings = {
             "type": "Type",
             "name": "Name",
@@ -152,23 +191,35 @@ class PerfTab(ttk.Frame):
             self.tree.column(column, width=widths[column], anchor="center")
         yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
+        self.tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
+        yscroll.grid(row=1, column=1, sticky="ns", pady=(0, 10))
         self.tree.bind("<<TreeviewSelect>>", self._on_select_record)
+        self.tree.tag_configure("task", foreground=PERF_CYAN)
+        self.tree.tag_configure("interrupt", foreground=PERF_ORANGE)
+        self.tree.tag_configure("code", foreground=PERF_GREEN)
 
-        detail = ttk.LabelFrame(content, text="Selected Record", style="Section.TLabelframe", padding=12)
+        detail = ttk.Frame(content, style="Perf.Panel.TFrame", padding=14)
         detail.grid(row=0, column=1, sticky="nsew")
         detail.columnconfigure(0, weight=1)
         detail.rowconfigure(3, weight=1)
-        ttk.Label(detail, textvariable=self.selection_title_var, style="Header.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(detail, textvariable=self.selection_detail_var, wraplength=420).grid(row=1, column=0, sticky="ew", pady=(8, 12))
-        self.usage_canvas = tk.Canvas(detail, height=150, bg="#fbfdff", highlightthickness=0)
-        self.usage_canvas.grid(row=2, column=0, sticky="ew")
+        ttk.Label(detail, text="选中项详情", style="Perf.PanelMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(detail, textvariable=self.selection_title_var, style="Perf.Cyan.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(detail, textvariable=self.selection_detail_var, style="Perf.Panel.TLabel", wraplength=420).grid(row=2, column=0, sticky="ew", pady=(8, 12))
+        self.usage_canvas = tk.Canvas(detail, height=250, bg=PERF_PANEL, highlightthickness=0)
+        self.usage_canvas.grid(row=3, column=0, sticky="ew")
         self.usage_canvas.bind("<Configure>", lambda _event: self._draw_selected_record())
 
-    def _add_metric(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, column: int) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w", padx=(0, 8))
-        ttk.Label(parent, textvariable=variable, style="Header.TLabel").grid(row=row, column=column + 1, sticky="w")
+    def _add_metric(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, column: int, accent: str) -> None:
+        card = tk.Frame(parent, bg=PERF_PANEL, highlightbackground=PERF_BORDER, highlightthickness=1)
+        card.grid(row=row, column=column, sticky="ew", padx=(0 if column == 0 else 12, 0), ipady=12)
+        card.columnconfigure(1, weight=1)
+        icon = tk.Canvas(card, width=48, height=48, bg=PERF_PANEL, highlightthickness=0)
+        icon.grid(row=0, column=0, rowspan=2, padx=(18, 12), pady=8)
+        icon.create_oval(8, 8, 40, 40, outline=accent, width=3)
+        icon.create_line(24, 15, 24, 26, fill=accent, width=3)
+        icon.create_line(24, 26, 33, 26, fill=accent, width=3)
+        tk.Label(card, text=label, bg=PERF_PANEL, fg=PERF_MUTED, font=("Segoe UI", 10)).grid(row=0, column=1, sticky="w", pady=(10, 0))
+        tk.Label(card, textvariable=variable, bg=PERF_PANEL, fg=PERF_TEXT, font=("Segoe UI Semibold", 20)).grid(row=1, column=1, sticky="w", pady=(0, 8))
 
     def get_target_address(self) -> tuple[int, int]:
         target = int(self.target_addr_var.get().strip(), 0)
@@ -189,10 +240,11 @@ class PerfTab(ttk.Frame):
 
     def set_periodic_running(self, running: bool) -> None:
         self._periodic_running = running
-        self.periodic_button.configure(text="Stop Periodic" if running else "Periodic Query")
+        self.periodic_button.configure(text="停止刷新" if running else "自动刷新 1s")
 
     def set_status(self, message: str, *, error: bool = False) -> None:
         self.status_var.set(message)
+        self.on_status(message, error)
 
     def set_info(self, info: PerfInfo) -> None:
         self.info_var.set(
@@ -290,6 +342,7 @@ class PerfTab(ttk.Frame):
                 "end",
                 iid=iid,
                 values=self._record_values(record),
+                tags=(self._record_tag(record),),
             )
             if key == selected_key:
                 self.tree.selection_set(iid)
@@ -315,7 +368,7 @@ class PerfTab(ttk.Frame):
         if self.tree.exists(iid):
             self.tree.item(iid, values=self._record_values(record))
         else:
-            self.tree.insert("", "end", iid=iid, values=self._record_values(record))
+            self.tree.insert("", "end", iid=iid, values=self._record_values(record), tags=(self._record_tag(record),))
             self._visible_keys.append(key)
 
         if self._selected_record is None and not self.tree.selection():
@@ -370,6 +423,15 @@ class PerfTab(ttk.Frame):
             "-" if record.record_type == PERF_RECORD_CODE else self._format_percent(record.peak_percent),
         )
 
+    def _record_tag(self, record: PerfRecord) -> str:
+        if record.record_type == PERF_RECORD_TASK:
+            return "task"
+        if record.record_type == PERF_RECORD_INTERRUPT:
+            return "interrupt"
+        if record.record_type == PERF_RECORD_CODE:
+            return "code"
+        return ""
+
     def _on_select_record(self, _event=None) -> None:
         selection = self.tree.selection()
         if not selection:
@@ -407,25 +469,26 @@ class PerfTab(ttk.Frame):
         y = 52
         height = 28
         record = self._selected_record
-        canvas.create_text(x0, 20, text="Occupancy", anchor="w", fill="#36506b", font=("Segoe UI", 10, "bold"))
-        canvas.create_rectangle(x0, y, x1, y + height, fill="#e5ecf5", outline="#bfd0e3")
+        canvas.create_text(x0, 20, text="占用率对比", anchor="w", fill=PERF_TEXT, font=("Segoe UI", 10, "bold"))
+        canvas.create_rectangle(x0, y, x1, y + height, fill="#263138", outline=PERF_BORDER)
         if record is None:
             return
         if record.record_type == PERF_RECORD_CODE:
-            canvas.create_text(x0, y + 50, text="Code records do not carry load percent.", anchor="w", fill="#5b6b7f")
-            canvas.create_text(x0, y + 74, text=f"Run {record.time_us:,} us / max {record.max_time_us:,} us", anchor="w", fill="#112033")
+            canvas.create_text(x0, y + 50, text="Code records do not carry load percent.", anchor="w", fill=PERF_MUTED)
+            canvas.create_text(x0, y + 74, text=f"Run {record.time_us:,} us / max {record.max_time_us:,} us", anchor="w", fill=PERF_TEXT)
             return
+        accent = PERF_CYAN if record.record_type == PERF_RECORD_TASK else PERF_ORANGE
         peak_width = self._bar_width(x1 - x0, record.peak_percent)
         load_width = self._bar_width(x1 - x0, record.load_percent)
-        canvas.create_rectangle(x0, y, x0 + peak_width, y + height, fill="#93c5fd", outline="")
-        canvas.create_rectangle(x0, y + 7, x0 + load_width, y + height - 7, fill="#2563eb", outline="")
-        canvas.create_text(x0, y + 48, text="Background = 100%, light = peak, blue = current", anchor="w", fill="#5b6b7f")
+        canvas.create_rectangle(x0, y, x0 + peak_width, y + height, fill=PERF_PURPLE, outline="")
+        canvas.create_rectangle(x0, y + 7, x0 + load_width, y + height - 7, fill=accent, outline="")
+        canvas.create_text(x0, y + 48, text="灰色 = 100% 基准，紫色 = 峰值，亮色 = 当前", anchor="w", fill=PERF_MUTED)
         canvas.create_text(
             x0,
             y + 72,
             text=f"Current {self._format_percent(record.load_percent)} / Peak {self._format_percent(record.peak_percent)}",
             anchor="w",
-            fill="#112033",
+            fill=PERF_TEXT,
         )
 
     def _bar_width(self, width: int, percent: float) -> int:
