@@ -7,6 +7,7 @@ set "PUBLISHER=LWX"
 set "ISS_FILE=%~dp0installer\frame_installer.iss"
 set "DIST_APP_DIR=%~dp0dist\frame"
 set "BRAND_FILE=%DIST_APP_DIR%\app_brand.txt"
+set "FRAME_INSTALLER_HIDDEN_TABS=home,upgrade,black_box,factory_mode"
 set "ISCC_EXE="
 set "BASE_APP_VERSION="
 set "BASE_APP_VERSION_RAW="
@@ -37,7 +38,7 @@ if not exist "%DIST_APP_DIR%\frame.exe" (
 > "%BRAND_FILE%" (
     echo app_name=FRAME
     echo app_version=%APP_VERSION%
-    echo hidden_tabs=home
+    echo hidden_tabs=%FRAME_INSTALLER_HIDDEN_TABS%
 )
 if errorlevel 1 (
     echo [ERROR] Failed to create brand marker file: "%BRAND_FILE%"
