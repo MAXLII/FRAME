@@ -14,10 +14,11 @@ from serial_debug_assistant.perf_protocol import (
     PERF_RECORD_CODE,
     PERF_RECORD_INTERRUPT,
     PERF_RECORD_TASK,
+    PerfDictAck,
+    PerfDictEnd,
     PerfInfo,
-    PerfListAck,
-    PerfListEnd,
     PerfRecord,
+    PerfSampleAck,
     PerfSummary,
     describe_perf_end_status,
     describe_perf_filter,
@@ -48,7 +49,6 @@ class PerfTab(ttk.Frame):
         on_refresh_task,
         on_refresh_interrupt,
         on_refresh_code,
-        on_refresh_summary,
         on_reset_peak,
         on_toggle_periodic,
         on_status,
@@ -62,7 +62,6 @@ class PerfTab(ttk.Frame):
         self.on_refresh_task = on_refresh_task
         self.on_refresh_interrupt = on_refresh_interrupt
         self.on_refresh_code = on_refresh_code
-        self.on_refresh_summary = on_refresh_summary
         self.on_reset_peak = on_reset_peak
         self.on_toggle_periodic = on_toggle_periodic
         self.on_status = on_status
@@ -72,20 +71,20 @@ class PerfTab(ttk.Frame):
         self.dynamic_addr_var = tk.StringVar(value="0")
         self.search_var = tk.StringVar()
         self.periodic_interval_var = tk.StringVar(value=str(PERF_PERIODIC_INTERVAL_MS))
-        self.status_var = tk.StringVar(value="Ready to pull perf records.")
+        self.status_var = tk.StringVar(value="任务时间已就绪")
         self.info_var = tk.StringVar(value="Protocol: -, records: -, unit: - us")
         self.task_load_var = tk.StringVar(value="-")
         self.task_peak_var = tk.StringVar(value="-")
         self.interrupt_load_var = tk.StringVar(value="-")
         self.interrupt_peak_var = tk.StringVar(value="-")
-        self.selection_title_var = tk.StringVar(value="No record selected")
-        self.selection_detail_var = tk.StringVar(value="Select a task, interrupt, or code record to inspect timing.")
+        self.selection_title_var = tk.StringVar(value="未选择记录")
+        self.selection_detail_var = tk.StringVar(value="选择一条任务、中断或代码片段记录查看详情。")
 
-        self._records: dict[tuple[int, int, str], PerfRecord] = {}
-        self._visible_keys: list[tuple[int, int, str]] = []
+        self._records: dict[int, PerfRecord] = {}
+        self._visible_keys: list[int] = []
         self._pull_sequence: int | None = None
         self._pull_filter: int = PERF_FILTER_ALL
-        self._pull_seen_keys: set[tuple[int, int, str]] = set()
+        self._pull_seen_keys: set[int] = set()
         self._selected_record: PerfRecord | None = None
         self._periodic_running = False
         self._selected_filter = PERF_FILTER_ALL
@@ -150,9 +149,8 @@ class PerfTab(ttk.Frame):
         title_row.grid(row=1, column=0, sticky="ew", pady=(18, 10))
         title_row.columnconfigure(0, weight=1)
         ttk.Label(title_row, text="任务时间", style="Perf.Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(title_row, text="Summary", command=self.on_refresh_summary, style="Perf.TButton", width=10).grid(row=0, column=1, sticky="e", padx=(0, 8))
-        ttk.Button(title_row, text="Reset Peak", command=self.on_reset_peak, style="Perf.TButton", width=11).grid(row=0, column=2, sticky="e", padx=(0, 12))
-        ttk.Label(title_row, textvariable=self.info_var, style="Perf.Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Button(title_row, text="Reset Peak", command=self.on_reset_peak, style="Perf.TButton", width=11).grid(row=0, column=1, sticky="e", padx=(0, 12))
+        ttk.Label(title_row, textvariable=self.info_var, style="Perf.Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         summary = ttk.Frame(self, style="Perf.TFrame")
         summary.grid(row=2, column=0, sticky="ew")
@@ -251,44 +249,41 @@ class PerfTab(ttk.Frame):
             f"Protocol: {info.protocol_version}, records: {info.record_count}, "
             f"unit: {info.unit_us:.3f} us, cnt/tick: {info.cnt_per_sys_tick}, window: {info.cpu_window_ms} ms"
         )
-        self.set_status("Perf info updated.")
+        self.set_status("任务时间信息已更新。")
 
     def set_summary(self, summary: PerfSummary) -> None:
         self.task_load_var.set(self._format_percent(summary.task_load_percent))
         self.task_peak_var.set(self._format_percent(summary.task_peak_percent))
         self.interrupt_load_var.set(self._format_percent(summary.interrupt_load_percent))
         self.interrupt_peak_var.set(self._format_percent(summary.interrupt_peak_percent))
-        self.set_status("Perf summary updated.")
+        self.set_status("总占用率已更新。")
 
-    def start_pull(self, ack: PerfListAck) -> None:
+    def start_pull(self, ack: PerfSampleAck) -> None:
         self._pull_sequence = ack.sequence
         self._pull_filter = ack.type_filter
         self._pull_seen_keys = set()
-        self.set_status(
-            f"Pulling {describe_perf_filter(ack.type_filter).lower()} records "
-            f"({ack.record_count}, seq {ack.sequence})."
-        )
+        self.set_status(f"正在刷新{describe_perf_filter(ack.type_filter)}记录，共 {ack.record_count} 条。")
 
-    def set_pull_rejected(self, ack: PerfListAck) -> None:
+    def set_pull_rejected(self, ack: PerfDictAck | PerfSampleAck) -> None:
         self._pull_sequence = None
         self._pull_seen_keys = set()
-        self.set_status(f"Pull rejected: {describe_perf_reject_reason(ack.reject_reason)}.", error=True)
+        self.set_status(f"刷新失败：{describe_perf_reject_reason(ack.reject_reason)}。", error=True)
 
     def add_record(self, record: PerfRecord) -> None:
         key = self._record_key(record)
         self._pull_seen_keys.add(key)
         self._records[key] = record
         self._upsert_record_row(record)
-        self.set_status(f"Received {len(self._records)}/{record.record_count} records.")
+        self.set_status(f"已更新 {len(self._pull_seen_keys)}/{record.record_count} 条记录。")
 
-    def finish_pull(self, end: PerfListEnd) -> None:
+    def finish_pull(self, end: PerfDictEnd) -> None:
         self._remove_records_missing_from_pull()
         self._pull_sequence = None
         self._pull_seen_keys = set()
-        self.set_status(f"Pull finished: {describe_perf_end_status(end.status)}, {end.record_count} records.")
+        self.set_status(f"刷新完成：{describe_perf_end_status(end.status)}，{end.record_count} 条记录。")
 
     def set_reset_result(self, success: bool) -> None:
-        self.set_status("Peak values reset." if success else "Peak reset failed.", error=not success)
+        self.set_status("峰值已重置。" if success else "峰值重置失败。", error=not success)
 
     def export_csv(self) -> None:
         if not self._records:
@@ -305,14 +300,16 @@ class PerfTab(ttk.Frame):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["type", "name", "time_us", "max_time_us", "load_percent", "peak_percent"])
+            writer.writerow(["record_id", "type", "name", "time_us", "max_time_us", "period_us", "load_percent", "peak_percent"])
             for record in sorted(self._records.values(), key=lambda item: (item.record_type, item.index, item.name.lower())):
                 writer.writerow(
                     [
+                        record.record_id,
                         describe_perf_record_type(record.record_type),
                         record.name,
                         record.time_us,
                         record.max_time_us,
+                        record.period_us if record.record_type == PERF_RECORD_TASK else "",
                         "" if record.record_type == PERF_RECORD_CODE else f"{record.load_percent:.6g}",
                         "" if record.record_type == PERF_RECORD_CODE else f"{record.peak_percent:.6g}",
                     ]
@@ -405,10 +402,11 @@ class PerfTab(ttk.Frame):
                 self.tree.selection_remove(self.tree.selection())
             self._on_select_record()
 
-    def _key_matches_filter(self, key: tuple[int, int, str], type_filter: int) -> bool:
+    def _key_matches_filter(self, key: int, type_filter: int) -> bool:
         if type_filter == PERF_FILTER_ALL:
             return True
-        return key[0] == type_filter
+        record = self._records.get(key)
+        return record is not None and record.record_type == type_filter
 
     def _record_matches_active_filter(self, record: PerfRecord) -> bool:
         return self._key_matches_filter(self._record_key(record), self._selected_filter)
@@ -436,13 +434,12 @@ class PerfTab(ttk.Frame):
         selection = self.tree.selection()
         if not selection:
             self._selected_record = None
-            self.selection_title_var.set("No record selected")
-            self.selection_detail_var.set("Select a task, interrupt, or code record to inspect timing.")
+            self.selection_title_var.set("未选择记录")
+            self.selection_detail_var.set("选择一条任务、中断或代码片段记录查看详情。")
             self._draw_selected_record()
             return
         raw = selection[0]
-        type_text, index_text, name = raw.split(":", 2)
-        record = self._records.get((int(type_text), int(index_text), name))
+        record = self._records.get(int(raw))
         self._selected_record = record
         if record is None:
             return
@@ -495,11 +492,11 @@ class PerfTab(ttk.Frame):
         percent = max(0.0, min(100.0, percent))
         return int(width * percent / 100.0)
 
-    def _record_key(self, record: PerfRecord) -> tuple[int, int, str]:
-        return (record.record_type, record.index, record.name)
+    def _record_key(self, record: PerfRecord) -> int:
+        return record.record_id
 
-    def _record_iid(self, key: tuple[int, int, str]) -> str:
-        return f"{key[0]}:{key[1]}:{key[2]}"
+    def _record_iid(self, key: int) -> str:
+        return str(key)
 
     def _format_percent(self, value: float) -> str:
         return f"{value:.2f}%"

@@ -100,22 +100,32 @@ from serial_debug_assistant.models import (
 )
 from serial_debug_assistant.perf_protocol import (
     CMD_SET_PERF,
+    CMD_WORD_PERF_DICT_END,
+    CMD_WORD_PERF_DICT_ITEM_REPORT,
+    CMD_WORD_PERF_DICT_QUERY,
     CMD_WORD_PERF_INFO_QUERY,
-    CMD_WORD_PERF_RECORD_ITEM_REPORT,
-    CMD_WORD_PERF_RECORD_LIST_END,
-    CMD_WORD_PERF_RECORD_LIST_QUERY,
     CMD_WORD_PERF_RESET_PEAK,
+    CMD_WORD_PERF_SAMPLE_BATCH_REPORT,
+    CMD_WORD_PERF_SAMPLE_END,
+    CMD_WORD_PERF_SAMPLE_QUERY,
     CMD_WORD_PERF_SUMMARY_QUERY,
     PERF_FILTER_ALL,
     PERF_FILTER_CODE,
     PERF_FILTER_INTERRUPT,
     PERF_FILTER_TASK,
-    build_perf_record_list_query_payload,
+    PerfDictEntry,
+    build_perf_dict_query_payload,
+    build_perf_sample_query_payload,
+    describe_perf_end_status,
     describe_perf_filter,
+    describe_perf_reject_reason,
+    parse_perf_dict_ack_payload,
+    parse_perf_dict_end_payload,
+    parse_perf_dict_item_payload,
     parse_perf_info_payload,
-    parse_perf_record_item_payload,
-    parse_perf_record_list_ack_payload,
-    parse_perf_record_list_end_payload,
+    parse_perf_sample_ack_payload,
+    parse_perf_sample_batch_payload,
+    parse_perf_sample_end_payload,
     parse_perf_success_payload,
     parse_perf_summary_payload,
 )
@@ -297,6 +307,10 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_next_capture_index = 1
         self.scope_list_request_job: str | None = None
         self.perf_pull_sequence: int | None = None
+        self.perf_dict_sequence: int | None = None
+        self.perf_dict_version = 0
+        self.perf_dict_entries: dict[int, PerfDictEntry] = {}
+        self.perf_pending_sample_filter: int | None = None
         self.perf_periodic_job: str | None = None
         self.perf_periodic_running = False
 
@@ -569,7 +583,6 @@ class SerialDebugAssistant(tk.Tk):
             on_refresh_task=lambda: self.request_perf_records(PERF_FILTER_TASK),
             on_refresh_interrupt=lambda: self.request_perf_records(PERF_FILTER_INTERRUPT),
             on_refresh_code=lambda: self.request_perf_records(PERF_FILTER_CODE),
-            on_refresh_summary=self.request_perf_summary,
             on_reset_peak=self.send_perf_reset_peak,
             on_toggle_periodic=self.toggle_perf_periodic_query,
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
@@ -586,6 +599,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
         self._add_notebook_tab("scope", self.scope_tab, "Scope")
         self._add_notebook_tab("perf", self.perf_tab, "Perf")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
         if "parameter" not in self.hidden_tab_ids:
             self.notebook.select(self.parameter_tab)
         elif self._visible_notebook_tabs:
@@ -768,6 +782,10 @@ class SerialDebugAssistant(tk.Tk):
             return
         self.notebook.add(widget, text=self.i18n.translate_text(title))
         self._visible_notebook_tabs.append((widget, title))
+
+    def _on_notebook_tab_changed(self, _event=None) -> None:
+        if self.notebook.select() == str(self.perf_tab):
+            self.prepare_perf_dictionary()
 
     def _on_language_changed(self, _event=None) -> None:
         self.i18n.set_language(self.i18n.get_language_from_label(self.language_var.get()))
@@ -970,6 +988,7 @@ class SerialDebugAssistant(tk.Tk):
         self.connected_transport = self.comm.connected_transport
         self.wave_running = False
         self.wave_tab.set_running(False)
+        self._reset_perf_protocol_state()
         self.pending_rx_hex_bytes.clear()
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
@@ -991,6 +1010,8 @@ class SerialDebugAssistant(tk.Tk):
             self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
             self.logger.log("WAVE", "send broadcast stop on connect dst=0x00 d_dst=0x00")
         self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
+        if self.notebook.select() == str(self.perf_tab):
+            self.prepare_perf_dictionary()
         if self.auto_send_var.get():
             self.schedule_auto_send()
 
@@ -1003,6 +1024,7 @@ class SerialDebugAssistant(tk.Tk):
         transport = self.connected_transport
         self.comm.close()
         self.connected_transport = None
+        self._reset_perf_protocol_state()
         self.pending_rx_hex_bytes.clear()
         self._set_protocol_features_available(False)
         self.set_status(self.i18n.translate_text("Disconnected"))
@@ -1904,10 +1926,13 @@ class SerialDebugAssistant(tk.Tk):
         if frame.cmd_word not in {
             CMD_WORD_PERF_INFO_QUERY,
             CMD_WORD_PERF_SUMMARY_QUERY,
-            CMD_WORD_PERF_RECORD_LIST_QUERY,
-            CMD_WORD_PERF_RECORD_ITEM_REPORT,
-            CMD_WORD_PERF_RECORD_LIST_END,
             CMD_WORD_PERF_RESET_PEAK,
+            CMD_WORD_PERF_DICT_QUERY,
+            CMD_WORD_PERF_DICT_ITEM_REPORT,
+            CMD_WORD_PERF_DICT_END,
+            CMD_WORD_PERF_SAMPLE_QUERY,
+            CMD_WORD_PERF_SAMPLE_BATCH_REPORT,
+            CMD_WORD_PERF_SAMPLE_END,
         }:
             return False
 
@@ -1933,51 +1958,126 @@ class SerialDebugAssistant(tk.Tk):
                 )
                 return True
 
-            if frame.cmd_word == CMD_WORD_PERF_RECORD_LIST_QUERY and frame.is_ack == 1:
-                ack = parse_perf_record_list_ack_payload(frame.payload)
+            if frame.cmd_word == CMD_WORD_PERF_DICT_QUERY and frame.is_ack == 1:
+                ack = parse_perf_dict_ack_payload(frame.payload)
                 if ack.accepted:
-                    self.perf_pull_sequence = ack.sequence
-                    self.perf_tab.start_pull(ack)
+                    self.perf_dict_sequence = ack.sequence
+                    self.perf_dict_version = ack.dict_version
+                    self.perf_dict_entries.clear()
+                    self.perf_tab.set_status(
+                        f"正在同步任务字典：{describe_perf_filter(ack.type_filter)}，共 {ack.record_count} 条。"
+                    )
                     self.logger.log(
                         "PERF",
-                        f"list ack accepted filter={describe_perf_filter(ack.type_filter)} "
-                        f"records={ack.record_count} seq={ack.sequence}",
+                        f"dict ack accepted filter={describe_perf_filter(ack.type_filter)} "
+                        f"records={ack.record_count} seq={ack.sequence} version={ack.dict_version}",
                     )
                 else:
+                    self.perf_dict_sequence = None
+                    self.perf_pending_sample_filter = None
+                    self.perf_tab.set_status(
+                        f"任务字典同步失败：{describe_perf_reject_reason(ack.reject_reason)}。",
+                        error=True,
+                    )
+                    self.logger.log("PERF", f"dict ack rejected reason={ack.reject_reason}")
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_DICT_ITEM_REPORT and frame.is_ack == 0:
+                entry = parse_perf_dict_item_payload(frame.payload)
+                if self.perf_dict_sequence is not None and entry.sequence != self.perf_dict_sequence:
+                    self.logger.log(
+                        "PERF",
+                        f"ignore stale dict item seq={entry.sequence} active={self.perf_dict_sequence} "
+                        f"id={entry.record_id} name={entry.name!r}",
+                    )
+                    return True
+                self.perf_dict_entries[entry.record_id] = entry
+                self.perf_tab.set_status(f"正在同步任务字典 {len(self.perf_dict_entries)}/{entry.record_count}。")
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_DICT_END and frame.is_ack == 0:
+                end = parse_perf_dict_end_payload(frame.payload)
+                if self.perf_dict_sequence is not None and end.sequence != self.perf_dict_sequence:
+                    self.logger.log("PERF", f"ignore stale dict end seq={end.sequence} active={self.perf_dict_sequence}")
+                    return True
+                self.perf_dict_sequence = None
+                self.perf_dict_version = end.dict_version
+                self.perf_tab.set_status(
+                    f"任务字典已更新：{describe_perf_end_status(end.status)}，{end.record_count} 条。"
+                )
+                self.logger.log(
+                    "PERF",
+                    f"dict end seq={end.sequence} records={end.record_count} status={end.status} version={end.dict_version}",
+                )
+                pending_filter = self.perf_pending_sample_filter
+                self.perf_pending_sample_filter = None
+                if end.status == 0 and pending_filter is not None:
+                    self._request_perf_sample_records(pending_filter)
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_SAMPLE_QUERY and frame.is_ack == 1:
+                ack = parse_perf_sample_ack_payload(frame.payload)
+                if not ack.accepted:
+                    if ack.reject_reason == 5:
+                        self.perf_pull_sequence = None
+                        self.perf_dict_entries.clear()
+                        self.perf_dict_version = ack.dict_version
+                        self.perf_pending_sample_filter = ack.type_filter
+                        self.perf_tab.set_status("任务字典版本已变化，正在重新同步。")
+                        self._request_perf_dictionary(PERF_FILTER_ALL)
+                        self.logger.log(
+                            "PERF",
+                            f"sample ack dict mismatch filter={ack.type_filter} dict={ack.dict_version}",
+                        )
+                        return True
                     self.perf_pull_sequence = None
                     self.perf_tab.set_pull_rejected(ack)
                     self.logger.log(
                         "PERF",
-                        f"list ack rejected filter={ack.type_filter} reason={ack.reject_reason}",
-                    )
-                return True
-
-            if frame.cmd_word == CMD_WORD_PERF_RECORD_ITEM_REPORT and frame.is_ack == 0:
-                record = parse_perf_record_item_payload(frame.payload)
-                if self.perf_pull_sequence is not None and record.sequence != self.perf_pull_sequence:
-                    self.logger.log(
-                        "PERF",
-                        f"ignore stale item seq={record.sequence} active={self.perf_pull_sequence} "
-                        f"index={record.index} name={record.name!r}",
+                        f"sample ack rejected filter={ack.type_filter} reason={ack.reject_reason}",
                     )
                     return True
-                self.perf_tab.add_record(record)
+                if ack.dict_version != self.perf_dict_version:
+                    self.perf_dict_entries.clear()
+                    self.perf_dict_version = ack.dict_version
+                    self.perf_pending_sample_filter = ack.type_filter
+                    self.perf_tab.set_status("任务字典版本已变化，正在重新同步。")
+                    self._request_perf_dictionary(PERF_FILTER_ALL)
+                    return True
+                self.perf_pull_sequence = ack.sequence
+                self.perf_tab.start_pull(ack)
                 self.logger.log(
                     "PERF",
-                    f"item seq={record.sequence} index={record.index}/{record.record_count} "
-                    f"type={record.record_type} name={record.name!r} time={record.time_us} "
-                    f"max={record.max_time_us} load={record.load_percent:.3f} peak={record.peak_percent:.3f}",
+                    f"sample ack accepted filter={describe_perf_filter(ack.type_filter)} "
+                    f"records={ack.record_count} seq={ack.sequence} dict={ack.dict_version}",
                 )
                 return True
 
-            if frame.cmd_word == CMD_WORD_PERF_RECORD_LIST_END and frame.is_ack == 0:
-                end = parse_perf_record_list_end_payload(frame.payload)
+            if frame.cmd_word == CMD_WORD_PERF_SAMPLE_BATCH_REPORT and frame.is_ack == 0:
+                batch = parse_perf_sample_batch_payload(frame.payload, self.perf_dict_entries)
+                if self.perf_pull_sequence is not None and batch.sequence != self.perf_pull_sequence:
+                    self.logger.log(
+                        "PERF",
+                        f"ignore stale sample batch seq={batch.sequence} active={self.perf_pull_sequence} "
+                        f"items={batch.item_count}",
+                    )
+                    return True
+                for record in batch.records:
+                    self.perf_tab.add_record(record)
+                self.logger.log(
+                    "PERF",
+                    f"sample batch seq={batch.sequence} items={batch.item_count} records={batch.record_count}",
+                )
+                return True
+
+            if frame.cmd_word == CMD_WORD_PERF_SAMPLE_END and frame.is_ack == 0:
+                end = parse_perf_sample_end_payload(frame.payload)
                 if self.perf_pull_sequence is not None and end.sequence != self.perf_pull_sequence:
-                    self.logger.log("PERF", f"ignore stale end seq={end.sequence} active={self.perf_pull_sequence}")
+                    self.logger.log("PERF", f"ignore stale sample end seq={end.sequence} active={self.perf_pull_sequence}")
                     return True
                 self.perf_pull_sequence = None
                 self.perf_tab.finish_pull(end)
-                self.logger.log("PERF", f"list end seq={end.sequence} records={end.record_count} status={end.status}")
+                self.logger.log("PERF", f"sample end seq={end.sequence} records={end.record_count} status={end.status}")
                 return True
 
             if frame.cmd_word == CMD_WORD_PERF_RESET_PEAK and frame.is_ack == 1:
@@ -3317,24 +3417,61 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("SCOPE", "scope pull will run without stopping waveform upload")
 
     def request_perf_info(self) -> None:
-        self._send_perf_command(CMD_WORD_PERF_INFO_QUERY, b"", "PERF", "Reading perf info")
+        self._send_perf_command(CMD_WORD_PERF_INFO_QUERY, b"", "PERF", "正在读取任务时间信息")
 
     def request_perf_summary(self) -> None:
-        self._send_perf_command(CMD_WORD_PERF_SUMMARY_QUERY, b"", "PERF", "Reading perf summary")
+        self._send_perf_command(CMD_WORD_PERF_SUMMARY_QUERY, b"", "PERF", "正在读取总占用率")
+
+    def prepare_perf_dictionary(self) -> None:
+        if not self._protocol_transport_available():
+            return
+        if self.perf_dict_entries or self.perf_dict_sequence is not None:
+            return
+        self.request_perf_info()
+        self._request_perf_dictionary(PERF_FILTER_ALL)
+
+    def _reset_perf_protocol_state(self) -> None:
+        self.perf_pull_sequence = None
+        self.perf_dict_sequence = None
+        self.perf_dict_version = 0
+        self.perf_dict_entries.clear()
+        self.perf_pending_sample_filter = None
 
     def request_perf_records(self, type_filter: int) -> None:
         self.perf_tab.select_filter(type_filter)
-        payload = build_perf_record_list_query_payload(type_filter)
-        self._send_perf_command(CMD_WORD_PERF_INFO_QUERY, b"", "PERF", "Reading perf info")
+        self.request_perf_summary()
+        if not self.perf_dict_entries:
+            self.request_perf_info()
+            self.perf_pending_sample_filter = type_filter
+            self._request_perf_dictionary(PERF_FILTER_ALL)
+            return
+        self._request_perf_sample_records(type_filter)
+
+    def _request_perf_dictionary(self, type_filter: int) -> None:
+        known_dict_version = self.perf_dict_version if self.perf_dict_entries else 0
+        payload = build_perf_dict_query_payload(type_filter, known_dict_version)
         self._send_perf_command(
-            CMD_WORD_PERF_RECORD_LIST_QUERY,
+            CMD_WORD_PERF_DICT_QUERY,
             payload,
             "PERF",
-            f"Pulling {describe_perf_filter(type_filter).lower()} perf records",
+            f"正在同步 {describe_perf_filter(type_filter)} 任务字典",
+        )
+
+    def _request_perf_sample_records(self, type_filter: int) -> None:
+        if not self.perf_dict_entries:
+            self.perf_pending_sample_filter = type_filter
+            self._request_perf_dictionary(PERF_FILTER_ALL)
+            return
+        payload = build_perf_sample_query_payload(type_filter, self.perf_dict_version)
+        self._send_perf_command(
+            CMD_WORD_PERF_SAMPLE_QUERY,
+            payload,
+            "PERF",
+            f"正在拉取 {describe_perf_filter(type_filter)} 记录",
         )
 
     def send_perf_reset_peak(self) -> None:
-        self._send_perf_command(CMD_WORD_PERF_RESET_PEAK, b"", "PERF", "Resetting perf peak values")
+        self._send_perf_command(CMD_WORD_PERF_RESET_PEAK, b"", "PERF", "正在重置峰值")
 
     def toggle_perf_periodic_query(self) -> None:
         if self.perf_periodic_running:
@@ -3349,9 +3486,8 @@ class SerialDebugAssistant(tk.Tk):
         self.perf_periodic_running = True
         self.perf_tab.set_periodic_running(True)
         self.perf_tab.set_status(
-            f"Periodic query started: {describe_perf_filter(self.perf_tab.selected_filter())}, {interval_ms} ms."
+            f"周期刷新已启动：{describe_perf_filter(self.perf_tab.selected_filter())}，{interval_ms} ms。"
         )
-        self.request_perf_summary()
         self.request_perf_records(self.perf_tab.selected_filter())
         self._schedule_perf_periodic_query(interval_ms)
 
@@ -3374,7 +3510,6 @@ class SerialDebugAssistant(tk.Tk):
         self.perf_periodic_job = None
         if not self.perf_periodic_running:
             return
-        self.request_perf_summary()
         self.request_perf_records(self.perf_tab.selected_filter())
         self._schedule_perf_periodic_query()
 
@@ -3384,12 +3519,12 @@ class SerialDebugAssistant(tk.Tk):
             self.after_cancel(self.perf_periodic_job)
             self.perf_periodic_job = None
         self.perf_tab.set_periodic_running(False)
-        self.perf_tab.set_status("Periodic query stopped.")
+        self.perf_tab.set_status("周期刷新已停止。")
 
     def _send_perf_command(self, cmd_word: int, payload: bytes, log_tag: str, status_text: str) -> bool:
         if not self._protocol_transport_available():
             self.set_status("Open the serial port first.", error=True)
-            self.perf_tab.set_status("Connect the serial port first.", error=True)
+            self.perf_tab.set_status("请先连接串口。", error=True)
             return False
         try:
             dst, d_dst = self.perf_tab.get_target_address()
