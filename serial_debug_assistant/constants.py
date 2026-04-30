@@ -4,7 +4,7 @@ import serial
 from serial_debug_assistant.branding import get_runtime_branding
 
 
-BASE_APP_VERSION = "1.7.0"
+BASE_APP_VERSION = "1.7.1"
 _RUNTIME_BRANDING = get_runtime_branding()
 APP_NAME = _RUNTIME_BRANDING.app_name
 APP_VERSION = _RUNTIME_BRANDING.app_version or BASE_APP_VERSION
