@@ -103,6 +103,7 @@ from serial_debug_assistant.perf_protocol import (
     CMD_WORD_PERF_DICT_END,
     CMD_WORD_PERF_DICT_ITEM_REPORT,
     CMD_WORD_PERF_DICT_QUERY,
+    CMD_WORD_PERF_CONTROL,
     CMD_WORD_PERF_INFO_QUERY,
     CMD_WORD_PERF_RESET_PEAK,
     CMD_WORD_PERF_SAMPLE_BATCH_REPORT,
@@ -114,6 +115,7 @@ from serial_debug_assistant.perf_protocol import (
     PERF_FILTER_INTERRUPT,
     PERF_FILTER_TASK,
     PerfDictEntry,
+    build_perf_control_payload,
     build_perf_dict_query_payload,
     build_perf_sample_query_payload,
     describe_perf_end_status,
@@ -160,6 +162,14 @@ from serial_debug_assistant.scope_protocol import (
     parse_scope_sample_ack_payload,
     parse_scope_var_ack_payload,
 )
+from serial_debug_assistant.trace_protocol import (
+    CMD_SET_TRACE,
+    CMD_WORD_TRACE_CONTROL,
+    CMD_WORD_TRACE_RECORD_REPORT,
+    build_trace_control_payload,
+    parse_trace_control_ack_payload,
+    parse_trace_record_report_payload,
+)
 from serial_debug_assistant.services.can_service import CANService
 from serial_debug_assistant.services.serial_service import SerialService
 from serial_debug_assistant.services.transport_helpers import CAN_BITRATES, CAN_INTERFACES
@@ -170,6 +180,7 @@ from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
 from serial_debug_assistant.ui.perf_tab import PerfTab
 from serial_debug_assistant.ui.scope_tab import ScopeTab
+from serial_debug_assistant.ui.trace_tab import TraceTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
 
@@ -253,6 +264,9 @@ class SerialDebugAssistant(tk.Tk):
         self.comm.set_frame_logger(self._log_protocol_frame)
         self.comm.router.register_fallback(self.handle_protocol_frame)
         self.connected_transport: str | None = None
+        self._applying_transport_settings = False
+        self._current_serial_settings: dict[str, object] = {}
+        self._current_can_settings: dict[str, object] = {}
         self.port_display_map: dict[str, str] = {}
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
@@ -313,6 +327,7 @@ class SerialDebugAssistant(tk.Tk):
         self.perf_pending_sample_filter: int | None = None
         self.perf_periodic_job: str | None = None
         self.perf_periodic_running = False
+        self.trace_running = False
 
         self.transport_var = tk.StringVar(value="Serial")
         self.port_var = tk.StringVar()
@@ -589,6 +604,12 @@ class SerialDebugAssistant(tk.Tk):
             export_dir=self.paths.exports_dir,
             i18n=self.i18n,
         )
+        self.trace_tab = TraceTab(
+            self.notebook,
+            on_toggle_trace=self.toggle_trace_report,
+            on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
+            i18n=self.i18n,
+        )
 
         self._add_notebook_tab("home", self.home_tab, "主页")
         self._add_notebook_tab("monitor", monitor_page, "串口调试")
@@ -599,6 +620,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
         self._add_notebook_tab("scope", self.scope_tab, "Scope")
         self._add_notebook_tab("perf", self.perf_tab, "Perf")
+        self._add_notebook_tab("trace", self.trace_tab, "Trace")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
         if "parameter" not in self.hidden_tab_ids:
             self.notebook.select(self.parameter_tab)
@@ -748,34 +770,51 @@ class SerialDebugAssistant(tk.Tk):
         holder.columnconfigure(0, weight=1)
         self.port_combo = ttk.Combobox(holder, textvariable=self.port_var, state="readonly", width=18)
         self.port_combo.grid(row=0, column=0, sticky="ew")
+        self.port_combo.bind("<<ComboboxSelected>>", self._on_port_setting_changed)
         self.port_refresh_button = ttk.Button(holder, text=self.i18n.translate_text("刷新"), command=self.refresh_ports, width=5)
         self.port_refresh_button.grid(row=0, column=1, padx=(6, 0))
         self._remember_text(self.port_refresh_button, "刷新")
 
     def _build_baud_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
-        ttk.Combobox(parent, textvariable=self.baud_var, values=BAUD_RATES, width=10).grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.baud_combo = ttk.Combobox(parent, textvariable=self.baud_var, values=BAUD_RATES, width=10)
+        self.baud_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.baud_combo.bind("<<ComboboxSelected>>", self._on_serial_setting_changed)
+        self.baud_combo.bind("<Return>", self._on_serial_setting_changed)
+        self.baud_combo.bind("<FocusOut>", self._on_serial_setting_changed)
 
     def _build_data_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
-        ttk.Combobox(parent, textvariable=self.data_bits_var, values=tuple(BYTE_SIZES.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.data_bits_combo = ttk.Combobox(parent, textvariable=self.data_bits_var, values=tuple(BYTE_SIZES.keys()), state="readonly", width=7)
+        self.data_bits_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.data_bits_combo.bind("<<ComboboxSelected>>", self._on_serial_setting_changed)
 
     def _build_parity_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
-        ttk.Combobox(parent, textvariable=self.parity_var, values=tuple(PARITY_OPTIONS.keys()), state="readonly", width=9).grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.parity_combo = ttk.Combobox(parent, textvariable=self.parity_var, values=tuple(PARITY_OPTIONS.keys()), state="readonly", width=9)
+        self.parity_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.parity_combo.bind("<<ComboboxSelected>>", self._on_serial_setting_changed)
 
     def _build_stop_bits_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
-        ttk.Combobox(parent, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=7).grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.stop_bits_combo = ttk.Combobox(parent, textvariable=self.stop_bits_var, values=tuple(STOP_BITS_OPTIONS.keys()), state="readonly", width=7)
+        self.stop_bits_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.stop_bits_combo.bind("<<ComboboxSelected>>", self._on_serial_setting_changed)
 
     def _build_can_interface_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         self.can_interface_combo = ttk.Combobox(parent, textvariable=self.can_interface_var, values=CAN_INTERFACES, state="readonly", width=12)
         self.can_interface_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
-        self.can_interface_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_ports())
+        self.can_interface_combo.bind("<<ComboboxSelected>>", self._on_can_interface_changed)
 
     def _build_can_channel_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         self.can_channel_combo = ttk.Combobox(parent, textvariable=self.port_var, width=18)
         self.can_channel_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.can_channel_combo.bind("<<ComboboxSelected>>", self._on_can_setting_changed)
+        self.can_channel_combo.bind("<Return>", self._on_can_setting_changed)
+        self.can_channel_combo.bind("<FocusOut>", self._on_can_setting_changed)
 
     def _build_can_bitrate_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
         self.can_bitrate_combo = ttk.Combobox(parent, textvariable=self.can_bitrate_var, values=CAN_BITRATES, width=10)
         self.can_bitrate_combo.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.can_bitrate_combo.bind("<<ComboboxSelected>>", self._on_can_setting_changed)
+        self.can_bitrate_combo.bind("<Return>", self._on_can_setting_changed)
+        self.can_bitrate_combo.bind("<FocusOut>", self._on_can_setting_changed)
 
     def _add_notebook_tab(self, tab_id: str, widget: object, title: str) -> None:
         if tab_id in self.hidden_tab_ids:
@@ -795,6 +834,121 @@ class SerialDebugAssistant(tk.Tk):
     def _on_transport_changed(self, _event=None) -> None:
         self._update_transport_ui()
         self.refresh_ports()
+        self._apply_connected_transport_change()
+
+    def _on_port_setting_changed(self, _event=None) -> None:
+        self._apply_connected_port_change()
+
+    def _on_serial_setting_changed(self, _event=None) -> None:
+        self._apply_connected_serial_settings()
+
+    def _on_can_interface_changed(self, _event=None) -> None:
+        self.refresh_ports()
+        self._apply_connected_can_settings()
+
+    def _on_can_setting_changed(self, _event=None) -> None:
+        self._apply_connected_can_settings()
+
+    def _serial_settings_snapshot(self) -> dict[str, object]:
+        selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
+        return {
+            "port": selected_port,
+            "baudrate": int(self.baud_var.get()),
+            "data_bits": self.data_bits_var.get(),
+            "parity": self.parity_var.get(),
+            "stop_bits": self.stop_bits_var.get(),
+        }
+
+    def _can_settings_snapshot(self) -> dict[str, object]:
+        selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
+        return {
+            "interface": self.can_interface_var.get().strip(),
+            "channel": selected_port.strip(),
+            "bitrate": int(self.can_bitrate_var.get()),
+        }
+
+    def _apply_connected_transport_change(self) -> None:
+        if self._applying_transport_settings or self.demo_mode or not self._is_connected():
+            return
+        selected_transport = self._selected_transport()
+        if selected_transport == self.connected_transport:
+            return
+        self._reopen_connection_for_settings(f"transport changed to {selected_transport}")
+
+    def _apply_connected_port_change(self) -> None:
+        if self._applying_transport_settings or self.demo_mode or not self._is_connected():
+            return
+        if self.connected_transport == "serial":
+            try:
+                settings = self._serial_settings_snapshot()
+            except (ValueError, KeyError) as exc:
+                self.set_status(f"Serial settings invalid: {exc}", error=True)
+                return
+            if settings.get("port") != self._current_serial_settings.get("port"):
+                self._reopen_connection_for_settings("serial port changed")
+        elif self.connected_transport == "can":
+            self._apply_connected_can_settings()
+
+    def _apply_connected_serial_settings(self, _event=None) -> None:
+        if self._applying_transport_settings or self.demo_mode or not self._is_connected() or self.connected_transport != "serial":
+            return
+        try:
+            settings = self._serial_settings_snapshot()
+        except (ValueError, KeyError) as exc:
+            self.set_status(f"Serial settings invalid: {exc}", error=True)
+            return
+        if settings.get("port") != self._current_serial_settings.get("port"):
+            self._reopen_connection_for_settings("serial port changed")
+            return
+        if settings == self._current_serial_settings:
+            return
+        try:
+            self.comm.configure_serial(
+                baudrate=int(settings["baudrate"]),
+                data_bits=str(settings["data_bits"]),
+                parity=str(settings["parity"]),
+                stop_bits=str(settings["stop_bits"]),
+            )
+        except (RuntimeError, KeyError, ValueError, serial.SerialException) as exc:
+            self.logger.log("ERROR", f"configure serial failed: {exc}")
+            self.set_status(f"Serial configure failed: {exc}", error=True)
+            return
+        self._current_serial_settings = dict(settings)
+        self.set_status(
+            self.i18n.format_text(
+                "Serial settings applied: {port}, {baud}",
+                port=str(settings["port"]),
+                baud=int(settings["baudrate"]),
+            )
+        )
+        self.logger.log(
+            "SERIAL",
+            f"configure port={settings['port']} baud={settings['baudrate']} "
+            f"data_bits={settings['data_bits']} parity={settings['parity']} stop_bits={settings['stop_bits']}",
+        )
+
+    def _apply_connected_can_settings(self, _event=None) -> None:
+        if self._applying_transport_settings or self.demo_mode or not self._is_connected() or self.connected_transport != "can":
+            return
+        try:
+            settings = self._can_settings_snapshot()
+        except ValueError as exc:
+            self.set_status(f"CAN settings invalid: {exc}", error=True)
+            return
+        if settings == self._current_can_settings:
+            return
+        self._reopen_connection_for_settings("CAN settings changed")
+
+    def _reopen_connection_for_settings(self, reason: str) -> None:
+        if self._applying_transport_settings:
+            return
+        self._applying_transport_settings = True
+        try:
+            self.logger.log("COMM", f"reopen because {reason}")
+            self.close_connection()
+            self.open_connection()
+        finally:
+            self._applying_transport_settings = False
 
     def _update_transport_ui(self) -> None:
         is_can = self.transport_var.get() == "CAN"
@@ -986,6 +1140,12 @@ class SerialDebugAssistant(tk.Tk):
             return
 
         self.connected_transport = self.comm.connected_transport
+        if selected_transport == "can":
+            self._current_can_settings = self._can_settings_snapshot()
+            self._current_serial_settings = {}
+        else:
+            self._current_serial_settings = self._serial_settings_snapshot()
+            self._current_can_settings = {}
         self.wave_running = False
         self.wave_tab.set_running(False)
         self._reset_perf_protocol_state()
@@ -1008,8 +1168,7 @@ class SerialDebugAssistant(tk.Tk):
             )
         else:
             self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
-            self.logger.log("WAVE", "send broadcast stop on connect dst=0x00 d_dst=0x00")
-        self.send_protocol_frame(dst=0x00, d_dst=0x00, cmd_set=0x01, cmd_word=0x0C, payload=bytes([0]))
+        self._send_perf_trace_stop_on_transport_event("connect")
         if self.notebook.select() == str(self.perf_tab):
             self.prepare_perf_dictionary()
         if self.auto_send_var.get():
@@ -1022,9 +1181,14 @@ class SerialDebugAssistant(tk.Tk):
         self.cancel_auto_send()
         self.stop_upgrade(self.i18n.translate_text("串口已断开，升级已停止。"), user_initiated=False)
         transport = self.connected_transport
+        self._send_perf_trace_stop_on_transport_event("disconnect")
         self.comm.close()
         self.connected_transport = None
+        self._current_serial_settings = {}
+        self._current_can_settings = {}
         self._reset_perf_protocol_state()
+        self.trace_running = False
+        self.trace_tab.set_running(False)
         self.pending_rx_hex_bytes.clear()
         self._set_protocol_features_available(False)
         self.set_status(self.i18n.translate_text("Disconnected"))
@@ -1036,6 +1200,53 @@ class SerialDebugAssistant(tk.Tk):
 
     def _set_open_button_text(self, text: str) -> None:
         self.open_button.configure(text=self.i18n.translate_text(text))
+
+    def _send_perf_trace_stop_on_transport_event(self, reason: str) -> None:
+        if not self._protocol_transport_available():
+            return
+        self.wave_running = False
+        self.wave_tab.set_running(False)
+        self._stop_perf_periodic_query(update_status=False)
+        self.trace_running = False
+        self.trace_tab.set_running(False)
+
+        self.logger.log("WAVE", f"send broadcast stop on {reason} dst=0x00 d_dst=0x00")
+        self._send_broadcast_stop_frame(
+            cmd_set=0x01,
+            cmd_word=0x0C,
+            payload=bytes([0]),
+            log_tag="WAVE",
+        )
+        self.logger.log("PERF", f"send broadcast stop on {reason} dst=0x00 d_dst=0x00")
+        self._send_broadcast_stop_frame(
+            cmd_set=CMD_SET_PERF,
+            cmd_word=CMD_WORD_PERF_CONTROL,
+            payload=build_perf_control_payload(False),
+            log_tag="PERF",
+        )
+        self.logger.log("TRACE", f"send broadcast stop on {reason} dst=0x00 d_dst=0x00")
+        self._send_broadcast_stop_frame(
+            cmd_set=CMD_SET_TRACE,
+            cmd_word=CMD_WORD_TRACE_CONTROL,
+            payload=build_trace_control_payload(False),
+            log_tag="TRACE",
+        )
+
+    def _send_broadcast_stop_frame(self, *, cmd_set: int, cmd_word: int, payload: bytes, log_tag: str) -> None:
+        try:
+            sent, frame = self.comm.send_protocol(
+                dst=0x00,
+                d_dst=0x00,
+                cmd_set=cmd_set,
+                cmd_word=cmd_word,
+                payload=payload,
+            )
+        except (RuntimeError, serial.SerialException) as exc:
+            self.logger.log("ERROR", f"{log_tag} broadcast stop failed cmd_word=0x{cmd_word:02X}: {exc}")
+            return
+        self.total_tx_bytes += sent
+        self.tx_count_var.set(self.i18n.format_text("Send: {count} bytes", count=self.total_tx_bytes))
+        self._echo_sent_payload(frame, hex_mode=self.monitor_tab.send_hex_enabled())
 
     def _connect_demo_mode(self, *, initial: bool) -> None:
         self.comm.enable_demo()
@@ -1579,6 +1790,8 @@ class SerialDebugAssistant(tk.Tk):
             return
         if self._handle_perf_protocol_frame(frame):
             return
+        if self._handle_trace_protocol_frame(frame):
+            return
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
             self.parameters.clear()
@@ -1802,7 +2015,7 @@ class SerialDebugAssistant(tk.Tk):
         if frame.cmd_set != CMD_SET_SCOPE:
             return False
 
-        if frame.cmd_word == CMD_WORD_SCOPE_LIST_QUERY and frame.is_ack == 0:
+        if frame.cmd_word == CMD_WORD_SCOPE_LIST_QUERY and frame.is_ack in {0, 1}:
             if self.scope_list_request_job is not None:
                 self.after_cancel(self.scope_list_request_job)
                 self.scope_list_request_job = None
@@ -1927,6 +2140,7 @@ class SerialDebugAssistant(tk.Tk):
             CMD_WORD_PERF_INFO_QUERY,
             CMD_WORD_PERF_SUMMARY_QUERY,
             CMD_WORD_PERF_RESET_PEAK,
+            CMD_WORD_PERF_CONTROL,
             CMD_WORD_PERF_DICT_QUERY,
             CMD_WORD_PERF_DICT_ITEM_REPORT,
             CMD_WORD_PERF_DICT_END,
@@ -2086,9 +2300,52 @@ class SerialDebugAssistant(tk.Tk):
                 self.logger.log("PERF", f"reset peak ack success={success}")
                 return True
 
+            if frame.cmd_word == CMD_WORD_PERF_CONTROL and frame.is_ack == 1:
+                success = parse_perf_success_payload(frame.payload)
+                self.logger.log("PERF", f"control ack success={success}")
+                if success:
+                    self.perf_tab.set_periodic_running(False)
+                return True
+
         except ValueError as exc:
             self.perf_tab.set_status(f"Perf payload parse failed: {exc}", error=True)
             self.logger.log("ERROR", f"perf payload parse failed cmd_word=0x{frame.cmd_word:02X}: {exc}")
+            return True
+
+        return False
+
+    def _handle_trace_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_set != CMD_SET_TRACE:
+            return False
+        if frame.cmd_word not in {CMD_WORD_TRACE_CONTROL, CMD_WORD_TRACE_RECORD_REPORT}:
+            return False
+
+        try:
+            if frame.cmd_word == CMD_WORD_TRACE_CONTROL and frame.is_ack == 1:
+                ack = parse_trace_control_ack_payload(frame.payload)
+                self.trace_running = ack.running
+                self.trace_tab.set_time_unit_us(ack.time_unit_us)
+                self.trace_tab.set_running(ack.running)
+                if ack.success:
+                    self.trace_tab.set_status("Trace 上报中。" if ack.running else "Trace 已停止。")
+                else:
+                    self.trace_tab.set_status("Trace 控制失败。", error=True)
+                self.logger.log(
+                    "TRACE",
+                    f"control ack success={ack.success} running={ack.running} time_unit_us={ack.time_unit_us}",
+                )
+                return True
+
+            if frame.cmd_word == CMD_WORD_TRACE_RECORD_REPORT and frame.is_ack == 0:
+                record = parse_trace_record_report_payload(frame.payload)
+                if self.trace_running:
+                    self.trace_tab.add_record(record.time_tick, record.line)
+                self.logger.log("TRACE", f"record time={record.time_tick} line={record.line}")
+                return True
+
+        except ValueError as exc:
+            self.trace_tab.set_status(f"Trace payload parse failed: {exc}", error=True)
+            self.logger.log("ERROR", f"trace payload parse failed cmd_word=0x{frame.cmd_word:02X}: {exc}")
             return True
 
         return False
@@ -3441,8 +3698,11 @@ class SerialDebugAssistant(tk.Tk):
         self.perf_tab.select_filter(type_filter)
         self.request_perf_summary()
         if not self.perf_dict_entries:
-            self.request_perf_info()
             self.perf_pending_sample_filter = type_filter
+            if self.perf_dict_sequence is not None:
+                self.perf_tab.set_status("正在等待任务字典同步完成。")
+                return
+            self.request_perf_info()
             self._request_perf_dictionary(PERF_FILTER_ALL)
             return
         self._request_perf_sample_records(type_filter)
@@ -3460,6 +3720,9 @@ class SerialDebugAssistant(tk.Tk):
     def _request_perf_sample_records(self, type_filter: int) -> None:
         if not self.perf_dict_entries:
             self.perf_pending_sample_filter = type_filter
+            if self.perf_dict_sequence is not None:
+                self.perf_tab.set_status("正在等待任务字典同步完成。")
+                return
             self._request_perf_dictionary(PERF_FILTER_ALL)
             return
         payload = build_perf_sample_query_payload(type_filter, self.perf_dict_version)
@@ -3513,13 +3776,41 @@ class SerialDebugAssistant(tk.Tk):
         self.request_perf_records(self.perf_tab.selected_filter())
         self._schedule_perf_periodic_query()
 
-    def _stop_perf_periodic_query(self) -> None:
+    def _stop_perf_periodic_query(self, *, update_status: bool = True) -> None:
         self.perf_periodic_running = False
         if self.perf_periodic_job is not None:
             self.after_cancel(self.perf_periodic_job)
             self.perf_periodic_job = None
         self.perf_tab.set_periodic_running(False)
-        self.perf_tab.set_status("周期刷新已停止。")
+        if update_status:
+            self.perf_tab.set_status("周期刷新已停止。")
+
+    def toggle_trace_report(self) -> None:
+        if not self._protocol_transport_available():
+            self.set_status("Open the serial port first.", error=True)
+            self.trace_tab.set_status("请先连接串口。", error=True)
+            return
+        try:
+            dst, d_dst = self.trace_tab.get_target_address()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.trace_tab.set_status(str(exc), error=True)
+            return
+        start = not self.trace_running
+        if start:
+            self.trace_tab.clear_records()
+            self.trace_tab.set_status("正在启动 Trace 上报。")
+        else:
+            self.trace_tab.set_status("正在停止 Trace 上报。")
+        payload = build_trace_control_payload(start)
+        self.logger.log("TRACE", f"send control enable={int(start)} dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_TRACE,
+            cmd_word=CMD_WORD_TRACE_CONTROL,
+            payload=payload,
+        )
 
     def _send_perf_command(self, cmd_word: int, payload: bytes, log_tag: str, status_text: str) -> bool:
         if not self._protocol_transport_available():
@@ -4244,6 +4535,7 @@ class SerialDebugAssistant(tk.Tk):
         saved_path = self.wave_tab.auto_save_waveform_file(reason="application close")
         if saved_path is not None:
             self.logger.log("WAVE", f"auto save on app close -> {saved_path}")
+        self._send_perf_trace_stop_on_transport_event("application close")
         self.comm.close()
         if self.save_handle:
             self.save_handle.flush()

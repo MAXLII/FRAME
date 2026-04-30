@@ -14,6 +14,7 @@ CMD_WORD_PERF_DICT_END = 0x28
 CMD_WORD_PERF_SAMPLE_QUERY = 0x29
 CMD_WORD_PERF_SAMPLE_BATCH_REPORT = 0x2A
 CMD_WORD_PERF_SAMPLE_END = 0x2B
+CMD_WORD_PERF_CONTROL = 0x2E
 
 PERF_FILTER_ALL = 0
 PERF_FILTER_TASK = 1
@@ -115,6 +116,10 @@ def build_perf_dict_query_payload(type_filter: int, dict_version: int) -> bytes:
 
 def build_perf_sample_query_payload(type_filter: int, dict_version: int, flags: int = 0) -> bytes:
     return struct.pack("<BBHI", type_filter & 0xFF, flags & 0xFF, 0, dict_version & 0xFFFFFFFF)
+
+
+def build_perf_control_payload(enable: bool) -> bytes:
+    return bytes([1 if enable else 0])
 
 
 def parse_perf_info_payload(payload: bytes) -> PerfInfo:

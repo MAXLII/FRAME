@@ -20,6 +20,8 @@ MIN_ZOOM_SPAN_VALUE = 1e-6
 MAX_POINTS_PER_PIXEL = 3
 SHIFT_MASK = 0x0001
 CTRL_MASK = 0x0004
+ALT_MASK = 0x0008
+ALT_GUARD_BINDTAG = "WaveformAltGuard"
 WAVE_FILE_EXTENSION = ".sda_wave"
 WAVE_FILE_FORMAT = "serial_debug_assistant.waveform"
 WAVE_FILE_VERSION = 1
@@ -102,6 +104,7 @@ class WaveformTab(ttk.Frame):
         self._paused_view = False
         self._alt_pressed = False
         self._last_hover_index: int | None = None
+        self._last_hover_canvas_x: float | None = None
         self._drag_last_x: float | None = None
         self._drag_mode: str | None = None
         self._drag_anchor: tuple[float, float] | None = None
@@ -121,6 +124,13 @@ class WaveformTab(ttk.Frame):
         self._live_save_batch_count = 0
 
         self._build()
+        self._install_alt_guard_bindtags(self)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyPress-Alt_L>", self._on_alt_press, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyPress-Alt_R>", self._on_alt_press, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyRelease-Alt_L>", self._on_alt_release, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyRelease-Alt_R>", self._on_alt_release, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<Alt-KeyPress>", self._on_alt_modified_key, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<Alt-KeyRelease>", self._on_alt_modified_key, add=True)
         self.window_var.trace_add("write", self._on_window_changed)
         self.selected_search_var.trace_add("write", self._on_selected_search_changed)
         self.bind_all("<KeyPress-f>", self._on_show_all_shortcut, add=True)
@@ -148,6 +158,16 @@ class WaveformTab(ttk.Frame):
         self.bind_all("<KeyPress-Alt_R>", self._on_alt_press, add=True)
         self.bind_all("<KeyRelease-Alt_L>", self._on_alt_release, add=True)
         self.bind_all("<KeyRelease-Alt_R>", self._on_alt_release, add=True)
+        self.bind_all("<Alt-KeyPress>", self._on_alt_modified_key, add=True)
+        self.bind_all("<Alt-KeyRelease>", self._on_alt_modified_key, add=True)
+        self.bind_all("<KeyRelease>", self._on_key_release_guard, add=True)
+
+    def _install_alt_guard_bindtags(self, widget: tk.Misc) -> None:
+        tags = tuple(widget.bindtags())
+        if ALT_GUARD_BINDTAG not in tags:
+            widget.bindtags((ALT_GUARD_BINDTAG, *tags))
+        for child in widget.winfo_children():
+            self._install_alt_guard_bindtags(child)
 
     def _build(self) -> None:
         self.rowconfigure(1, weight=1)
@@ -502,6 +522,7 @@ class WaveformTab(ttk.Frame):
         self._pending_reference_line = None
         self._preview_reference_value = None
         self._last_hover_index = None
+        self._last_hover_canvas_x = None
         self._manual_range = None
         self._manual_y_range = None
         self._frozen_x_range = None
@@ -912,6 +933,7 @@ class WaveformTab(ttk.Frame):
         self._pending_reference_line = None
         self._preview_reference_value = None
         self._last_hover_index = None
+        self._last_hover_canvas_x = None
         self._manual_range = None
         self._manual_y_range = None
         self._frozen_x_range = None
@@ -1450,71 +1472,113 @@ class WaveformTab(ttk.Frame):
         if self._manual_range is None and not self._paused_view:
             self._queue_redraw()
 
+    def _shortcut_uses_alt(self, event) -> bool:
+        return bool(getattr(event, "state", 0) & ALT_MASK)
+
     def _on_show_all_shortcut(self, _event) -> None:
+        if self._shortcut_uses_alt(_event):
+            return
         self.show_all()
 
     def _on_apply_period_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.on_apply_period()
         return "break"
 
     def _on_toggle_run_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.on_toggle_run()
         return "break"
 
     def _on_pause_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.toggle_pause_view()
         return "break"
 
     def _on_back_to_live_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.back_to_live()
         return "break"
 
     def _on_clear_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.on_clear()
         return "break"
 
     def _on_export_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.export_waveform_file()
         return "break"
 
     def _on_import_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.import_waveform_file()
         return "break"
 
     def _on_marker_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.add_marker()
         return "break"
 
     def _on_horizontal_reference_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.start_horizontal_reference_line()
         return "break"
 
     def _on_vertical_reference_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.start_vertical_reference_line()
         return "break"
 
     def _on_cross_reference_shortcut(self, _event) -> str:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         self.start_cross_reference_line()
         return "break"
 
     def _on_cancel_reference_shortcut(self, _event) -> str | None:
+        if self._shortcut_uses_alt(_event):
+            return "break"
         if self.cancel_pending_reference_line():
             return "break"
         return None
 
-    def _on_alt_press(self, _event) -> None:
+    def _on_alt_press(self, _event) -> str:
         if self._alt_pressed:
-            return
+            return "break"
         self._alt_pressed = True
-        if self._last_hover_index is not None:
-            self._queue_redraw()
+        self._refresh_hover_from_pointer(force=True)
+        return "break"
 
-    def _on_alt_release(self, _event) -> None:
+    def _on_alt_release(self, _event) -> str:
         if not self._alt_pressed:
-            return
+            return "break"
         self._alt_pressed = False
         if self._last_hover_index is not None:
             self._queue_redraw()
+        return "break"
+
+    def _on_alt_modified_key(self, event) -> str | None:
+        if self._shortcut_uses_alt(event):
+            return "break"
+        return None
+
+    def _on_key_release_guard(self, event) -> str | None:
+        if getattr(event, "keysym", "") in {"Alt_L", "Alt_R"}:
+            return self._on_alt_release(event)
+        if self._shortcut_uses_alt(event):
+            return "break"
+        return None
 
     def _on_mousewheel(self, event) -> None:
         if not self._plot_bounds or not self._x_range or not self._y_range:
@@ -1670,16 +1734,7 @@ class WaveformTab(ttk.Frame):
             self._zoom_rect_end = (event.x, event.y)
             self._queue_redraw()
             return
-        if not self._plot_bounds or not self._x_range:
-            return
-        plot_left, _, plot_right, _ = self._plot_bounds
-        if event.x < plot_left or event.x > plot_right:
-            return
-        index = self._find_hover_index(event.x)
-        if index is None or index == self._last_hover_index:
-            return
-        self._last_hover_index = index
-        self.redraw()
+        self._update_hover_from_canvas_position(event.x, event.y, force=self._alt_pressed)
 
     def _on_canvas_leave(self, _event) -> None:
         if self._pending_reference_line is not None:
@@ -1689,8 +1744,40 @@ class WaveformTab(ttk.Frame):
         if self._zoom_rect_start is not None:
             return
         self._last_hover_index = None
+        self._last_hover_canvas_x = None
         self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
         self.redraw()
+
+    def _refresh_hover_from_pointer(self, *, force: bool = False) -> None:
+        if not self._plot_bounds:
+            if self._last_hover_index is not None:
+                self._queue_redraw()
+            return
+        canvas_x = self.canvas.winfo_pointerx() - self.canvas.winfo_rootx()
+        canvas_y = self.canvas.winfo_pointery() - self.canvas.winfo_rooty()
+        self._update_hover_from_canvas_position(canvas_x, canvas_y, force=force)
+
+    def _update_hover_from_canvas_position(self, canvas_x: float, canvas_y: float, *, force: bool = False) -> None:
+        if not self._plot_bounds or not self._x_range:
+            return
+        plot_left, plot_top, plot_right, plot_bottom = self._plot_bounds
+        inside_plot = plot_left <= canvas_x <= plot_right and plot_top <= canvas_y <= plot_bottom
+        if not inside_plot:
+            if self._last_hover_index is not None or self._last_hover_canvas_x is not None:
+                self._last_hover_index = None
+                self._last_hover_canvas_x = None
+                self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
+                self.redraw()
+            return
+        hover_x = min(max(float(canvas_x), plot_left), plot_right)
+        index = self._find_hover_index(hover_x)
+        if index is None:
+            return
+        changed = index != self._last_hover_index or hover_x != self._last_hover_canvas_x
+        self._last_hover_index = index
+        self._last_hover_canvas_x = hover_x
+        if changed or force:
+            self.redraw()
 
     def _find_hover_index(self, canvas_x: float) -> int | None:
         reference_name, reference = self._reference_series_with_name()
@@ -1806,7 +1893,10 @@ class WaveformTab(ttk.Frame):
         y_min, y_max = self._y_range
         timestamp = reference[index][0]
         x = plot_left + (timestamp - x_min) / max(x_max - x_min, 1e-9) * (plot_right - plot_left)
-        self.canvas.create_line(x, plot_top, x, plot_bottom, fill="#64748b", dash=(4, 4))
+        cursor_x = x
+        if self._alt_pressed and self._last_hover_canvas_x is not None:
+            cursor_x = min(max(self._last_hover_canvas_x, plot_left), plot_right)
+        self.canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill="#64748b", dash=(4, 4))
 
         base_text = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S.%f")[:-3]
         lines = [base_text]
@@ -1825,7 +1915,7 @@ class WaveformTab(ttk.Frame):
                 continue
             color = SERIES_COLORS[idx % len(SERIES_COLORS)]
             y = plot_bottom - (value - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
-            self.canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=color, outline="")
+            self.canvas.create_oval(cursor_x - 3, y - 3, cursor_x + 3, y + 3, fill=color, outline="")
             point_labels.append((name, self._format_numeric(value), color, y))
             if self._alt_pressed:
                 lines.append(f"{name} = {self._format_numeric(value)}")

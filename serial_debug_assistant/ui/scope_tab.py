@@ -25,6 +25,8 @@ MIN_ZOOM_SPAN_MS = 1e-3
 MIN_ZOOM_SPAN_VALUE = 1e-6
 SHIFT_MASK = 0x0001
 CTRL_MASK = 0x0004
+ALT_MASK = 0x0008
+ALT_GUARD_BINDTAG = "ScopeAltGuard"
 
 
 class ScopeTab(ttk.Frame):
@@ -79,14 +81,15 @@ class ScopeTab(ttk.Frame):
         self._scope_choices: list[ScopeListItem] = []
         self._scope_name_to_id: dict[str, int] = {}
         self._scope_var_names: list[str] = []
+        self._displayed_var_names: list[str] = []
         self._captures: list[ScopeCapture] = []
         self._selected_capture_index: int | None = None
         self._visible_var_states: list[tk.BooleanVar] = []
         self._selected_var_states: list[tk.BooleanVar] = []
         self._var_scale_labels: list[tk.StringVar] = []
         self._var_scale_by_name: dict[str, float] = {}
-        self._capture_visible_states: list[tk.BooleanVar] = []
         self._capture_row_frames: list[tk.Frame] = []
+        self._capture_selection_var = tk.IntVar(value=-1)
         self._last_hover_text = self.i18n.translate_text("Move the mouse over the scope plot to inspect values.")
         self._plot_status_var = tk.StringVar(value=self._last_hover_text)
         self._plot_hover_entries: list[dict[str, object]] = []
@@ -97,6 +100,7 @@ class ScopeTab(ttk.Frame):
         self._manual_y_range: tuple[float, float] | None = None
         self._alt_pressed = False
         self._hover_entry: dict[str, object] | None = None
+        self._hover_canvas_x: float | None = None
         self._drag_mode: str | None = None
         self._drag_anchor: tuple[float, float] | None = None
         self._drag_start_x_range: tuple[float, float] | None = None
@@ -105,10 +109,27 @@ class ScopeTab(ttk.Frame):
         self._zoom_rect_end: tuple[float, float] | None = None
 
         self._build()
+        self._install_alt_guard_bindtags(self)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyPress-Alt_L>", self._on_alt_press, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyPress-Alt_R>", self._on_alt_press, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyRelease-Alt_L>", self._on_alt_release, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<KeyRelease-Alt_R>", self._on_alt_release, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<Alt-KeyPress>", self._on_alt_modified_key, add=True)
+        self.bind_class(ALT_GUARD_BINDTAG, "<Alt-KeyRelease>", self._on_alt_modified_key, add=True)
         self.bind_all("<KeyPress-Alt_L>", self._on_alt_press, add=True)
         self.bind_all("<KeyPress-Alt_R>", self._on_alt_press, add=True)
         self.bind_all("<KeyRelease-Alt_L>", self._on_alt_release, add=True)
         self.bind_all("<KeyRelease-Alt_R>", self._on_alt_release, add=True)
+        self.bind_all("<Alt-KeyPress>", self._on_alt_modified_key, add=True)
+        self.bind_all("<Alt-KeyRelease>", self._on_alt_modified_key, add=True)
+        self.bind_all("<KeyRelease>", self._on_key_release_guard, add=True)
+
+    def _install_alt_guard_bindtags(self, widget: tk.Misc) -> None:
+        tags = tuple(widget.bindtags())
+        if ALT_GUARD_BINDTAG not in tags:
+            widget.bindtags((ALT_GUARD_BINDTAG, *tags))
+        for child in widget.winfo_children():
+            self._install_alt_guard_bindtags(child)
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -243,14 +264,8 @@ class ScopeTab(ttk.Frame):
 
         capture_header = ttk.Frame(captures_frame, style="Panel.TFrame")
         capture_header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        visible_label = ttk.Label(capture_header, text=self.i18n.translate_text("Visible"), width=6)
-        visible_label.grid(row=0, column=0, padx=(0, 8), sticky="w")
-        self._remember_text(visible_label, "Visible")
-        selected_label = ttk.Label(capture_header, text=self.i18n.translate_text("Selected"), width=8)
-        selected_label.grid(row=0, column=1, padx=(0, 8), sticky="w")
-        self._remember_text(selected_label, "Selected")
         capture_list_label = ttk.Label(capture_header, text=self.i18n.translate_text("Local Captures"))
-        capture_list_label.grid(row=0, column=2, sticky="w")
+        capture_list_label.grid(row=0, column=0, sticky="w")
         self._remember_text(capture_list_label, "Local Captures")
 
         self.capture_canvas = tk.Canvas(captures_frame, bg="#ffffff", highlightthickness=1, highlightbackground="#d8e3ef", width=280)
@@ -266,17 +281,11 @@ class ScopeTab(ttk.Frame):
 
         capture_toolbar = ttk.Frame(captures_frame, style="Panel.TFrame")
         capture_toolbar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        self.show_all_captures_button = ttk.Button(capture_toolbar, text=self.i18n.translate_text("Show All"), command=self.show_all_captures, width=12)
-        self.show_all_captures_button.grid(row=0, column=0, sticky="w")
-        self._remember_text(self.show_all_captures_button, "Show All")
-        self.hide_all_captures_button = ttk.Button(capture_toolbar, text=self.i18n.translate_text("Hide All"), command=self.hide_all_captures, width=12)
-        self.hide_all_captures_button.grid(row=0, column=1, padx=(8, 0), sticky="w")
-        self._remember_text(self.hide_all_captures_button, "Hide All")
         self.export_csv_button = ttk.Button(capture_toolbar, text=self.i18n.translate_text("Export CSV"), command=self.export_selected_capture_csv, width=12)
-        self.export_csv_button.grid(row=0, column=2, padx=(12, 0), sticky="w")
+        self.export_csv_button.grid(row=0, column=0, sticky="w")
         self._remember_text(self.export_csv_button, "Export CSV")
         self.remove_capture_button = ttk.Button(capture_toolbar, text=self.i18n.translate_text("Remove Selected"), command=self.remove_selected_capture, width=14)
-        self.remove_capture_button.grid(row=0, column=3, padx=(8, 0), sticky="w")
+        self.remove_capture_button.grid(row=0, column=1, padx=(8, 0), sticky="w")
         self._remember_text(self.remove_capture_button, "Remove Selected")
 
         capture_frame = ttk.LabelFrame(content_frame, text=self.i18n.translate_text("Capture Preview"), style="Section.TLabelframe", padding=12)
@@ -357,10 +366,15 @@ class ScopeTab(ttk.Frame):
         self.capture_tag_var.set(str(info.capture_tag))
 
     def set_scope_var_names(self, var_names: list[str]) -> None:
+        self._scope_var_names = list(var_names)
+        if self._get_selected_capture() is None:
+            self._display_variable_names(var_names)
+
+    def _display_variable_names(self, var_names: list[str]) -> None:
         for child in self.vars_inner.winfo_children():
             child.destroy()
 
-        self._scope_var_names = list(var_names)
+        self._displayed_var_names = list(var_names)
         self._visible_var_states = []
         self._selected_var_states = []
         self._var_scale_labels = []
@@ -426,8 +440,8 @@ class ScopeTab(ttk.Frame):
 
     def finish_pull(self, capture: ScopeCapture) -> None:
         self._captures.append(capture)
-        self._capture_visible_states.append(tk.BooleanVar(value=True))
         self._selected_capture_index = len(self._captures) - 1
+        self._capture_selection_var.set(self._selected_capture_index)
         self.capture_summary_var.set(self.i18n.format_text("Local captures: {count}", count=len(self._captures)))
         self.pull_status_var.set(
             self.i18n.format_text(
@@ -440,6 +454,7 @@ class ScopeTab(ttk.Frame):
         self._manual_x_range = None
         self._manual_y_range = None
         self._refresh_capture_list(select_last=True)
+        self._display_selected_capture_variables()
         self._set_capture_buttons_enabled(True)
         self.redraw_plot()
 
@@ -448,12 +463,14 @@ class ScopeTab(ttk.Frame):
 
     def clear_captures(self) -> None:
         self._captures.clear()
-        self._capture_visible_states.clear()
         self._selected_capture_index = None
+        self._capture_selection_var.set(-1)
         self._manual_x_range = None
         self._manual_y_range = None
         self._hover_entry = None
+        self._hover_canvas_x = None
         self._rebuild_capture_rows()
+        self._display_variable_names(self._scope_var_names)
         self.capture_summary_var.set(self.i18n.format_text("Local captures: {count}", count=0))
         self.pull_status_var.set(self.i18n.translate_text("No scope capture has been pulled yet."))
         self._plot_status_var.set(self.i18n.translate_text("Move the mouse over the scope plot to inspect values."))
@@ -493,9 +510,9 @@ class ScopeTab(ttk.Frame):
         for index, selected in enumerate(self._selected_var_states):
             if not selected.get():
                 continue
-            if index >= len(self._scope_var_names):
+            if index >= len(self._displayed_var_names):
                 continue
-            name = self._scope_var_names[index]
+            name = self._displayed_var_names[index]
             self._var_scale_by_name[name] = scale
             if index < len(self._var_scale_labels):
                 self._var_scale_labels[index].set(self._format_scale_label(scale))
@@ -504,16 +521,6 @@ class ScopeTab(ttk.Frame):
             self.set_pull_status("请先选中录波变量。")
             return
         self.set_pull_status(f"已将 {len(applied_names)} 个变量的倍率设置为 {scale:g}")
-        self.redraw_plot()
-
-    def show_all_captures(self) -> None:
-        for variable in self._capture_visible_states:
-            variable.set(True)
-        self.redraw_plot()
-
-    def hide_all_captures(self) -> None:
-        for variable in self._capture_visible_states:
-            variable.set(False)
         self.redraw_plot()
 
     def export_selected_capture_csv(self) -> None:
@@ -550,18 +557,20 @@ class ScopeTab(ttk.Frame):
             self.set_pull_status("No local capture selected.")
             return
         del self._captures[selected_index]
-        if selected_index < len(self._capture_visible_states):
-            del self._capture_visible_states[selected_index]
         if not self._captures:
             self._selected_capture_index = None
+            self._capture_selection_var.set(-1)
             self._manual_x_range = None
             self._manual_y_range = None
         elif self._selected_capture_index is None:
             self._selected_capture_index = 0
         elif self._selected_capture_index >= len(self._captures):
             self._selected_capture_index = len(self._captures) - 1
+        if self._selected_capture_index is not None:
+            self._capture_selection_var.set(self._selected_capture_index)
         self.capture_summary_var.set(self.i18n.format_text("Local captures: {count}", count=len(self._captures)))
-        self._refresh_capture_list(select_last=bool(self._captures))
+        self._refresh_capture_list()
+        self._display_selected_capture_variables()
         self._set_capture_buttons_enabled(bool(self._captures))
         self.set_pull_status("Selected capture removed.")
         self.redraw_plot()
@@ -576,6 +585,7 @@ class ScopeTab(ttk.Frame):
             self._selected_capture_index = len(self._captures) - 1 if self._captures else None
         elif self._selected_capture_index is None and self._captures:
             self._selected_capture_index = 0
+        self._capture_selection_var.set(self._selected_capture_index if self._selected_capture_index is not None else -1)
 
         self._rebuild_capture_rows()
 
@@ -585,9 +595,6 @@ class ScopeTab(ttk.Frame):
         self._capture_row_frames = []
 
         for index, capture in enumerate(self._captures):
-            if index >= len(self._capture_visible_states):
-                self._capture_visible_states.append(tk.BooleanVar(value=True))
-            visible_var = self._capture_visible_states[index]
             row = tk.Frame(
                 self.capture_inner,
                 bg="#eaf2fb" if index == self._selected_capture_index else "#ffffff",
@@ -596,32 +603,28 @@ class ScopeTab(ttk.Frame):
                 bd=0,
             )
             row.grid(row=index, column=0, sticky="ew", pady=2)
-            row.columnconfigure(2, weight=1)
+            row.columnconfigure(1, weight=1)
             self._capture_row_frames.append(row)
 
-            check = tk.Checkbutton(
+            select_radio = tk.Radiobutton(
                 row,
-                variable=visible_var,
-                command=self.redraw_plot,
+                variable=self._capture_selection_var,
+                value=index,
+                command=lambda idx=index: self._select_capture(idx),
                 bg=row.cget("bg"),
                 activebackground=row.cget("bg"),
                 highlightthickness=0,
                 bd=0,
                 relief="flat",
             )
-            check.grid(row=0, column=0, padx=(6, 8), pady=4)
-            select_button = ttk.Button(
-                row,
-                text=self.i18n.translate_text("Select"),
-                command=lambda idx=index: self._select_capture(idx),
-                width=8,
-            )
-            select_button.grid(row=0, column=1, padx=(0, 8), pady=4, sticky="w")
+            select_radio.grid(row=0, column=0, padx=(6, 8), pady=4)
 
             label_text = self.i18n.format_text(
-                "Capture #{index} | tag {tag} | samples {count}",
+                "Capture #{index} | {name} | tag {tag} | vars {vars} | samples {count}",
                 index=capture.capture_index,
+                name=capture.scope_name,
                 tag=capture.capture_tag,
+                vars=len(capture.var_names),
                 count=capture.sample_count,
             )
             label = tk.Label(
@@ -631,12 +634,11 @@ class ScopeTab(ttk.Frame):
                 bg=row.cget("bg"),
                 fg="#112033",
             )
-            label.grid(row=0, column=2, sticky="ew", padx=(0, 6), pady=4)
+            label.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=4)
             for widget in (row, label):
                 widget.bind("<Button-1>", lambda _event, idx=index: self._select_capture(idx))
                 widget.bind("<MouseWheel>", self._on_capture_canvas_mousewheel)
-            check.bind("<MouseWheel>", self._on_capture_canvas_mousewheel)
-            select_button.bind("<MouseWheel>", self._on_capture_canvas_mousewheel)
+            select_radio.bind("<MouseWheel>", self._on_capture_canvas_mousewheel)
 
         empty = not self._captures
         if empty:
@@ -648,13 +650,17 @@ class ScopeTab(ttk.Frame):
         if index < 0 or index >= len(self._captures):
             return
         self._selected_capture_index = index
+        self._capture_selection_var.set(index)
+        self._manual_x_range = None
+        self._manual_y_range = None
+        self._hover_entry = None
+        self._hover_canvas_x = None
+        self._display_selected_capture_variables()
         self._rebuild_capture_rows()
         self.redraw_plot()
 
     def _set_capture_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        self.show_all_captures_button.configure(state=state)
-        self.hide_all_captures_button.configure(state=state)
         self.export_csv_button.configure(state=state)
         self.remove_capture_button.configure(state=state)
 
@@ -671,6 +677,13 @@ class ScopeTab(ttk.Frame):
             return None
         return self._captures[selected_index]
 
+    def _display_selected_capture_variables(self) -> None:
+        capture = self._get_selected_capture()
+        if capture is None:
+            self._display_variable_names(self._scope_var_names)
+            return
+        self._display_variable_names(capture.var_names)
+
     def _get_visible_var_indices(self) -> list[int]:
         return [index for index, variable in enumerate(self._visible_var_states) if variable.get()]
 
@@ -686,11 +699,8 @@ class ScopeTab(ttk.Frame):
         return f"x {scale:g}"
 
     def _get_visible_capture_indices(self) -> list[int]:
-        visible_indices: list[int] = []
-        for index, variable in enumerate(self._capture_visible_states):
-            if index < len(self._captures) and variable.get():
-                visible_indices.append(index)
-        return visible_indices
+        selected_index = self._get_selected_capture_index()
+        return [] if selected_index is None else [selected_index]
 
     def redraw_plot(self) -> None:
         canvas = self.plot_canvas
@@ -716,7 +726,7 @@ class ScopeTab(ttk.Frame):
             canvas.create_text(
                 width / 2,
                 height / 2,
-                text=self.i18n.translate_text("No captures are visible. Enable at least one local capture to draw the scope."),
+                text=self.i18n.translate_text("Select one local capture to preview."),
                 fill="#5b6b7f",
                 font=("Segoe UI", 11),
             )
@@ -873,17 +883,62 @@ class ScopeTab(ttk.Frame):
             self._zoom_rect_end = (event.x, event.y)
             self.redraw_plot()
             return
-        if not self._plot_hover_entries:
-            self._plot_status_var.set(self.i18n.translate_text("Move the mouse over the scope plot to inspect values."))
-            self._hover_entry = None
+        self._update_hover_from_plot_position(event.x, event.y, force=self._alt_pressed)
+
+    def _on_plot_leave(self, _event) -> None:
+        if self._zoom_rect_start is not None:
+            return
+        self._hover_entry = None
+        self._hover_canvas_x = None
+        self._plot_status_var.set(self.i18n.translate_text("Move the mouse over the scope plot to inspect values."))
+        self.redraw_plot()
+
+    def _refresh_hover_from_pointer(self, *, force: bool = False) -> None:
+        if not self._plot_bounds:
+            if self._hover_entry is not None:
+                self.redraw_plot()
+            return
+        canvas_x = self.plot_canvas.winfo_pointerx() - self.plot_canvas.winfo_rootx()
+        canvas_y = self.plot_canvas.winfo_pointery() - self.plot_canvas.winfo_rooty()
+        self._update_hover_from_plot_position(canvas_x, canvas_y, force=force)
+
+    def _update_hover_from_plot_position(self, canvas_x: float, canvas_y: float, *, force: bool = False) -> None:
+        if not self._plot_bounds or not self._plot_hover_entries:
+            if self._hover_entry is not None or self._hover_canvas_x is not None:
+                self._hover_entry = None
+                self._hover_canvas_x = None
+                self._plot_status_var.set(self.i18n.translate_text("Move the mouse over the scope plot to inspect values."))
+                self.redraw_plot()
+            return
+        plot_left, plot_top, plot_right, plot_bottom = self._plot_bounds
+        inside_plot = plot_left <= canvas_x <= plot_right and plot_top <= canvas_y <= plot_bottom
+        if not inside_plot:
+            if self._hover_entry is not None or self._hover_canvas_x is not None:
+                self._hover_entry = None
+                self._hover_canvas_x = None
+                self._plot_status_var.set(self.i18n.translate_text("Move the mouse over the scope plot to inspect values."))
+                self.redraw_plot()
             return
 
-        nearest = min(self._plot_hover_entries, key=lambda item: abs(float(item["x_canvas"]) - event.x))
+        hover_x = min(max(float(canvas_x), plot_left), plot_right)
+        nearest = min(self._plot_hover_entries, key=lambda item: abs(float(item["x_canvas"]) - hover_x))
+        changed = (
+            self._hover_entry is None
+            or int(self._hover_entry.get("capture_index", -1)) != int(nearest.get("capture_index", -1))
+            or int(self._hover_entry.get("sample_index", -1)) != int(nearest.get("sample_index", -1))
+            or hover_x != self._hover_canvas_x
+        )
         self._hover_entry = nearest
-        capture = nearest["capture"]
-        sample_index = int(nearest["sample_index"])
-        x_ms = float(nearest["relative_ms"])
-        values = list(nearest["sample_values"])
+        self._hover_canvas_x = hover_x
+        self._update_hover_status(nearest)
+        if changed or force:
+            self.redraw_plot()
+
+    def _update_hover_status(self, entry: dict[str, object]) -> None:
+        capture = entry["capture"]
+        sample_index = int(entry["sample_index"])
+        x_ms = float(entry["relative_ms"])
+        values = list(entry["sample_values"])
         visible_var_indices = self._get_visible_var_indices()
         value_parts: list[str] = []
         for var_index in visible_var_indices[:4]:
@@ -904,15 +959,6 @@ class ScopeTab(ttk.Frame):
                 detail=detail,
             )
         )
-        if self._alt_pressed:
-            self.redraw_plot()
-
-    def _on_plot_leave(self, _event) -> None:
-        if self._zoom_rect_start is not None:
-            return
-        self._hover_entry = None
-        self._plot_status_var.set(self.i18n.translate_text("Move the mouse over the scope plot to inspect values."))
-        self.redraw_plot()
 
     def _on_plot_mousewheel(self, event) -> None:
         if not self._plot_bounds or not self._x_range or not self._y_range:
@@ -1104,10 +1150,13 @@ class ScopeTab(ttk.Frame):
 
         plot_left, plot_top, plot_right, plot_bottom = self._plot_bounds
         x = float(entry["x_canvas"])
+        cursor_x = x
+        if self._alt_pressed and self._hover_canvas_x is not None:
+            cursor_x = min(max(self._hover_canvas_x, plot_left), plot_right)
         capture = entry["capture"]
         sample_index = int(entry["sample_index"])
         values = list(entry["sample_values"])
-        self.plot_canvas.create_line(x, plot_top, x, plot_bottom, fill="#64748b", dash=(4, 4))
+        self.plot_canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill="#64748b", dash=(4, 4))
 
         lines = [
             self.i18n.format_text(
@@ -1127,7 +1176,7 @@ class ScopeTab(ttk.Frame):
             label = capture.var_names[var_index] if var_index < len(capture.var_names) else f"var{var_index}"
             color = SERIES_COLORS[var_index % len(SERIES_COLORS)]
             y = self._value_to_canvas_y(value, plot_top, plot_bottom, *self._y_range)
-            self.plot_canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=color, outline="")
+            self.plot_canvas.create_oval(cursor_x - 3, y - 3, cursor_x + 3, y + 3, fill=color, outline="")
             if self._alt_pressed:
                 lines.append(f"{label} = {value:.6f}".rstrip("0").rstrip("."))
             point_labels.append((label, f"{value:.6f}".rstrip('0').rstrip('.'), color))
@@ -1171,19 +1220,35 @@ class ScopeTab(ttk.Frame):
     def _value_to_canvas_y(self, value: float, plot_top: float, plot_bottom: float, y_min: float, y_max: float) -> float:
         return plot_bottom - (value - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
 
-    def _on_alt_press(self, _event) -> None:
-        if self._alt_pressed:
-            return
-        self._alt_pressed = True
-        if self._hover_entry is not None:
-            self.redraw_plot()
+    def _shortcut_uses_alt(self, event) -> bool:
+        return bool(getattr(event, "state", 0) & ALT_MASK)
 
-    def _on_alt_release(self, _event) -> None:
+    def _on_alt_press(self, _event) -> str:
+        if self._alt_pressed:
+            return "break"
+        self._alt_pressed = True
+        self._refresh_hover_from_pointer(force=True)
+        return "break"
+
+    def _on_alt_release(self, _event) -> str:
         if not self._alt_pressed:
-            return
+            return "break"
         self._alt_pressed = False
         if self._hover_entry is not None:
             self.redraw_plot()
+        return "break"
+
+    def _on_alt_modified_key(self, event) -> str | None:
+        if self._shortcut_uses_alt(event):
+            return "break"
+        return None
+
+    def _on_key_release_guard(self, event) -> str | None:
+        if getattr(event, "keysym", "") in {"Alt_L", "Alt_R"}:
+            return self._on_alt_release(event)
+        if self._shortcut_uses_alt(event):
+            return "break"
+        return None
 
     def _on_vars_inner_configure(self, _event) -> None:
         self.vars_canvas.configure(scrollregion=self.vars_canvas.bbox("all"))

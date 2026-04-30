@@ -61,6 +61,21 @@ class SerialService:
 
         self.reader_stop.clear()
 
+    def configure(
+        self,
+        *,
+        baudrate: int,
+        data_bits: str,
+        parity: str,
+        stop_bits: str,
+    ) -> None:
+        if not self.serial_port or not self.serial_port.is_open:
+            raise serial.SerialException("Serial port is not open.")
+        self.serial_port.baudrate = baudrate
+        self.serial_port.bytesize = BYTE_SIZES[data_bits]
+        self.serial_port.parity = PARITY_OPTIONS[parity]
+        self.serial_port.stopbits = STOP_BITS_OPTIONS[stop_bits]
+
     def start_reader(
         self,
         *,

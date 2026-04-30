@@ -88,6 +88,7 @@ class PerfTab(ttk.Frame):
         self._selected_record: PerfRecord | None = None
         self._periodic_running = False
         self._selected_filter = PERF_FILTER_ALL
+        self._sort_column: str | None = None
 
         self._configure_perf_styles()
         self._build()
@@ -185,13 +186,16 @@ class PerfTab(ttk.Frame):
         }
         widths = {"type": 90, "name": 220, "time": 120, "max": 120, "load": 110, "peak": 110}
         for column in columns:
-            self.tree.heading(column, text=headings[column], anchor="center")
+            command = (lambda selected=column: self._set_sort_column(selected)) if column in {"time", "max"} else ""
+            self.tree.heading(column, text=headings[column], anchor="center", command=command)
             self.tree.column(column, width=widths[column], anchor="center")
         yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
         self.tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
         yscroll.grid(row=1, column=1, sticky="ns", pady=(0, 10))
         self.tree.bind("<<TreeviewSelect>>", self._on_select_record)
+        self.tree.bind("<Control-c>", self._copy_selected_name)
+        self.tree.bind("<Control-C>", self._copy_selected_name)
         self.tree.tag_configure("task", foreground=PERF_CYAN)
         self.tree.tag_configure("interrupt", foreground=PERF_ORANGE)
         self.tree.tag_configure("code", foreground=PERF_GREEN)
@@ -235,6 +239,15 @@ class PerfTab(ttk.Frame):
 
     def selected_filter(self) -> int:
         return self._selected_filter
+
+    def get_selected_name(self) -> str | None:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        record = self._records.get(int(selection[0]))
+        if record is None:
+            return None
+        return record.name
 
     def set_periodic_running(self, running: bool) -> None:
         self._periodic_running = running
@@ -319,12 +332,21 @@ class PerfTab(ttk.Frame):
     def refresh_texts(self) -> None:
         pass
 
+    def _copy_selected_name(self, _event=None) -> str:
+        name = self.get_selected_name()
+        if not name:
+            return "break"
+        self.clipboard_clear()
+        self.clipboard_append(name)
+        self.set_status(f"已复制 Perf 名称: {name}")
+        return "break"
+
     def _refresh_rows(self) -> None:
         query = self.search_var.get().strip().lower()
         selected_key = self._record_key(self._selected_record) if self._selected_record is not None else None
         for item in self.tree.get_children():
             self.tree.delete(item)
-        records = sorted(self._records.values(), key=lambda item: (item.record_type, item.index, item.name.lower()))
+        records = self._sort_records(self._records.values())
         self._visible_keys = []
         for record in records:
             if not self._record_matches_active_filter(record):
@@ -348,6 +370,13 @@ class PerfTab(ttk.Frame):
             self.tree.selection_set(first_iid)
         self._on_select_record()
 
+    def _set_sort_column(self, column: str) -> None:
+        if column not in {"time", "max"}:
+            return
+        self._sort_column = column
+        self._refresh_sort_headings()
+        self._refresh_rows()
+
     def _upsert_record_row(self, record: PerfRecord) -> None:
         query = self.search_var.get().strip().lower()
         key = self._record_key(record)
@@ -367,6 +396,7 @@ class PerfTab(ttk.Frame):
         else:
             self.tree.insert("", "end", iid=iid, values=self._record_values(record), tags=(self._record_tag(record),))
             self._visible_keys.append(key)
+        self._sort_visible_rows()
 
         if self._selected_record is None and not self.tree.selection():
             self.tree.selection_set(iid)
@@ -394,6 +424,7 @@ class PerfTab(ttk.Frame):
                 self.tree.delete(iid)
             if key in self._visible_keys:
                 self._visible_keys.remove(key)
+        self._sort_visible_rows()
         if selected_key in stale_keys:
             self._selected_record = None
             if self._visible_keys:
@@ -401,6 +432,37 @@ class PerfTab(ttk.Frame):
             else:
                 self.tree.selection_remove(self.tree.selection())
             self._on_select_record()
+
+    def _sort_visible_rows(self) -> None:
+        visible_records = [
+            self._records[key]
+            for key in self._visible_keys
+            if key in self._records and self.tree.exists(self._record_iid(key))
+        ]
+        self._visible_keys = [self._record_key(record) for record in self._sort_records(visible_records)]
+        for index, key in enumerate(self._visible_keys):
+            self.tree.move(self._record_iid(key), "", index)
+
+    def _sort_records(self, records) -> list[PerfRecord]:
+        if self._sort_column == "time":
+            return sorted(records, key=lambda item: (-item.time_us, item.record_type, item.index, item.name.lower()))
+        if self._sort_column == "max":
+            return sorted(records, key=lambda item: (-item.max_time_us, item.record_type, item.index, item.name.lower()))
+        return sorted(records, key=lambda item: (item.record_type, item.index, item.name.lower()))
+
+    def _refresh_sort_headings(self) -> None:
+        headings = {
+            "type": "Type",
+            "name": "Name",
+            "time": "Run Time (us)",
+            "max": "Max Time (us)",
+            "load": "Load",
+            "peak": "Peak",
+        }
+        for column, text in headings.items():
+            suffix = " ↓" if column == self._sort_column else ""
+            command = (lambda selected=column: self._set_sort_column(selected)) if column in {"time", "max"} else ""
+            self.tree.heading(column, text=f"{text}{suffix}", anchor="center", command=command)
 
     def _key_matches_filter(self, key: int, type_filter: int) -> bool:
         if type_filter == PERF_FILTER_ALL:

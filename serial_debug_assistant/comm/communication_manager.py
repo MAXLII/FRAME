@@ -75,6 +75,28 @@ class CommunicationManager:
         self.parser.reset()
         self._log("COMM", f"open serial endpoint={port} baud={baudrate}")
 
+    def configure_serial(
+        self,
+        *,
+        baudrate: int,
+        data_bits: str,
+        parity: str,
+        stop_bits: str,
+    ) -> None:
+        if self.connected_transport != "serial":
+            raise RuntimeError("Serial transport is not open.")
+        self.serial_service.configure(
+            baudrate=baudrate,
+            data_bits=data_bits,
+            parity=parity,
+            stop_bits=stop_bits,
+        )
+        self._log(
+            "COMM",
+            f"configure serial endpoint={self.endpoint} baud={baudrate} "
+            f"data_bits={data_bits} parity={parity} stop_bits={stop_bits}",
+        )
+
     def open_can(
         self,
         *,
