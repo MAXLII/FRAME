@@ -4011,6 +4011,11 @@ class SerialDebugAssistant(tk.Tk):
         entry = self.parameters.get(name)
         if entry is None:
             return
+        if entry.is_readonly:
+            self.parameter_tab.set_message(self.i18n.format_text("参数只读: {name}", name=name))
+            self.set_status(f"Parameter is read-only: {name}", error=True)
+            self.logger.log("WARN", f"write blocked readonly name={name}")
+            return
         if entry.is_command:
             if self.demo_mode and self.demo_runtime is not None:
                 self.parameter_tab.mark_busy(name)
@@ -4062,7 +4067,7 @@ class SerialDebugAssistant(tk.Tk):
             )
             return
 
-        in_range = typed_min <= typed_data <= typed_max
+        in_range = True if typed_min == typed_max else typed_min <= typed_data <= typed_max
         if not in_range:
             self.parameter_tab.clear_busy(name)
             self.parameter_tab.mark_invalid(name)

@@ -98,6 +98,10 @@ class ParameterEntry:
     def is_command(self) -> bool:
         return self.type_id == 7
 
+    @property
+    def is_readonly(self) -> bool:
+        return not self.is_command and self.min_raw == self.max_raw
+
 
 @dataclass(slots=True)
 class FirmwareFooter:

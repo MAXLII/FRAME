@@ -246,6 +246,9 @@ class ParameterReadWriteTab(ttk.Frame):
         if column_name is None:
             return
 
+        if column_name == "data" and entry.is_readonly:
+            return
+
         bbox = self.tree.bbox(name, column_id)
         if not bbox:
             return
@@ -377,7 +380,10 @@ class ParameterReadWriteTab(ttk.Frame):
         self._update_tree_selection_style()
         self.message_var.set(self.i18n.format_text("当前选中参数: {name}", name=row_id))
         self.read_button.configure(state="normal")
-        self.action_button.configure(state="normal", text=self.i18n.translate_text("执行" if entry.is_command else "写入"))
+        if entry.is_readonly:
+            self.action_button.configure(state="disabled", text=self.i18n.translate_text("只读"))
+        else:
+            self.action_button.configure(state="normal", text=self.i18n.translate_text("执行" if entry.is_command else "写入"))
 
     def refresh_texts(self) -> None:
         for widget, source_text, option in self._translatable_widgets:

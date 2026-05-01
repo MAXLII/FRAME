@@ -359,6 +359,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "快捷发送": {"zh": "快捷发送", "en": "Quick Send"},
     "发送内容": {"zh": "发送内容", "en": "Payload"},
     "发送": {"zh": "发送", "en": "Send"},
+    "只读": {"zh": "只读", "en": "Read-only"},
+    "参数只读: {name}": {"zh": "参数只读: {name}", "en": "Parameter is read-only: {name}"},
     "正在执行: {name}": {"zh": "正在执行: {name}", "en": "Executing: {name}"},
     "写入越界: {name} 需要在 {min_value} 到 {max_value} 之间": {
         "zh": "写入越界: {name} 需要在 {min_value} 到 {max_value} 之间",
