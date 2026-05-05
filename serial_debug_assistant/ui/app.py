@@ -209,6 +209,8 @@ FAULT_MESSAGES = {
     21: "电网异常",
     22: "PCS温度异常",
     23: "参数配置错误",
+    24: "放电异常",
+    25: "充电异常",
 }
 
 WARNING_MESSAGES = {
@@ -2750,7 +2752,7 @@ class SerialDebugAssistant(tk.Tk):
     def _format_fault_log(self, fault: int | None) -> str:
         fault_text = f"0x{fault:08X}" if fault is not None else "--"
         lines = [self.i18n.format_text("故障信息: {fault}", fault=fault_text)]
-        active = self._active_bits(fault, FAULT_MESSAGES)
+        active = self._active_bits(fault, FAULT_MESSAGES, unknown_message="其他故障")
         if active:
             lines.append("")
             lines.extend(active)
@@ -2762,7 +2764,7 @@ class SerialDebugAssistant(tk.Tk):
     def _format_warning_log(self, warning: int | None) -> str:
         warning_text = f"0x{warning:08X}" if warning is not None else "--"
         lines = [self.i18n.format_text("告警信息: {warning}", warning=warning_text)]
-        active = self._active_bits(warning, WARNING_MESSAGES)
+        active = self._active_bits(warning, WARNING_MESSAGES, unknown_message="其他告警")
         if active:
             lines.append("")
             lines.extend(active)
@@ -2771,13 +2773,21 @@ class SerialDebugAssistant(tk.Tk):
             lines.append(self.i18n.translate_text("当前无告警" if warning is not None else "告警数据未上报"))
         return "\n".join(lines)
 
-    def _active_bits(self, value: int | None, mapping: dict[int, str]) -> list[str]:
+    def _active_bits(self, value: int | None, mapping: dict[int, str], *, unknown_message: str) -> list[str]:
         if value is None:
             return []
         lines: list[str] = []
-        for bit, message in mapping.items():
+        has_unknown = False
+        max_bit = max(max(mapping.keys()) + 1, 32) if mapping else 32
+        for bit in range(max_bit):
             if value & (1 << bit):
-                lines.append(self.i18n.format_text("代码 {bit}: {message}", bit=bit, message=self.i18n.translate_text(message)))
+                message = mapping.get(bit)
+                if message is not None:
+                    lines.append(self.i18n.format_text("代码 {bit}: {message}", bit=bit, message=self.i18n.translate_text(message)))
+                else:
+                    has_unknown = True
+        if has_unknown:
+            lines.append(self.i18n.translate_text(unknown_message))
         return lines
 
     def request_enable_ac_output(self) -> None:
