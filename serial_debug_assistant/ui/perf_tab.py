@@ -50,6 +50,7 @@ class PerfTab(ttk.Frame):
         on_refresh_task,
         on_refresh_interrupt,
         on_refresh_code,
+        on_refresh_dictionary,
         on_reset_peak,
         on_toggle_periodic,
         on_status,
@@ -63,6 +64,7 @@ class PerfTab(ttk.Frame):
         self.on_refresh_task = on_refresh_task
         self.on_refresh_interrupt = on_refresh_interrupt
         self.on_refresh_code = on_refresh_code
+        self.on_refresh_dictionary = on_refresh_dictionary
         self.on_reset_peak = on_reset_peak
         self.on_toggle_periodic = on_toggle_periodic
         self.on_status = on_status
@@ -151,8 +153,11 @@ class PerfTab(ttk.Frame):
         title_row.grid(row=1, column=0, sticky="ew", pady=(18, 10))
         title_row.columnconfigure(0, weight=1)
         ttk.Label(title_row, text="任务时间", style="Perf.Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(title_row, text="Reset Peak", command=self.on_reset_peak, style="Perf.TButton", width=11).grid(row=0, column=1, sticky="e", padx=(0, 12))
-        ttk.Label(title_row, textvariable=self.info_var, style="Perf.Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Button(title_row, text="更新字典", command=self.on_refresh_dictionary, style="Perf.TButton", width=11).grid(
+            row=0, column=1, sticky="e", padx=(0, 8)
+        )
+        ttk.Button(title_row, text="Reset Peak", command=self.on_reset_peak, style="Perf.TButton", width=11).grid(row=0, column=2, sticky="e", padx=(0, 12))
+        ttk.Label(title_row, textvariable=self.info_var, style="Perf.Muted.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         summary = ttk.Frame(self, style="Perf.TFrame")
         summary.grid(row=2, column=0, sticky="ew")

@@ -600,6 +600,7 @@ class SerialDebugAssistant(tk.Tk):
             on_refresh_task=lambda: self.request_perf_records(PERF_FILTER_TASK),
             on_refresh_interrupt=lambda: self.request_perf_records(PERF_FILTER_INTERRUPT),
             on_refresh_code=lambda: self.request_perf_records(PERF_FILTER_CODE),
+            on_refresh_dictionary=self.refresh_perf_dictionary,
             on_reset_peak=self.send_perf_reset_peak,
             on_toggle_periodic=self.toggle_perf_periodic_query,
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
@@ -3694,6 +3695,17 @@ class SerialDebugAssistant(tk.Tk):
             return
         if self.perf_dict_entries or self.perf_dict_sequence is not None:
             return
+        self.request_perf_info()
+        self._request_perf_dictionary(PERF_FILTER_ALL)
+
+    def refresh_perf_dictionary(self) -> None:
+        if not self._protocol_transport_available():
+            return
+        self.perf_pull_sequence = None
+        self.perf_dict_sequence = None
+        self.perf_dict_version = 0
+        self.perf_dict_entries.clear()
+        self.perf_pending_sample_filter = None
         self.request_perf_info()
         self._request_perf_dictionary(PERF_FILTER_ALL)
 
