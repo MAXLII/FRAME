@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+import re
 from pathlib import Path
 import time
 import tkinter as tk
@@ -248,8 +249,7 @@ class SerialDebugAssistant(tk.Tk):
         self._visible_notebook_tabs: list[tuple[object, str]] = []
         title = APP_TITLE if not demo_mode else f"{APP_TITLE} Demo"
         self.title(title)
-        self.geometry(APP_GEOMETRY)
-        self.minsize(APP_MIN_WIDTH, APP_MIN_HEIGHT)
+        self._configure_window_geometry()
         self.configure(bg="#edf3f8")
 
         self.paths = get_app_paths()
@@ -330,6 +330,7 @@ class SerialDebugAssistant(tk.Tk):
         self.perf_periodic_job: str | None = None
         self.perf_periodic_running = False
         self.trace_running = False
+        self._serial_bar_compact: bool | None = None
 
         self.transport_var = tk.StringVar(value="Serial")
         self.port_var = tk.StringVar()
@@ -368,6 +369,30 @@ class SerialDebugAssistant(tk.Tk):
         self.after(POLL_INTERVAL_MS, self.process_incoming_data)
         self._schedule_rate_update()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _configure_window_geometry(self) -> None:
+        default_width, default_height = self._parse_geometry_size(APP_GEOMETRY, APP_MIN_WIDTH, APP_MIN_HEIGHT)
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        margin_x = 80 if screen_width >= 1000 else 32
+        margin_y = 120 if screen_height >= 800 else 48
+        available_width = min(screen_width, max(640, screen_width - margin_x))
+        available_height = min(screen_height, max(480, screen_height - margin_y))
+        window_width = min(default_width, available_width)
+        window_height = min(default_height, available_height)
+        min_width = min(APP_MIN_WIDTH, available_width)
+        min_height = min(APP_MIN_HEIGHT, available_height)
+        x = max(0, (screen_width - window_width) // 2)
+        y = max(0, (screen_height - window_height) // 2)
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.minsize(min_width, min_height)
+
+    @staticmethod
+    def _parse_geometry_size(geometry: str, default_width: int, default_height: int) -> tuple[int, int]:
+        match = re.match(r"^\s*(\d+)x(\d+)", geometry)
+        if match is None:
+            return default_width, default_height
+        return int(match.group(1)), int(match.group(2))
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
@@ -647,13 +672,18 @@ class SerialDebugAssistant(tk.Tk):
         self.status_label.grid(row=0, column=5, sticky="e")
 
     def _build_serial_bar(self, parent: ttk.Frame) -> None:
+        self.serial_bar = parent
+        for column in range(7):
+            parent.columnconfigure(column, weight=0)
         parent.columnconfigure(3, weight=1)
         serial_label = ttk.Label(parent, text=self.i18n.translate_text("Serial Port"), style="SidebarHeader.TLabel")
         serial_label.grid(row=0, column=0, sticky="w", padx=(0, 16))
+        self.serial_bar_title_label = serial_label
         self._remember_text(serial_label, "Serial Port")
 
         transport_label = ttk.Label(parent, text=f"{self.i18n.translate_text('Transport')} :", style="Sidebar.TLabel")
         transport_label.grid(row=0, column=1, sticky="w", padx=(0, 6))
+        self.transport_label = transport_label
         self._translatable_widgets.append((transport_label, "Transport :", "text"))
         self.transport_combo = ttk.Combobox(
             parent,
@@ -668,6 +698,7 @@ class SerialDebugAssistant(tk.Tk):
         settings_host = ttk.Frame(parent, style="Sidebar.TFrame")
         settings_host.grid(row=0, column=3, sticky="ew")
         settings_host.columnconfigure(0, weight=1)
+        self.transport_settings_host = settings_host
 
         self.serial_settings_frame = ttk.Frame(settings_host, style="Sidebar.TFrame")
         self.serial_settings_frame.grid(row=0, column=0, sticky="ew")
@@ -705,11 +736,41 @@ class SerialDebugAssistant(tk.Tk):
         self._remember_text(self.open_button, "Open")
         language_label = ttk.Label(parent, text=self.i18n.translate_text("Language"), style="Sidebar.TLabel")
         language_label.grid(row=0, column=5, sticky="e", padx=(12, 6))
+        self.language_label = language_label
         self._remember_text(language_label, "Language")
         self.language_combo = ttk.Combobox(parent, textvariable=self.language_var, state="readonly", values=self.i18n.get_language_labels(), width=12)
         self.language_combo.grid(row=0, column=6, sticky="e")
         self.language_combo.bind("<<ComboboxSelected>>", self._on_language_changed)
         self._update_transport_ui()
+        parent.bind("<Configure>", self._on_serial_bar_configure)
+
+    def _on_serial_bar_configure(self, event: tk.Event) -> None:
+        self._apply_serial_bar_layout(compact=event.width < 1180)
+
+    def _apply_serial_bar_layout(self, *, compact: bool) -> None:
+        if self._serial_bar_compact is compact:
+            return
+        self._serial_bar_compact = compact
+        for column in range(7):
+            self.serial_bar.columnconfigure(column, weight=0)
+        if compact:
+            self.serial_bar.columnconfigure(6, weight=1)
+            self.serial_bar_title_label.grid_configure(row=0, column=0, padx=(0, 16))
+            self.transport_label.grid_configure(row=0, column=1, padx=(0, 6))
+            self.transport_combo.grid_configure(row=0, column=2, padx=(0, 12))
+            self.open_button.grid_configure(row=0, column=3, sticky="w", padx=(0, 16))
+            self.language_label.grid_configure(row=0, column=4, sticky="e", padx=(0, 6))
+            self.language_combo.grid_configure(row=0, column=5, sticky="e")
+            self.transport_settings_host.grid_configure(row=1, column=0, columnspan=7, sticky="ew", pady=(12, 0))
+            return
+        self.serial_bar.columnconfigure(3, weight=1)
+        self.serial_bar_title_label.grid_configure(row=0, column=0, padx=(0, 16))
+        self.transport_label.grid_configure(row=0, column=1, padx=(0, 6))
+        self.transport_combo.grid_configure(row=0, column=2, padx=(0, 12))
+        self.transport_settings_host.grid_configure(row=0, column=3, columnspan=1, sticky="ew", pady=0)
+        self.open_button.grid_configure(row=0, column=4, sticky="w", padx=(12, 0))
+        self.language_label.grid_configure(row=0, column=5, sticky="e", padx=(12, 6))
+        self.language_combo.grid_configure(row=0, column=6, sticky="e")
 
     def _build_monitor_settings(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
