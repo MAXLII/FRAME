@@ -193,27 +193,27 @@ class ScopeTab(ttk.Frame):
         self._remember_text(self.clear_local_button, "Clear Local Captures")
         ttk.Label(control_row, textvariable=self.status_var, style="Header.TLabel").grid(row=0, column=8, sticky="w", padx=(20, 0))
 
-        detail_frame = ttk.LabelFrame(self, text=self.i18n.translate_text("Scope Info"), style="Section.TLabelframe", padding=12)
+        detail_frame = ttk.LabelFrame(self, text=self.i18n.translate_text("Scope Info"), style="Section.TLabelframe", padding=(10, 6))
         self._remember_text(detail_frame, "Scope Info")
         detail_frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        detail_frame.columnconfigure(1, weight=1)
-        detail_frame.columnconfigure(3, weight=1)
+        for column in range(8):
+            detail_frame.columnconfigure(column, weight=1 if column % 2 == 1 else 0)
 
         rows = [
             ("State", self.state_var, 0, 0),
             ("Data Ready", self.data_ready_var, 0, 2),
-            ("Variable Count", self.var_count_var, 1, 0),
-            ("Sample Count", self.sample_count_var, 1, 2),
-            ("Sample Period (us)", self.sample_period_var, 2, 0),
-            ("Trigger Display Index", self.trigger_display_var, 2, 2),
-            ("Capture Tag", self.capture_tag_var, 3, 0),
-            ("Detail", self.detail_var, 3, 2),
+            ("Variable Count", self.var_count_var, 0, 4),
+            ("Sample Count", self.sample_count_var, 0, 6),
+            ("Sample Period (us)", self.sample_period_var, 1, 0),
+            ("Trigger Display Index", self.trigger_display_var, 1, 2),
+            ("Capture Tag", self.capture_tag_var, 1, 4),
+            ("Detail", self.detail_var, 1, 6),
         ]
         for label, variable, row, column in rows:
             row_label = ttk.Label(detail_frame, text=self.i18n.translate_text(label))
-            row_label.grid(row=row, column=column, sticky="w", pady=4)
+            row_label.grid(row=row, column=column, sticky="w", pady=2, padx=(0 if column == 0 else 14, 0))
             self._remember_text(row_label, label)
-            ttk.Label(detail_frame, textvariable=variable).grid(row=row, column=column + 1, sticky="w", pady=4, padx=(12, 0))
+            ttk.Label(detail_frame, textvariable=variable).grid(row=row, column=column + 1, sticky="w", pady=2, padx=(8, 0))
 
         content_frame = ttk.Frame(self, style="Panel.TFrame")
         content_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
