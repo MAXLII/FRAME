@@ -38,6 +38,7 @@ PERF_PURPLE = "#8b6df6"
 PERF_ORANGE = "#ff9f2f"
 PERF_GREEN = "#62d26f"
 PERF_BLUE_SELECT = "#123552"
+PERF_SORTABLE_COLUMNS = {"time", "max", "load", "peak"}
 
 
 class PerfTab(ttk.Frame):
@@ -186,7 +187,7 @@ class PerfTab(ttk.Frame):
         }
         widths = {"type": 90, "name": 220, "time": 120, "max": 120, "load": 110, "peak": 110}
         for column in columns:
-            command = (lambda selected=column: self._set_sort_column(selected)) if column in {"time", "max"} else ""
+            command = (lambda selected=column: self._set_sort_column(selected)) if column in PERF_SORTABLE_COLUMNS else ""
             self.tree.heading(column, text=headings[column], anchor="center", command=command)
             self.tree.column(column, width=widths[column], anchor="center")
         yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -371,7 +372,7 @@ class PerfTab(ttk.Frame):
         self._on_select_record()
 
     def _set_sort_column(self, column: str) -> None:
-        if column not in {"time", "max"}:
+        if column not in PERF_SORTABLE_COLUMNS:
             return
         self._sort_column = column
         self._refresh_sort_headings()
@@ -448,6 +449,10 @@ class PerfTab(ttk.Frame):
             return sorted(records, key=lambda item: (-item.time_us, item.record_type, item.index, item.name.lower()))
         if self._sort_column == "max":
             return sorted(records, key=lambda item: (-item.max_time_us, item.record_type, item.index, item.name.lower()))
+        if self._sort_column == "load":
+            return sorted(records, key=lambda item: (-item.load_percent, item.record_type, item.index, item.name.lower()))
+        if self._sort_column == "peak":
+            return sorted(records, key=lambda item: (-item.peak_percent, item.record_type, item.index, item.name.lower()))
         return sorted(records, key=lambda item: (item.record_type, item.index, item.name.lower()))
 
     def _refresh_sort_headings(self) -> None:
@@ -461,7 +466,7 @@ class PerfTab(ttk.Frame):
         }
         for column, text in headings.items():
             suffix = " ↓" if column == self._sort_column else ""
-            command = (lambda selected=column: self._set_sort_column(selected)) if column in {"time", "max"} else ""
+            command = (lambda selected=column: self._set_sort_column(selected)) if column in PERF_SORTABLE_COLUMNS else ""
             self.tree.heading(column, text=f"{text}{suffix}", anchor="center", command=command)
 
     def _key_matches_filter(self, key: int, type_filter: int) -> bool:
