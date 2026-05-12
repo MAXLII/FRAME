@@ -68,6 +68,54 @@ class ScopePullSession:
 
 
 @dataclass(slots=True)
+class SfraListItem:
+    sfra_id: int
+    name: str
+
+
+@dataclass(slots=True)
+class SfraInfo:
+    sfra_id: int
+    status: int
+    state: int
+    busy: bool
+    done: bool
+    data_ready: bool
+    freq_index: int
+    freq_length: int
+    table_length: int
+    inject_delay_tick: int
+    sweep_tag: int
+    current_freq_hz: float
+    isr_freq_hz: float
+    freq_start_hz: float
+    freq_end_hz: float
+    inject_amplitude: float
+    settle_cycle_count: float
+    collect_cycle_count: float
+
+
+@dataclass(slots=True)
+class SfraPoint:
+    point_index: int
+    point_count: int
+    sweep_tag: int
+    freq_hz: float
+    magnitude: float
+    magnitude_db: float
+    phase_deg: float
+
+
+@dataclass(slots=True)
+class SfraSweep:
+    sfra_id: int
+    sfra_name: str
+    sweep_tag: int
+    point_count: int
+    points: list[SfraPoint]
+
+
+@dataclass(slots=True)
 class ProtocolFrame:
     sop: int
     version: int

@@ -98,6 +98,10 @@ from serial_debug_assistant.models import (
     ScopeInfo,
     ScopeListItem,
     ScopePullSession,
+    SfraInfo,
+    SfraListItem,
+    SfraPoint,
+    SfraSweep,
 )
 from serial_debug_assistant.perf_protocol import (
     CMD_SET_PERF,
@@ -163,6 +167,32 @@ from serial_debug_assistant.scope_protocol import (
     parse_scope_sample_ack_payload,
     parse_scope_var_ack_payload,
 )
+from serial_debug_assistant.sfra_protocol import (
+    CMD_SET_SFRA,
+    CMD_WORD_SFRA_CFG_SET,
+    CMD_WORD_SFRA_DONE_REPORT,
+    CMD_WORD_SFRA_INFO_QUERY,
+    CMD_WORD_SFRA_LIST_QUERY,
+    CMD_WORD_SFRA_POINT_QUERY,
+    CMD_WORD_SFRA_POINT_REPORT,
+    CMD_WORD_SFRA_RESET,
+    CMD_WORD_SFRA_START,
+    CMD_WORD_SFRA_STOP,
+    SFRA_APPLY_AMPLITUDE,
+    SFRA_APPLY_RANGE,
+    SFRA_TOOL_STATUS_OK,
+    build_sfra_config_set_payload,
+    build_sfra_info_query_payload,
+    build_sfra_list_query_payload,
+    build_sfra_point_query_payload,
+    build_sfra_simple_command_payload,
+    describe_sfra_state,
+    describe_sfra_status,
+    parse_sfra_control_ack_payload,
+    parse_sfra_info_ack_payload,
+    parse_sfra_list_item_payload,
+    parse_sfra_point_payload,
+)
 from serial_debug_assistant.trace_protocol import (
     CMD_SET_TRACE,
     CMD_WORD_TRACE_CONTROL,
@@ -181,6 +211,7 @@ from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
 from serial_debug_assistant.ui.perf_tab import PerfTab
 from serial_debug_assistant.ui.scope_tab import ScopeTab
+from serial_debug_assistant.ui.sfra_tab import SfraTab
 from serial_debug_assistant.ui.trace_tab import TraceTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
@@ -322,6 +353,12 @@ class SerialDebugAssistant(tk.Tk):
         self.scope_pull_job: str | None = None
         self.scope_next_capture_index = 1
         self.scope_list_request_job: str | None = None
+        self.sfra_items: list[SfraListItem] = []
+        self.sfra_info_by_id: dict[int, SfraInfo] = {}
+        self.sfra_pending_list_items: list[SfraListItem] = []
+        self.sfra_active_sweep: SfraSweep | None = None
+        self.sfra_points_by_index: dict[int, SfraPoint] = {}
+        self.sfra_list_request_job: str | None = None
         self.perf_pull_sequence: int | None = None
         self.perf_dict_sequence: int | None = None
         self.perf_dict_version = 0
@@ -619,6 +656,16 @@ class SerialDebugAssistant(tk.Tk):
             export_dir=self.paths.exports_dir,
             i18n=self.i18n,
         )
+        self.sfra_tab = SfraTab(
+            self.notebook,
+            on_refresh_loops=self.request_sfra_list,
+            on_refresh_info=self.request_sfra_info,
+            on_apply_config=self.send_sfra_config,
+            on_start=self.send_sfra_start,
+            on_stop=self.send_sfra_stop,
+            on_reset=self.send_sfra_reset,
+            i18n=self.i18n,
+        )
         self.perf_tab = PerfTab(
             self.notebook,
             on_refresh_all=lambda: self.request_perf_records(PERF_FILTER_ALL),
@@ -647,6 +694,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("black_box", self.black_box_tab, "Black Box")
         self._add_notebook_tab("factory_mode", self.factory_mode_tab, "Factory Mode")
         self._add_notebook_tab("scope", self.scope_tab, "Scope")
+        self._add_notebook_tab("sfra", self.sfra_tab, "SFRA")
         self._add_notebook_tab("perf", self.perf_tab, "Perf")
         self._add_notebook_tab("trace", self.trace_tab, "Trace")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
@@ -1046,6 +1094,7 @@ class SerialDebugAssistant(tk.Tk):
         self.black_box_tab.refresh_texts()
         self.factory_mode_tab.refresh_texts()
         self.scope_tab.refresh_texts()
+        self.sfra_tab.refresh_texts()
         self.perf_tab.refresh_texts()
         self._update_counter_labels()
         self._on_parameter_message_changed()
@@ -1852,6 +1901,8 @@ class SerialDebugAssistant(tk.Tk):
             return
         if self._handle_scope_protocol_frame(frame):
             return
+        if self._handle_sfra_protocol_frame(frame):
+            return
         if self._handle_perf_protocol_frame(frame):
             return
         if self._handle_trace_protocol_frame(frame):
@@ -2196,6 +2247,178 @@ class SerialDebugAssistant(tk.Tk):
             return True
 
         return False
+
+    def _handle_sfra_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        if frame.cmd_set != CMD_SET_SFRA:
+            return False
+        if frame.cmd_word not in {
+            CMD_WORD_SFRA_LIST_QUERY,
+            CMD_WORD_SFRA_INFO_QUERY,
+            CMD_WORD_SFRA_CFG_SET,
+            CMD_WORD_SFRA_START,
+            CMD_WORD_SFRA_STOP,
+            CMD_WORD_SFRA_RESET,
+            CMD_WORD_SFRA_POINT_QUERY,
+            CMD_WORD_SFRA_POINT_REPORT,
+            CMD_WORD_SFRA_DONE_REPORT,
+        }:
+            return False
+
+        if frame.cmd_word == CMD_WORD_SFRA_LIST_QUERY and frame.is_ack in {0, 1}:
+            if self.sfra_list_request_job is not None:
+                self.after_cancel(self.sfra_list_request_job)
+                self.sfra_list_request_job = None
+            item = parse_sfra_list_item_payload(frame.payload)
+            item_name = str(item["name"])
+            item_sfra_id = int(item["sfra_id"])
+            if item_name:
+                list_item = SfraListItem(sfra_id=item_sfra_id, name=item_name)
+                self.sfra_pending_list_items.append(list_item)
+                self.logger.log("SFRA", f"list item id={list_item.sfra_id} name={list_item.name!r} last={int(item['is_last'])}")
+            else:
+                self.logger.log("SFRA", f"list terminator id={item_sfra_id} last={int(item['is_last'])}")
+            if int(item["is_last"]) == 1:
+                self.sfra_items = list(self.sfra_pending_list_items)
+                self.sfra_pending_list_items = []
+                self.sfra_tab.set_sfra_items(self.sfra_items)
+                self.sfra_tab.set_status("SFRA list loaded", self.i18n.format_text("Loaded {count} SFRA loop(s).", count=len(self.sfra_items)))
+                if self.sfra_items:
+                    self.request_sfra_info()
+            return True
+
+        if frame.cmd_word == CMD_WORD_SFRA_INFO_QUERY and frame.is_ack == 1:
+            info_data = parse_sfra_info_ack_payload(frame.payload)
+            info = SfraInfo(
+                sfra_id=int(info_data["sfra_id"]),
+                status=int(info_data["status"]),
+                state=int(info_data["state"]),
+                busy=bool(info_data["busy"]),
+                done=bool(info_data["done"]),
+                data_ready=bool(info_data["data_ready"]),
+                freq_index=int(info_data["freq_index"]),
+                freq_length=int(info_data["freq_length"]),
+                table_length=int(info_data["table_length"]),
+                inject_delay_tick=int(info_data["inject_delay_tick"]),
+                sweep_tag=int(info_data["sweep_tag"]),
+                current_freq_hz=float(info_data["current_freq_hz"]),
+                isr_freq_hz=float(info_data["isr_freq_hz"]),
+                freq_start_hz=float(info_data["freq_start_hz"]),
+                freq_end_hz=float(info_data["freq_end_hz"]),
+                inject_amplitude=float(info_data["inject_amplitude"]),
+                settle_cycle_count=float(info_data["settle_cycle_count"]),
+                collect_cycle_count=float(info_data["collect_cycle_count"]),
+            )
+            self.sfra_info_by_id[info.sfra_id] = info
+            self.sfra_tab.set_sfra_info(info)
+            self.sfra_tab.set_status(
+                describe_sfra_status(info.status),
+                self.i18n.format_text(
+                    "State: {state}, points: {done} / {total}, sweep tag: {tag}",
+                    state=describe_sfra_state(info.state),
+                    done=info.table_length,
+                    total=info.freq_length,
+                    tag=info.sweep_tag,
+                ),
+            )
+            self.logger.log(
+                "SFRA",
+                f"info id={info.sfra_id} status={info.status} state={info.state} "
+                f"freq={info.freq_start_hz:.6g}..{info.freq_end_hz:.6g} len={info.freq_length} tag={info.sweep_tag}",
+            )
+            return True
+
+        if frame.cmd_word in {CMD_WORD_SFRA_CFG_SET, CMD_WORD_SFRA_START, CMD_WORD_SFRA_STOP, CMD_WORD_SFRA_RESET} and frame.is_ack == 1:
+            ack = parse_sfra_control_ack_payload(frame.payload)
+            sfra_id = int(ack["sfra_id"])
+            status = int(ack["status"])
+            action_map = {
+                CMD_WORD_SFRA_CFG_SET: "Config",
+                CMD_WORD_SFRA_START: "Start",
+                CMD_WORD_SFRA_STOP: "Stop",
+                CMD_WORD_SFRA_RESET: "Reset",
+            }
+            action_name = action_map.get(frame.cmd_word, "SFRA")
+            self.sfra_tab.set_status(
+                self.i18n.format_text("{action} ACK", action=action_name),
+                self.i18n.format_text(
+                    "Status: {status}, state: {state}, points: {done} / {total}",
+                    status=describe_sfra_status(status),
+                    state=describe_sfra_state(int(ack["state"])),
+                    done=int(ack["table_length"]),
+                    total=int(ack["freq_length"]),
+                ),
+            )
+            self.logger.log(
+                "SFRA",
+                f"{action_name.lower()} ack id={sfra_id} status={status} "
+                f"state={int(ack['state'])} points={int(ack['table_length'])}/{int(ack['freq_length'])} "
+                f"tag={int(ack['sweep_tag'])}",
+            )
+            if frame.cmd_word == CMD_WORD_SFRA_START and status == SFRA_TOOL_STATUS_OK:
+                name = self.sfra_tab.get_selected_sfra_name() or f"SFRA {sfra_id}"
+                point_count = int(ack["freq_length"])
+                sweep_tag = int(ack["sweep_tag"])
+                self.sfra_points_by_index = {}
+                self.sfra_active_sweep = SfraSweep(sfra_id=sfra_id, sfra_name=name, sweep_tag=sweep_tag, point_count=point_count, points=[])
+                self.sfra_tab.begin_sweep(point_count, sweep_tag)
+            if status == SFRA_TOOL_STATUS_OK:
+                self.request_sfra_info()
+            return True
+
+        if frame.cmd_word in {CMD_WORD_SFRA_POINT_QUERY, CMD_WORD_SFRA_POINT_REPORT}:
+            if frame.cmd_word == CMD_WORD_SFRA_POINT_QUERY and frame.is_ack != 1:
+                return True
+            if frame.cmd_word == CMD_WORD_SFRA_POINT_REPORT and frame.is_ack != 0:
+                return True
+            point_data = parse_sfra_point_payload(frame.payload)
+            status = int(point_data["status"])
+            if status != SFRA_TOOL_STATUS_OK:
+                self.sfra_tab.set_status("SFRA point failed", describe_sfra_status(status))
+                self.logger.log("SFRA", f"point failed status={status} payload={frame.payload.hex(' ').upper()}")
+                return True
+            point = SfraPoint(
+                point_index=int(point_data["point_index"]),
+                point_count=int(point_data["point_count"]),
+                sweep_tag=int(point_data["sweep_tag"]),
+                freq_hz=float(point_data["freq_hz"]),
+                magnitude=float(point_data["magnitude"]),
+                magnitude_db=float(point_data["magnitude_db"]),
+                phase_deg=float(point_data["phase_deg"]),
+            )
+            self._handle_sfra_point(point)
+            if int(point_data["is_last"]) == 1:
+                self.sfra_tab.finish_sweep()
+                self.request_sfra_info()
+            return True
+
+        if frame.cmd_word == CMD_WORD_SFRA_DONE_REPORT and frame.is_ack == 0:
+            self.sfra_tab.finish_sweep()
+            self.request_sfra_info()
+            self.logger.log("SFRA", "done report")
+            return True
+
+        return True
+
+    def _handle_sfra_point(self, point: SfraPoint) -> None:
+        active = self.sfra_active_sweep
+        if active is not None and point.sweep_tag != active.sweep_tag:
+            self.logger.log("SFRA", f"ignore stale point index={point.point_index} tag={point.sweep_tag} active={active.sweep_tag}")
+            return
+        if active is not None:
+            active.points = [p for p in active.points if p.point_index != point.point_index]
+            active.points.append(point)
+            active.points.sort(key=lambda item: item.point_index)
+        self.sfra_points_by_index[point.point_index] = point
+        self.sfra_tab.add_point(point)
+        self.logger.log(
+            "SFRA",
+            f"point index={point.point_index}/{point.point_count} tag={point.sweep_tag} "
+            f"freq={point.freq_hz:.6g} mag_db={point.magnitude_db:.6g} phase={point.phase_deg:.6g}",
+        )
+        for missing_index in range(0, point.point_index):
+            if missing_index not in self.sfra_points_by_index:
+                self.request_sfra_point(missing_index, point.sweep_tag)
+                break
 
     def _handle_perf_protocol_frame(self, frame: ProtocolFrame) -> bool:
         if frame.cmd_set != CMD_SET_PERF:
@@ -3328,6 +3551,155 @@ class SerialDebugAssistant(tk.Tk):
             cmd_set=CMD_SET_SCOPE,
             cmd_word=CMD_WORD_SCOPE_LIST_QUERY,
             payload=build_scope_list_query_payload(),
+        )
+
+    def request_sfra_list(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self.sfra_tab.set_status("SFRA unavailable", "Demo mode does not provide SFRA loops.")
+            self.set_status("Demo mode: SFRA is not available.", error=True)
+            return
+        if not self._is_connected():
+            self.set_status("Open the serial port first.", error=True)
+            self.sfra_tab.set_status("Cannot refresh SFRA list", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.sfra_tab.get_target_address()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.sfra_tab.set_status("Invalid SFRA target", str(exc))
+            return
+
+        self.sfra_pending_list_items = []
+        self.sfra_items = []
+        self.sfra_tab.set_sfra_items([])
+        self.sfra_tab.set_status("Refreshing SFRA list", "Waiting for SFRA loops from the device.")
+        if self.sfra_list_request_job is not None:
+            self.after_cancel(self.sfra_list_request_job)
+        self.sfra_list_request_job = self.after(SCOPE_LIST_TIMEOUT_MS, self._handle_sfra_list_timeout)
+        self.logger.log("SFRA", f"send list query dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SFRA,
+            cmd_word=CMD_WORD_SFRA_LIST_QUERY,
+            payload=build_sfra_list_query_payload(),
+        )
+
+    def _handle_sfra_list_timeout(self) -> None:
+        self.sfra_list_request_job = None
+        if self.sfra_items or self.sfra_pending_list_items:
+            return
+        self.sfra_tab.set_status("Cannot refresh SFRA list", "No SFRA loop response was received from the device.")
+        self.logger.log("SFRA", "list query timeout: no response from device")
+
+    def request_sfra_info(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self.sfra_tab.set_status("SFRA unavailable", "Demo mode does not provide SFRA loops.")
+            return
+        if not self._protocol_transport_available():
+            self.set_status("Open the serial port first.", error=True)
+            self.sfra_tab.set_status("Cannot refresh SFRA info", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.sfra_tab.get_target_address()
+            sfra_id = self.sfra_tab.get_selected_sfra_id()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.sfra_tab.set_status("SFRA selection is invalid", str(exc))
+            return
+
+        self.sfra_tab.set_status("Refreshing SFRA info", self.i18n.format_text("Reading config for SFRA ID {sfra_id}.", sfra_id=sfra_id))
+        self.logger.log("SFRA", f"send info query sfra_id={sfra_id} dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SFRA,
+            cmd_word=CMD_WORD_SFRA_INFO_QUERY,
+            payload=build_sfra_info_query_payload(sfra_id),
+        )
+
+    def send_sfra_config(self) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self.sfra_tab.set_status("SFRA unavailable", "Demo mode does not provide SFRA loops.")
+            return
+        if not self._protocol_transport_available():
+            self.set_status("Open the serial port first.", error=True)
+            self.sfra_tab.set_status("Cannot send SFRA config", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.sfra_tab.get_target_address()
+            sfra_id = self.sfra_tab.get_selected_sfra_id()
+            start_hz, stop_hz, amplitude = self.sfra_tab.get_config_values()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.sfra_tab.set_status("SFRA config is invalid", str(exc))
+            return
+
+        apply_mask = SFRA_APPLY_RANGE | SFRA_APPLY_AMPLITUDE
+        self.sfra_tab.set_status("Sending SFRA config", self.i18n.format_text("SFRA ID {sfra_id}", sfra_id=sfra_id))
+        self.logger.log(
+            "SFRA",
+            f"send config sfra_id={sfra_id} start={start_hz:.6g} stop={stop_hz:.6g} amp={amplitude:.6g} "
+            f"dst=0x{dst:02X} d_dst=0x{d_dst:02X}",
+        )
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SFRA,
+            cmd_word=CMD_WORD_SFRA_CFG_SET,
+            payload=build_sfra_config_set_payload(sfra_id, apply_mask, start_hz, stop_hz, amplitude),
+        )
+
+    def send_sfra_start(self) -> None:
+        self._send_sfra_simple_command(CMD_WORD_SFRA_START, "SFRA start command sent")
+
+    def send_sfra_stop(self) -> None:
+        self._send_sfra_simple_command(CMD_WORD_SFRA_STOP, "SFRA stop command sent")
+
+    def send_sfra_reset(self) -> None:
+        self._send_sfra_simple_command(CMD_WORD_SFRA_RESET, "SFRA reset command sent")
+
+    def request_sfra_point(self, point_index: int, expected_sweep_tag: int) -> None:
+        if not self._protocol_transport_available():
+            return
+        try:
+            dst, d_dst = self.sfra_tab.get_target_address()
+            sfra_id = self.sfra_tab.get_selected_sfra_id()
+        except ValueError:
+            return
+        self.logger.log("SFRA", f"send point query sfra_id={sfra_id} index={point_index} tag={expected_sweep_tag}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SFRA,
+            cmd_word=CMD_WORD_SFRA_POINT_QUERY,
+            payload=build_sfra_point_query_payload(sfra_id, point_index, expected_sweep_tag),
+        )
+
+    def _send_sfra_simple_command(self, cmd_word: int, status_text: str) -> None:
+        if self.demo_mode and self.demo_runtime is not None:
+            self.sfra_tab.set_status("SFRA unavailable", "Demo mode does not provide SFRA loops.")
+            return
+        if not self._protocol_transport_available():
+            self.set_status("Open the serial port first.", error=True)
+            self.sfra_tab.set_status("Cannot send SFRA command", "Connect the serial port first.")
+            return
+        try:
+            dst, d_dst = self.sfra_tab.get_target_address()
+            sfra_id = self.sfra_tab.get_selected_sfra_id()
+        except ValueError as exc:
+            self.set_status(str(exc), error=True)
+            self.sfra_tab.set_status("SFRA selection is invalid", str(exc))
+            return
+
+        self.sfra_tab.set_status(status_text, self.i18n.format_text("SFRA ID {sfra_id}", sfra_id=sfra_id))
+        self.logger.log("SFRA", f"send cmd_word=0x{cmd_word:02X} sfra_id={sfra_id} dst=0x{dst:02X} d_dst=0x{d_dst:02X}")
+        self.send_protocol_frame(
+            dst=dst,
+            d_dst=d_dst,
+            cmd_set=CMD_SET_SFRA,
+            cmd_word=cmd_word,
+            payload=build_sfra_simple_command_payload(sfra_id),
         )
 
     def _handle_scope_list_timeout(self) -> None:
@@ -4609,6 +4981,9 @@ class SerialDebugAssistant(tk.Tk):
         if self.scope_list_request_job:
             self.after_cancel(self.scope_list_request_job)
             self.scope_list_request_job = None
+        if self.sfra_list_request_job:
+            self.after_cancel(self.sfra_list_request_job)
+            self.sfra_list_request_job = None
         if self.scope_pull_job:
             self.after_cancel(self.scope_pull_job)
             self.scope_pull_job = None
