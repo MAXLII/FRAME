@@ -80,8 +80,13 @@ def parse_sfra_list_item_payload(payload: bytes) -> dict[str, int | str]:
 
 
 def parse_sfra_info_ack_payload(payload: bytes) -> dict[str, int | float]:
-    fmt = "<BBBBBBBBHHHHIffffffff"
-    if len(payload) < struct.calcsize(fmt):
+    header_fmt = "<BBBBBBBBHHHHI"
+    float_fmt_without_step = "<fffffff"
+    float_fmt_with_step = "<ffffffff"
+    header_size = struct.calcsize(header_fmt)
+    without_step_size = header_size + struct.calcsize(float_fmt_without_step)
+    with_step_size = header_size + struct.calcsize(float_fmt_with_step)
+    if len(payload) < without_step_size:
         return {
             "sfra_id": 0,
             "status": SFRA_TOOL_STATUS_BUSY,
@@ -116,15 +121,30 @@ def parse_sfra_info_ack_payload(payload: bytes) -> dict[str, int | float]:
         table_length,
         inject_delay_tick,
         sweep_tag,
-        current_freq_hz,
-        isr_freq_hz,
-        freq_start_hz,
-        freq_end_hz,
-        _freq_step_mul,
-        inject_amplitude,
-        settle_cycle_count,
-        collect_cycle_count,
-    ) = struct.unpack(fmt, payload[: struct.calcsize(fmt)])
+    ) = struct.unpack(header_fmt, payload[:header_size])
+
+    if len(payload) >= with_step_size:
+        (
+            current_freq_hz,
+            isr_freq_hz,
+            freq_start_hz,
+            freq_end_hz,
+            _freq_step_mul,
+            inject_amplitude,
+            settle_cycle_count,
+            collect_cycle_count,
+        ) = struct.unpack(float_fmt_with_step, payload[header_size:with_step_size])
+    else:
+        (
+            current_freq_hz,
+            isr_freq_hz,
+            freq_start_hz,
+            freq_end_hz,
+            inject_amplitude,
+            settle_cycle_count,
+            collect_cycle_count,
+        ) = struct.unpack(float_fmt_without_step, payload[header_size:without_step_size])
+
     return {
         "sfra_id": sfra_id,
         "status": status,
