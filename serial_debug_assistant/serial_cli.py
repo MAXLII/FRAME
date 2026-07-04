@@ -228,7 +228,7 @@ def _resolve_serial_options(options: SerialOptions) -> SerialOptions:
 
 
 def raw_serial(options: SerialOptions, *, send_hex: str, send_text: str, read_seconds: float, receive_hex: bool) -> str:
-    payload = _parse_hex_bytes(send_hex) if send_hex else send_text.encode("utf-8")
+    payload = _parse_hex_bytes(send_hex) if send_hex else decode_text_escapes(send_text).encode("utf-8")
     options = _resolve_serial_options(options)
     with serial.Serial(port=options.port, baudrate=options.baudrate, timeout=0.05) as ser:
         if payload:
@@ -243,6 +243,45 @@ def raw_serial(options: SerialOptions, *, send_hex: str, send_text: str, read_se
     if receive_hex:
         return data.hex(" ").upper()
     return data.decode("utf-8", errors="replace")
+
+
+def decode_text_escapes(text: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char != "\\" or index + 1 >= len(text):
+            result.append(char)
+            index += 1
+            continue
+        marker = text[index + 1]
+        if marker == "r":
+            result.append("\r")
+            index += 2
+        elif marker == "n":
+            result.append("\n")
+            index += 2
+        elif marker == "t":
+            result.append("\t")
+            index += 2
+        elif marker == "\\":
+            result.append("\\")
+            index += 2
+        elif marker == '"':
+            result.append('"')
+            index += 2
+        elif marker == "x" and index + 3 < len(text):
+            hex_text = text[index + 2 : index + 4]
+            try:
+                result.append(chr(int(hex_text, 16)))
+                index += 4
+            except ValueError:
+                result.append(char)
+                index += 1
+        else:
+            result.append(char)
+            index += 1
+    return "".join(result)
 
 
 def protocol_request(options: SerialOptions, *, cmd_set: int, cmd_word: int, payload_hex: str) -> list[dict[str, object]]:
@@ -463,8 +502,9 @@ def perf_dict(options: SerialOptions, *, type_filter: int = PERF_FILTER_ALL) -> 
 def _perf_load_dict(options: SerialOptions, *, type_filter: int = PERF_FILTER_ALL) -> tuple[list[PerfDictEntry], int]:
     entries: list[PerfDictEntry] = []
     dict_version = 0
+    expected_count = 0
     with ProtocolSerialClient(options) as client:
-        frames = client.request(cmd_set=0x01, cmd_word=CMD_WORD_PERF_DICT_QUERY, payload=build_perf_dict_query_payload(type_filter, 0))
+        frames = client.request(cmd_set=0x01, cmd_word=CMD_WORD_PERF_DICT_QUERY, payload=build_perf_dict_query_payload(type_filter, 0), timeout=max(options.timeout, 2.0))
     sequence = None
     for frame in frames:
         if frame.cmd_word == CMD_WORD_PERF_DICT_QUERY and frame.is_ack == 1:
@@ -472,6 +512,8 @@ def _perf_load_dict(options: SerialOptions, *, type_filter: int = PERF_FILTER_AL
             if not ack.accepted:
                 raise SerialCliError(f"perf dict rejected: {ack.reject_reason}")
             sequence = ack.sequence
+            expected_count = ack.record_count
+            dict_version = ack.dict_version
         elif frame.cmd_word == CMD_WORD_PERF_DICT_ITEM_REPORT:
             entry = parse_perf_dict_item_payload(frame.payload)
             if sequence is None or entry.sequence == sequence:
@@ -481,6 +523,10 @@ def _perf_load_dict(options: SerialOptions, *, type_filter: int = PERF_FILTER_AL
             if end.status != 0:
                 raise SerialCliError(f"perf dict end status: {describe_perf_end_status(end.status)}")
             dict_version = end.dict_version
+    if sequence is None:
+        raise SerialCliError("perf dict timeout: no ACK received")
+    if expected_count and not entries:
+        raise SerialCliError(f"perf dict returned no entries: expected={expected_count}, sequence={sequence}, version={dict_version}. Try again or increase the timeout.")
     return entries, dict_version
 
 

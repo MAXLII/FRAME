@@ -8,6 +8,8 @@ import sys
 
 import serial
 
+from serial_debug_assistant.app_config import load_config_section
+from serial_debug_assistant.app_paths import get_app_paths
 from serial_debug_assistant.jlink_debug import DebugVariable, JLinkDebugError, JLinkSettings, JLinkVariableService
 from serial_debug_assistant.serial_cli import (
     SerialCliError,
@@ -73,12 +75,12 @@ def _build_parser() -> argparse.ArgumentParser:
     gui.add_argument("--demo", action="store_true", help="start GUI in demo mode")
 
     jlink = subparsers.add_parser("jlink", help="load ELF/MAP symbols and read variables through J-Link")
-    jlink.add_argument("--elf", type=Path, help="ELF/AXF file with symbols")
-    jlink.add_argument("--map", dest="map_path", type=Path, help="linker MAP file, used as fallback or by itself")
+    jlink.add_argument("--elf", type=Path, help="ELF/AXF file with symbols; defaults to saved GUI J-Link config")
+    jlink.add_argument("--map", dest="map_path", type=Path, help="linker MAP file; defaults to saved GUI J-Link config")
     jlink.add_argument("--jlink", default="", help="JLink.exe/JLinkExe.exe path, or command name in PATH")
-    jlink.add_argument("--device", default="", help="SEGGER device name, for example HC32F334K8TA")
-    jlink.add_argument("--interface", default="SWD", choices=("SWD", "JTAG"), help="debug interface")
-    jlink.add_argument("--speed", type=int, default=4000, help="J-Link speed in kHz")
+    jlink.add_argument("--device", default="", help="SEGGER device name; defaults to saved GUI J-Link config")
+    jlink.add_argument("--interface", choices=("SWD", "JTAG"), help="debug interface; defaults to saved GUI J-Link config or SWD")
+    jlink.add_argument("--speed", type=int, help="J-Link speed in kHz; defaults to saved GUI J-Link config or 4000")
     jlink.add_argument("--no-read", action="store_true", help="only list variables parsed from ELF/MAP")
     jlink.add_argument("--filter", default="", help="case-insensitive name/section filter")
     jlink.add_argument("--limit", type=int, default=0, help="maximum variables to print/read, 0 means all")
@@ -204,14 +206,17 @@ def _add_serial_commands(subparsers) -> None:
 def _run_jlink_command(args: argparse.Namespace) -> int:
     service = JLinkVariableService()
     try:
-        variables = service.load_variables(elf_path=args.elf, map_path=args.map_path)
+        jlink_args = _jlink_args_with_saved_config(args)
+        if jlink_args.elf is None and jlink_args.map_path is None:
+            raise JLinkDebugError("Please provide --elf and/or --map, or load symbol files once in the GUI so FRAME can reuse the saved J-Link config.")
+        variables = service.load_variables(elf_path=jlink_args.elf, map_path=jlink_args.map_path)
         variables = _filter_variables(variables, query=args.filter, limit=args.limit)
         if not args.no_read:
             settings = JLinkSettings(
-                executable=args.jlink,
-                device=args.device,
-                interface=args.interface,
-                speed_khz=args.speed,
+                executable=jlink_args.jlink,
+                device=jlink_args.device,
+                interface=jlink_args.interface,
+                speed_khz=jlink_args.speed,
             )
             variables = service.read_variables(variables, settings)
     except (OSError, JLinkDebugError, ValueError) as exc:
@@ -225,6 +230,54 @@ def _run_jlink_command(args: argparse.Namespace) -> int:
     else:
         print(output_text)
     return 0
+
+
+def _jlink_args_with_saved_config(args: argparse.Namespace) -> argparse.Namespace:
+    config = load_config_section(get_app_paths().app_config_file, "ui_settings")
+    values = config.get("values")
+    ui_values = values if isinstance(values, dict) else {}
+    jlink_config = load_config_section(get_app_paths().app_config_file, "jlink")
+    files = jlink_config.get("files")
+    file_values = files if isinstance(files, dict) else {}
+
+    def config_text(*keys: str) -> str:
+        for key in keys:
+            value = ui_values.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            value = file_values.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def config_int(key: str, default: int) -> int:
+        value = ui_values.get(key)
+        if isinstance(value, str) and value.strip():
+            try:
+                return int(value.strip(), 0)
+            except ValueError:
+                return default
+        if isinstance(value, int):
+            return value
+        return default
+
+    elf = args.elf or _path_from_config(config_text("jlink.elf_path", "elf_path"))
+    map_path = args.map_path or _path_from_config(config_text("jlink.map_path", "map_path"))
+    device = args.device.strip() or config_text("jlink.target_device")
+    interface = args.interface or config_text("jlink.interface") or "SWD"
+    speed = args.speed if args.speed is not None else config_int("jlink.speed_khz", 4000)
+    return argparse.Namespace(
+        elf=elf,
+        map_path=map_path,
+        jlink=args.jlink,
+        device=device,
+        interface=interface,
+        speed=speed,
+    )
+
+
+def _path_from_config(value: str) -> Path | None:
+    return Path(value) if value else None
 
 
 def _run_serial_protocol_command(args: argparse.Namespace) -> int:

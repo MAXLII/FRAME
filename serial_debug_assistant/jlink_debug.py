@@ -80,6 +80,15 @@ class JLinkMemoryRange:
         return self.start <= address < self.end
 
 
+@dataclass(frozen=True)
+class SourceLocation:
+    address: int
+    symbol: str
+    file: Path
+    line: int
+    column: int = 0
+
+
 class JLinkDebugError(RuntimeError):
     pass
 
@@ -87,6 +96,8 @@ class JLinkDebugError(RuntimeError):
 class JLinkVariableService:
     def __init__(self) -> None:
         self.symbol_names: dict[int, str] = {}
+        self.function_names: dict[int, str] = {}
+        self.function_locations: dict[str, SourceLocation] = {}
         self.memory_ranges: list[JLinkMemoryRange] = []
         self.type_templates: dict[str, tuple[DebugVariable, ...]] = {}
 
@@ -95,11 +106,16 @@ class JLinkVariableService:
         map_variables: list[DebugVariable] = []
         type_templates: dict[str, tuple[DebugVariable, ...]] = {}
         self.symbol_names = {}
+        self.function_names = {}
+        self.function_locations = {}
         self.memory_ranges = []
         self.type_templates = {}
         if elf_path is not None:
             elf_variables.extend(_load_elf_variables(elf_path))
             self.symbol_names.update(_load_elf_symbol_names(elf_path))
+            self.function_names.update(_load_elf_function_names(elf_path))
+            self.function_names.update(_load_dwarf_function_names(elf_path))
+            self.function_locations.update(_load_dwarf_function_locations(elf_path, self.symbol_names))
             self.memory_ranges.extend(_load_elf_memory_ranges(elf_path))
             type_templates = _load_dwarf_type_templates(elf_path)
         if map_path is not None:
@@ -223,6 +239,113 @@ def jlink_type_template_key(type_name: str) -> str:
     return _normalized_type_key(type_name)
 
 
+def jlink_symbol_name_for_address(address: int, symbol_names: dict[int, str]) -> str:
+    return _symbol_name_for_address(address, symbol_names)
+
+
+def resolve_elf_source_location(path: Path, address: int, symbol_names: dict[int, str] | None = None) -> SourceLocation:
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError as exc:
+        raise JLinkDebugError("pyelftools is required to resolve ELF source locations.") from exc
+
+    query_address = address & ~1
+    best: SourceLocation | None = None
+    best_delta: int | None = None
+    try:
+        with path.open("rb") as handle:
+            elf = ELFFile(handle)
+            if not elf.has_dwarf_info():
+                raise JLinkDebugError(f"{path} does not contain DWARF debug information.")
+            dwarf = elf.get_dwarf_info()
+            for cu in dwarf.iter_CUs():
+                line_program = dwarf.line_program_for_CU(cu)
+                if line_program is None:
+                    continue
+                previous_state = None
+                for entry in line_program.get_entries():
+                    state = entry.state
+                    if state is None:
+                        continue
+                    if state.end_sequence:
+                        previous_state = None
+                        continue
+                    if previous_state is not None and previous_state.address <= query_address < state.address:
+                        candidate_address = previous_state.address
+                        delta = query_address - candidate_address
+                        if best_delta is None or delta < best_delta:
+                            best = _source_location_from_line_state(
+                                cu=cu,
+                                line_program=line_program,
+                                state=previous_state,
+                                query_address=query_address,
+                                symbol_names=symbol_names or {},
+                            )
+                            best_delta = delta
+                    if state.address == query_address:
+                        best = _source_location_from_line_state(
+                            cu=cu,
+                            line_program=line_program,
+                            state=state,
+                            query_address=query_address,
+                            symbol_names=symbol_names or {},
+                        )
+                        best_delta = 0
+                    previous_state = state
+    except JLinkDebugError:
+        raise
+    except Exception as exc:
+        raise JLinkDebugError(f"Failed to resolve ELF source location: {exc}") from exc
+    if best is None:
+        raise JLinkDebugError(f"No DWARF source line found for address 0x{address:08X}.")
+    return best
+
+
+def resolve_elf_function_source_location(path: Path, function_name: str, symbol_names: dict[int, str] | None = None) -> SourceLocation:
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError as exc:
+        raise JLinkDebugError("pyelftools is required to resolve ELF source locations.") from exc
+
+    try:
+        with path.open("rb") as handle:
+            elf = ELFFile(handle)
+            if not elf.has_dwarf_info():
+                raise JLinkDebugError(f"{path} does not contain DWARF debug information.")
+            dwarf = elf.get_dwarf_info()
+            for cu in dwarf.iter_CUs():
+                line_program = dwarf.line_program_for_CU(cu)
+                if line_program is None:
+                    continue
+                for die in cu.iter_DIEs():
+                    if die.tag != "DW_TAG_subprogram":
+                        continue
+                    name = _dwarf_die_name(die)
+                    linkage_name = _dwarf_linkage_name(die)
+                    if function_name not in {name, linkage_name}:
+                        continue
+                    decl_file_attr = die.attributes.get("DW_AT_decl_file")
+                    decl_line_attr = die.attributes.get("DW_AT_decl_line")
+                    if decl_file_attr is None or decl_line_attr is None:
+                        continue
+                    address = _dwarf_low_pc(die)
+                    if address is None:
+                        address = _symbol_address_by_name(function_name, symbol_names or {})
+                    if address is None:
+                        address = 0
+                    return SourceLocation(
+                        address=address,
+                        symbol=function_name,
+                        file=_line_state_file_path(cu, line_program, int(decl_file_attr.value)),
+                        line=int(decl_line_attr.value),
+                    )
+    except JLinkDebugError:
+        raise
+    except Exception as exc:
+        raise JLinkDebugError(f"Failed to resolve ELF function source: {exc}") from exc
+    raise JLinkDebugError(f"No DWARF function source found for: {function_name}")
+
+
 def infer_jlink_device_from_text(text: str) -> str:
     for pattern in (
         r"Device\s+\"?([A-Za-z0-9_+\-/.]+)\"?\s+selected",
@@ -323,6 +446,117 @@ def _load_elf_symbol_names(path: Path) -> dict[int, str]:
                 continue
             symbols.setdefault(value, name)
     return symbols
+
+
+def _load_elf_function_names(path: Path) -> dict[int, str]:
+    data = path.read_bytes()
+    if len(data) < 16 or data[:4] != b"\x7fELF":
+        return {}
+
+    is_64_bit = data[4] == 2
+    endian = "<" if data[5] == 1 else ">"
+    sections = _read_elf_sections(data, is_64_bit=is_64_bit, endian=endian)
+    names = _read_section_names(data, sections)
+    functions: dict[int, str] = {}
+    for section in sections:
+        if section["type"] not in (SHT_SYMTAB, SHT_DYNSYM):
+            continue
+        strtab_index = section["link"]
+        if strtab_index >= len(sections):
+            continue
+        strtab = _section_bytes(data, sections[strtab_index])
+        symbol_bytes = _section_bytes(data, section)
+        entry_size = section["entsize"] or (24 if is_64_bit else 16)
+        for offset in range(0, len(symbol_bytes), entry_size):
+            entry = symbol_bytes[offset : offset + entry_size]
+            if len(entry) < entry_size:
+                continue
+            name_offset, info, value, size, shndx = _read_elf_symbol(entry, is_64_bit=is_64_bit, endian=endian)
+            if (info & 0x0F) != FUNCTION_SYMBOL_TYPE or shndx == 0 or value == 0:
+                continue
+            name = _read_c_string(strtab, name_offset)
+            if not _is_variable_name(name):
+                continue
+            section_name = names[shndx] if shndx < len(names) else ""
+            if _is_debug_or_metadata_section(section_name):
+                continue
+            if not _looks_like_mcu_address(value):
+                continue
+            functions.setdefault(value, name)
+    return functions
+
+
+def _load_dwarf_function_names(path: Path) -> dict[int, str]:
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        return {}
+
+    functions: dict[int, str] = {}
+    try:
+        with path.open("rb") as handle:
+            elf = ELFFile(handle)
+            if not elf.has_dwarf_info():
+                return {}
+            dwarf = elf.get_dwarf_info()
+            for cu in dwarf.iter_CUs():
+                for die in cu.iter_DIEs():
+                    if die.tag != "DW_TAG_subprogram":
+                        continue
+                    name = _dwarf_die_name(die)
+                    if not _is_variable_name(name):
+                        continue
+                    address = _dwarf_low_pc(die)
+                    if address is None or not _looks_like_mcu_address(address):
+                        continue
+                    functions.setdefault(address, name)
+    except Exception:
+        return {}
+    return functions
+
+
+def _load_dwarf_function_locations(path: Path, symbol_names: dict[int, str]) -> dict[str, SourceLocation]:
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        return {}
+
+    locations: dict[str, SourceLocation] = {}
+    try:
+        with path.open("rb") as handle:
+            elf = ELFFile(handle)
+            if not elf.has_dwarf_info():
+                return {}
+            dwarf = elf.get_dwarf_info()
+            for cu in dwarf.iter_CUs():
+                line_program = dwarf.line_program_for_CU(cu)
+                if line_program is None:
+                    continue
+                for die in cu.iter_DIEs():
+                    if die.tag != "DW_TAG_subprogram":
+                        continue
+                    name = _dwarf_die_name(die)
+                    if not _is_variable_name(name):
+                        continue
+                    decl_file_attr = die.attributes.get("DW_AT_decl_file")
+                    decl_line_attr = die.attributes.get("DW_AT_decl_line")
+                    if decl_file_attr is None or decl_line_attr is None:
+                        continue
+                    address = _dwarf_low_pc(die)
+                    if address is None:
+                        address = _symbol_address_by_name(name, symbol_names) or 0
+                    locations.setdefault(
+                        name,
+                        SourceLocation(
+                            address=address,
+                            symbol=name,
+                            file=_line_state_file_path(cu, line_program, int(decl_file_attr.value)),
+                            line=int(decl_line_attr.value),
+                        ),
+                    )
+    except Exception:
+        return {}
+    return locations
 
 
 def _load_elf_memory_ranges(path: Path) -> list[JLinkMemoryRange]:
@@ -522,6 +756,61 @@ def _load_dwarf_type_templates(path: Path) -> dict[str, tuple[DebugVariable, ...
     return templates
 
 
+def _source_location_from_line_state(cu, line_program, state, query_address: int, symbol_names: dict[int, str]) -> SourceLocation:
+    file_path = _line_state_file_path(cu, line_program, state.file)
+    return SourceLocation(
+        address=query_address,
+        symbol=_symbol_name_for_address(query_address, symbol_names),
+        file=file_path,
+        line=int(state.line or 0),
+        column=int(state.column or 0),
+    )
+
+
+def _line_state_file_path(cu, line_program, file_index: int) -> Path:
+    files = line_program["file_entry"]
+    if file_index <= 0 or file_index > len(files):
+        return Path("")
+    file_entry = files[file_index - 1]
+    file_name = _dwarf_bytes_to_text(file_entry.name)
+    file_path = Path(file_name)
+    if file_path.is_absolute():
+        return file_path
+
+    comp_dir = _cu_comp_dir(cu)
+    directory = _line_file_directory(line_program, int(file_entry.dir_index), comp_dir)
+    if directory:
+        return Path(directory) / file_name
+    return Path(file_name)
+
+
+def _line_file_directory(line_program, dir_index: int, comp_dir: str) -> str:
+    if dir_index == 0:
+        return comp_dir
+    directories = line_program["include_directory"]
+    if 0 < dir_index <= len(directories):
+        directory = _dwarf_bytes_to_text(directories[dir_index - 1])
+        path = Path(directory)
+        if path.is_absolute() or not comp_dir:
+            return directory
+        return str(Path(comp_dir) / path)
+    return comp_dir
+
+
+def _cu_comp_dir(cu) -> str:
+    top_die = cu.get_top_DIE()
+    attr = top_die.attributes.get("DW_AT_comp_dir")
+    if attr is None:
+        return ""
+    return _dwarf_bytes_to_text(attr.value)
+
+
+def _dwarf_bytes_to_text(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _apply_map_type_templates(
     variables: list[DebugVariable],
     type_templates: dict[str, tuple[DebugVariable, ...]],
@@ -607,6 +896,25 @@ def _dwarf_die_name(die) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _dwarf_linkage_name(die) -> str:
+    for attr_name in ("DW_AT_linkage_name", "DW_AT_MIPS_linkage_name"):
+        attr = die.attributes.get(attr_name)
+        if attr is None:
+            continue
+        return _dwarf_bytes_to_text(attr.value)
+    return ""
+
+
+def _dwarf_low_pc(die) -> int | None:
+    attr = die.attributes.get("DW_AT_low_pc")
+    if attr is None:
+        return None
+    try:
+        return int(attr.value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _dwarf_scoped_variable_name(die, name: str) -> str:
@@ -1501,6 +1809,13 @@ def _symbol_name_for_address(address: int, symbol_names: dict[int, str]) -> str:
     if address & 1:
         return symbol_names.get(address & ~1, "")
     return ""
+
+
+def _symbol_address_by_name(name: str, symbol_names: dict[int, str]) -> int | None:
+    for address, symbol in symbol_names.items():
+        if symbol == name:
+            return address
+    return None
 
 
 def _is_integer_type(type_text: str) -> bool:
