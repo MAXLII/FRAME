@@ -218,6 +218,7 @@ from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
 from serial_debug_assistant.ui.perf_tab import PerfTab
 from serial_debug_assistant.ui.scope_tab import ScopeTab
 from serial_debug_assistant.ui.sfra_tab import SfraTab
+from serial_debug_assistant.ui.settings_persistence import load_ui_settings, save_ui_settings
 from serial_debug_assistant.ui.theme import APP_BG, configure_app_styles
 from serial_debug_assistant.ui.trace_tab import TraceTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
@@ -303,6 +304,7 @@ class SerialDebugAssistant(tk.Tk):
         self.paths = get_app_paths()
         ensure_runtime_dirs(self.paths)
         migration_notes = migrate_legacy_data(self.paths)
+        self.ui_settings_path = self.paths.config_dir / "ui_settings.json"
         self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
         self.can_service = CANService()
@@ -389,6 +391,9 @@ class SerialDebugAssistant(tk.Tk):
         self.perf_periodic_running = False
         self.trace_running = False
         self._serial_bar_compact: bool | None = None
+        self._persistent_setting_vars: dict[str, tk.Variable] = {}
+        self._persistent_settings_save_job: str | None = None
+        self._applying_persistent_settings = False
 
         self.transport_var = tk.StringVar(value="Serial")
         self.port_var = tk.StringVar()
@@ -418,6 +423,9 @@ class SerialDebugAssistant(tk.Tk):
 
         self._configure_styles()
         self._build_ui()
+        self._register_persistent_settings()
+        self._load_persistent_settings()
+        self._bind_persistent_settings()
         self.logger.log("APP", f"startup log_file={self.logger.log_path}")
         for note in migration_notes:
             self.logger.log("APP", note)
@@ -454,6 +462,179 @@ class SerialDebugAssistant(tk.Tk):
 
     def _configure_styles(self) -> None:
         configure_app_styles(self)
+
+    def _register_persistent_settings(self) -> None:
+        self._persistent_setting_vars.clear()
+        self._register_settings(
+            "connection",
+            {
+                "transport": self.transport_var,
+                "port": self.port_var,
+                "baud": self.baud_var,
+                "data_bits": self.data_bits_var,
+                "parity": self.parity_var,
+                "stop_bits": self.stop_bits_var,
+                "can_interface": self.can_interface_var,
+                "can_bitrate": self.can_bitrate_var,
+                "language": self.language_var,
+            },
+        )
+        self._register_settings(
+            "monitor",
+            {
+                "break_ms": self.break_ms_var,
+                "auto_send_seconds": self.auto_send_seconds_var,
+                "send_hex": self.send_hex_var,
+                "recv_hex": self.recv_hex_var,
+                "timestamp": self.timestamp_var,
+                "auto_break": self.auto_break_var,
+                "line_mode": self.line_mode_var,
+                "display_send_string": self.display_send_string_var,
+            },
+        )
+        self._register_settings(
+            "parameter",
+            {
+                "target_addr": self.parameter_tab.module_addr_var,
+                "dynamic_addr": self.parameter_tab.dynamic_addr_var,
+            },
+        )
+        self._register_settings(
+            "home",
+            {
+                "inv_config": self.home_tab.inv_cfg_var,
+            },
+        )
+        self._register_settings(
+            "upgrade",
+            {
+                "target_addr": self.upgrade_tab.download_addr_var,
+                "dynamic_addr": self.upgrade_tab.download_dyn_addr_var,
+            },
+        )
+        self._register_settings(
+            "black_box",
+            {
+                "start_offset": self.black_box_tab.start_offset_var,
+                "read_length": self.black_box_tab.read_length_var,
+            },
+        )
+        self._register_settings(
+            "factory",
+            {
+                "target_addr": self.factory_mode_tab.target_addr_var,
+                "dynamic_addr": self.factory_mode_tab.dynamic_addr_var,
+                "timezone": self.factory_mode_tab.timezone_var,
+                "cali_target_addr": self.factory_mode_tab.cali_dst_var,
+                "cali_dynamic_addr": self.factory_mode_tab.cali_d_dst_var,
+                "cali_id": self.factory_mode_tab.cali_id_var,
+                "cali_gain": self.factory_mode_tab.cali_gain_var,
+                "cali_bias": self.factory_mode_tab.cali_bias_var,
+            },
+        )
+        self._register_settings(
+            "scope",
+            {
+                "target_addr": self.scope_tab.target_addr_var,
+                "dynamic_addr": self.scope_tab.dynamic_addr_var,
+                "scope_object": self.scope_tab.scope_var,
+                "variable_scale": self.scope_tab.var_scale_input_var,
+            },
+        )
+        self._register_settings(
+            "sfra",
+            {
+                "target_addr": self.sfra_tab.target_addr_var,
+                "dynamic_addr": self.sfra_tab.dynamic_addr_var,
+                "sfra_loop": self.sfra_tab.sfra_var,
+                "start_freq": self.sfra_tab.start_freq_var,
+                "stop_freq": self.sfra_tab.stop_freq_var,
+                "amplitude": self.sfra_tab.amplitude_var,
+            },
+        )
+        self._register_settings(
+            "perf",
+            {
+                "target_addr": self.perf_tab.target_addr_var,
+                "dynamic_addr": self.perf_tab.dynamic_addr_var,
+                "periodic_interval": self.perf_tab.periodic_interval_var,
+            },
+        )
+        self._register_settings(
+            "trace",
+            {
+                "target_addr": self.trace_tab.target_addr_var,
+                "dynamic_addr": self.trace_tab.dynamic_addr_var,
+            },
+        )
+        self._register_settings(
+            "wave",
+            {
+                "period_ms": self.wave_tab.period_var,
+                "window": self.wave_tab.window_var,
+                "marker": self.wave_tab.marker_var,
+            },
+        )
+        self._register_settings(
+            "jlink",
+            {
+                "target_device": self.jlink_tab.device_var,
+                "interface": self.jlink_tab.interface_var,
+                "speed_khz": self.jlink_tab.speed_var,
+                "elf_path": self.jlink_tab.elf_path_var,
+                "map_path": self.jlink_tab.map_path_var,
+            },
+        )
+
+    def _register_settings(self, section: str, variables: dict[str, tk.Variable]) -> None:
+        for name, variable in variables.items():
+            self._persistent_setting_vars[f"{section}.{name}"] = variable
+
+    def _load_persistent_settings(self) -> None:
+        settings = load_ui_settings(self.ui_settings_path)
+        if not settings:
+            return
+        self._applying_persistent_settings = True
+        try:
+            for key, variable in self._persistent_setting_vars.items():
+                if key not in settings:
+                    continue
+                try:
+                    variable.set(settings[key])
+                except tk.TclError:
+                    continue
+            self.i18n.set_language(self.i18n.get_language_from_label(self.language_var.get()))
+            self.language_var.set(self.i18n.get_label_for_language(self.i18n.language))
+            self._apply_language()
+            self._update_transport_ui()
+            self.jlink_tab.remember_device()
+            self.jlink_tab.save_file_history()
+        finally:
+            self._applying_persistent_settings = False
+
+    def _bind_persistent_settings(self) -> None:
+        for variable in self._persistent_setting_vars.values():
+            variable.trace_add("write", self._on_persistent_setting_changed)
+
+    def _on_persistent_setting_changed(self, *_args) -> None:
+        if self._applying_persistent_settings:
+            return
+        if self._persistent_settings_save_job is not None:
+            self.after_cancel(self._persistent_settings_save_job)
+        self._persistent_settings_save_job = self.after(500, self._save_persistent_settings)
+
+    def _save_persistent_settings(self) -> None:
+        self._persistent_settings_save_job = None
+        values = self._persistent_setting_values()
+        try:
+            save_ui_settings(self.ui_settings_path, values)
+        except OSError as exc:
+            self.logger.log("ERROR", f"save ui settings failed: {exc}")
+
+    def _persistent_setting_values(self) -> dict[str, object]:
+        values = {key: variable.get() for key, variable in self._persistent_setting_vars.items()}
+        values["connection.port"] = self.port_display_map.get(self.port_var.get(), self.port_var.get())
+        return values
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, style="App.TFrame", padding=16)
@@ -5277,6 +5458,10 @@ class SerialDebugAssistant(tk.Tk):
         if self.perf_periodic_job:
             self.after_cancel(self.perf_periodic_job)
             self.perf_periodic_job = None
+        if self._persistent_settings_save_job is not None:
+            self.after_cancel(self._persistent_settings_save_job)
+            self._persistent_settings_save_job = None
+        self._save_persistent_settings()
         self.perf_periodic_running = False
         self.stop_upgrade("Application closing, upgrade stopped.", user_initiated=False)
         saved_path = self.wave_tab.auto_save_waveform_file(reason="application close")
