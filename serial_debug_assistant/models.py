@@ -195,3 +195,4 @@ class FirmwareUpdateSession:
     llc_forward_progress_sent_bytes: int = 0
     llc_forward_progress_total_bytes: int = 0
     llc_forward_progress_permille: int = 0
+    app_ready_wait_started_at: float = 0.0

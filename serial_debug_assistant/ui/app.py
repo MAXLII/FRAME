@@ -1810,6 +1810,20 @@ class SerialDebugAssistant(tk.Tk):
                     self.upgrade_tab.append_log("0x0D timeout, retry LLC -> PFC forward-progress query")
                     self._send_llc_pfc_upgrade_progress_query()
                     return
+        elif session.stage == "wait_app_ready":
+            if session.app_ready_wait_started_at <= 0.0:
+                session.app_ready_wait_started_at = now
+            if now - session.app_ready_wait_started_at >= 75.0:
+                self._fail_upgrade(
+                    "Upgrade completed but APP is not ready",
+                    "APP parameter service did not respond within 75 seconds.",
+                    "APP_TIMEOUT",
+                )
+                return
+            if now - session.last_tx_at >= 1.5:
+                self.upgrade_tab.append_log("APP parameter service not ready yet, retry 0x01 query")
+                self._send_app_ready_query()
+                return
         elif session.stage == "poll_forward_progress":
             if now - session.last_tx_at >= session.llc_forward_query_interval_seconds:
                 self._send_llc_pfc_upgrade_progress_query()
@@ -1919,6 +1933,29 @@ class SerialDebugAssistant(tk.Tk):
             cmd_set=CMD_SET_UPDATE,
             cmd_word=CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
             payload=build_llc_pfc_upgrade_progress_query_payload(),
+        )
+        self._schedule_update_tick()
+
+    def _send_app_ready_query(self) -> None:
+        session = self.update_session
+        if session is None:
+            return
+        if session.app_ready_wait_started_at <= 0.0:
+            session.app_ready_wait_started_at = time.monotonic()
+        session.stage = "wait_app_ready"
+        session.last_tx_at = time.monotonic()
+        self.upgrade_tab.set_status(
+            "Upgrade in progress",
+            "Waiting for APP parameter service (0x01 0x01)",
+            error_code="-",
+        )
+        self.upgrade_tab.append_log("TX 0x01 -> query APP parameter service readiness")
+        self.send_protocol_frame(
+            dst=session.target_addr,
+            d_dst=session.target_dynamic_addr,
+            cmd_set=CMD_SET_UPDATE,
+            cmd_word=0x01,
+            payload=b"\x00",
         )
         self._schedule_update_tick()
 
@@ -3277,6 +3314,7 @@ class SerialDebugAssistant(tk.Tk):
         if session is None:
             return False
         if frame.cmd_word not in {
+            0x01,
             CMD_WORD_UPDATE_INFO,
             CMD_WORD_UPDATE_READY,
             CMD_WORD_UPDATE_FW,
@@ -3378,15 +3416,20 @@ class SerialDebugAssistant(tk.Tk):
                         progress_permille=0,
                     )
                     self._send_llc_pfc_upgrade_progress_query()
-                elif session.image.footer.module_id == 0x01:
-                    detail = "Upgrade completed. LLC will reboot and continue the APP flow."
-                    self._complete_upgrade(detail)
                 else:
-                    detail = "Upgrade completed. The device will reboot and jump to the new APP."
-                    self._complete_upgrade(detail)
+                    self.upgrade_tab.append_log("0x0B ACK accepted. Waiting for the APP parameter service.")
+                    self._send_app_ready_query()
             else:
                 self._fail_upgrade("Upgrade failed", "0x0B returned success_flg=0.", "0x0B_FAIL")
             return True
+
+        if frame.cmd_word == 0x01 and session.stage == "wait_app_ready":
+            if len(frame.payload) < 4:
+                return False
+            param_count = int.from_bytes(frame.payload[:4], "little")
+            self.upgrade_tab.append_log(f"RX 0x01 ACK <- APP parameter service ready, count={param_count}")
+            self._complete_upgrade(f"Upgrade completed. APP parameter service ready, count={param_count}.")
+            return False
 
         if frame.cmd_word == CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY and session.stage in {"wait_forward_progress_ack", "poll_forward_progress"}:
             try:

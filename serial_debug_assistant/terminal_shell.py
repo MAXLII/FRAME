@@ -565,10 +565,45 @@ class FrameTerminalShell:
             if image.footer.module_id == 0x03:
                 self._poll_llc_pfc_forward_progress(dst=dst, d_dst=d_dst, total_bytes=len(image.data))
             else:
-                self._set_upgrade_status(state="done", detail="upgrade completed", sent_bytes=len(image.data), total_bytes=len(image.data), stage="done")
+                self._poll_application_ready(dst=dst, d_dst=d_dst, total_bytes=len(image.data))
         except Exception as exc:
             state = "stopped" if isinstance(exc, SerialCliError) and str(exc) == "upgrade stopped" else "failed"
             self._set_upgrade_status(state=state, detail=str(exc), stage=state)
+
+    def _poll_application_ready(self, *, dst: int, d_dst: int, total_bytes: int) -> None:
+        deadline = time.monotonic() + 75.0
+
+        while time.monotonic() < deadline:
+            self._raise_if_upgrade_stopped()
+            self._set_upgrade_status(
+                state="running",
+                detail="upgrade completed; waiting for application parameter service",
+                sent_bytes=total_bytes,
+                total_bytes=total_bytes,
+                stage="app_wait",
+            )
+            frames = self._upgrade_request(cmd_word=0x01, payload=b"\x00", dst=dst, d_dst=d_dst, wait_seconds=1.0)
+            ack = self._find_ack(frames, 0x01)
+            if ack is not None and len(ack.payload) >= 4:
+                param_count = int.from_bytes(ack.payload[:4], "little")
+                self._set_upgrade_status(
+                    state="done",
+                    detail=f"upgrade completed; application parameter service ready, count={param_count}",
+                    sent_bytes=total_bytes,
+                    total_bytes=total_bytes,
+                    stage="app_ready",
+                    extra={"param_count": param_count},
+                )
+                return
+            time.sleep(0.5)
+
+        self._set_upgrade_status(
+            state="done",
+            detail="upgrade completed; application parameter service did not become ready within 75s",
+            sent_bytes=total_bytes,
+            total_bytes=total_bytes,
+            stage="app_timeout",
+        )
 
     def _poll_llc_pfc_forward_progress(self, *, dst: int, d_dst: int, total_bytes: int) -> None:
         while not self.upgrade_stop_event.is_set():
