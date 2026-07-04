@@ -37,7 +37,7 @@ if errorlevel 1 (
     )
 )
 
-echo [3/3] Starting FRAME...
-start "" ".venv\Scripts\python.exe" "main.py"
+echo [3/3] Starting FRAME GUI...
+start "" ".venv\Scripts\python.exe" "main.py" gui
 
 endlocal

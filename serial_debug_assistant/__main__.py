@@ -1,5 +1,5 @@
-from serial_debug_assistant.ui.app import launch_app
+from serial_debug_assistant.cli import main
 
 
 if __name__ == "__main__":
-    launch_app()
+    raise SystemExit(main())
