@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from serial_debug_assistant.app_config import load_config_section, save_config_section
-from serial_debug_assistant.jlink_debug import DebugVariable, JLinkSettings, infer_jlink_device
+from serial_debug_assistant.jlink_debug import DebugVariable, JLinkSettings, infer_jlink_device, jlink_type_template_key
 from serial_debug_assistant.ui.file_dialogs import ask_open_file, preferred_dir
 from serial_debug_assistant.ui.theme import ACCENT_SOFT, SURFACE_ALT, TEXT, TEXT_MUTED
 
@@ -61,8 +61,11 @@ class JLinkDebugTab(ttk.Frame):
         self._focused_cell: tuple[str, str] | None = None
         self._edit_entry: ttk.Entry | None = None
         self._edit_value_var = tk.StringVar()
-        self._expanded_dynamic: set[tuple[int, str]] = set()
+        self._expanded_dynamic: set[str] = set()
         self._expanded_nodes: set[str] = set()
+        self._type_templates: dict[str, tuple[DebugVariable, ...]] = {}
+        self._busy = False
+        self._pending_open_scan = False
         self._load_file_history()
         self._build()
 
@@ -251,6 +254,9 @@ class JLinkDebugTab(ttk.Frame):
         self.count_var.set(f"{len(self._variables)} variables")
         self._refresh_rows()
 
+    def set_type_templates(self, templates: dict[str, tuple[DebugVariable, ...]]) -> None:
+        self._type_templates = dict(templates)
+
     def replace_variables(self, variables: list[DebugVariable]) -> None:
         updates = {(variable.address, variable.name): variable for variable in variables}
         self._variables = [updates.get((variable.address, variable.name), variable) for variable in self._variables]
@@ -272,9 +278,8 @@ class JLinkDebugTab(ttk.Frame):
             if row_tag:
                 self.tree.item(key, tags=(row_tag,))
 
-    def set_dynamic_children(self, parent_variable: DebugVariable, children: list[DebugVariable]) -> None:
-        parent_key = self._row_key_for_variable(parent_variable)
-        if not parent_key:
+    def set_dynamic_children(self, parent_key: str, parent_variable: DebugVariable, children: list[DebugVariable]) -> None:
+        if not parent_key or not self.tree.exists(parent_key):
             return
         self.tree.delete(*self.tree.get_children(parent_key))
         sibling_counts: dict[str, int] = {}
@@ -282,7 +287,7 @@ class JLinkDebugTab(ttk.Frame):
         base_expression = self._node_expressions.get(parent_key, parent_variable.name)
         parent_meta = _build_parent_metadata(children)
         for index, variable in enumerate(children):
-            variable = _reuse_linked_pointer_templates(parent_variable, variable)
+            variable = _attach_pointer_templates(parent_variable, variable, self._type_templates)
             parts = _expression_parts(variable.name)
             parent = parent_key
             path: tuple[str, ...] = ()
@@ -320,16 +325,30 @@ class JLinkDebugTab(ttk.Frame):
             )
             if variable.child_templates:
                 self.tree.insert(item, "end", iid=f"dummy:{key}", text="...", values=("", "", "", "", ""), tags=("pending",))
-        self._expanded_dynamic.add((parent_variable.address, parent_variable.name))
+        self._expanded_dynamic.add(parent_key)
         self.tree.item(parent_key, open=True)
 
-    def clear_dynamic_children(self, parent_variable: DebugVariable) -> None:
-        parent_key = self._row_key_for_variable(parent_variable)
-        if not parent_key:
+    def clear_dynamic_children(self, parent_key: str) -> None:
+        if not parent_key or not self.tree.exists(parent_key):
             return
         self.tree.delete(*self.tree.get_children(parent_key))
-        self._expanded_dynamic.add((parent_variable.address, parent_variable.name))
+        self._expanded_dynamic.add(parent_key)
         self.tree.item(parent_key, open=True)
+
+    def set_dynamic_error(self, parent_key: str, message: str) -> None:
+        if not parent_key or not self.tree.exists(parent_key):
+            return
+        self.tree.delete(*self.tree.get_children(parent_key))
+        self.tree.insert(
+            parent_key,
+            "end",
+            iid=f"error:{parent_key}",
+            text=message,
+            values=("", "", "", "", "FAIL"),
+            tags=("failed",),
+        )
+        self.tree.insert(parent_key, "end", iid=f"dummy:{parent_key}", text="...", values=("", "", "", "", ""), tags=("pending",))
+        self.tree.item(parent_key, open=False)
 
     def get_selected_variable(self) -> DebugVariable | None:
         selected_key = self._selected_key()
@@ -356,12 +375,15 @@ class JLinkDebugTab(ttk.Frame):
         self.status_var.set(message)
 
     def set_busy(self, busy: bool) -> None:
+        self._busy = busy
         state = "disabled" if busy else "normal"
         self._close_value_editor()
         self.load_button.configure(state=state)
         self.refresh_button.configure(state=state)
         self.connect_button.configure(state=state)
         self.device_combo.configure(state=state)
+        if not busy:
+            self._schedule_open_scan()
 
     def _show_device_history(self, event) -> None:
         if self._device_history:
@@ -563,20 +585,46 @@ class JLinkDebugTab(ttk.Frame):
         self._edit_entry = None
 
     def _on_tree_open(self, _event=None) -> None:
-        row_id = self.tree.focus()
-        variable = self._variable_keys.get(row_id)
-        if variable is None:
+        self._schedule_open_scan()
+
+    def _schedule_open_scan(self) -> None:
+        if self._pending_open_scan:
+            return
+        self._pending_open_scan = True
+        self.after_idle(self._expand_open_placeholders)
+
+    def _expand_open_placeholders(self) -> None:
+        self._pending_open_scan = False
+        if self._busy:
+            return
+        candidate = self._first_open_expand_candidate("")
+        if candidate is None:
+            return
+        row_id, variable = candidate
+        if row_id in self._expanded_dynamic:
+            return
+        self.on_expand_variable(row_id, variable)
+
+    def _first_open_expand_candidate(self, parent: str) -> tuple[str, DebugVariable] | None:
+        for row_id in self.tree.get_children(parent):
+            if not self.tree.item(row_id, "open"):
+                continue
+            variable = self._variable_keys.get(row_id)
+            if variable is not None and variable.child_templates and self._has_dummy_child(row_id):
+                if row_id not in self._expanded_dynamic:
+                    return row_id, variable
             variables = self._node_variables.get(row_id, [])
             if variables and row_id not in self._expanded_nodes and any(item.status != "OK" for item in variables):
                 self._expanded_nodes.add(row_id)
                 self.on_expand_node(row_id, variables)
-            return
-        if not variable.child_templates:
-            return
-        dynamic_key = (variable.address, variable.name)
-        if dynamic_key in self._expanded_dynamic:
-            return
-        self.on_expand_variable(variable)
+                return None
+            nested = self._first_open_expand_candidate(row_id)
+            if nested is not None:
+                return nested
+        return None
+
+    def _has_dummy_child(self, row_id: str) -> bool:
+        return any(str(child).startswith("dummy:") for child in self.tree.get_children(row_id))
 
     def _set_focused_cell_from_event(self, event) -> bool:
         row_id = self.tree.identify_row(event.y)
@@ -748,12 +796,19 @@ def _parts_to_expression(parts: tuple[str, ...]) -> str:
     return text
 
 
-def _reuse_linked_pointer_templates(parent_variable: DebugVariable, variable: DebugVariable) -> DebugVariable:
-    if variable.child_templates or not parent_variable.child_templates:
+def _attach_pointer_templates(
+    parent_variable: DebugVariable,
+    variable: DebugVariable,
+    type_templates: dict[str, tuple[DebugVariable, ...]],
+) -> DebugVariable:
+    if variable.child_templates or "*" not in variable.type_name:
+        return variable
+    templates = type_templates.get(jlink_type_template_key(variable.type_name))
+    if templates:
+        return replace(variable, child_templates=templates)
+    if not parent_variable.child_templates:
         return variable
     if _normalized_type_name(variable.type_name) != _normalized_type_name(parent_variable.type_name):
-        return variable
-    if "*" not in variable.type_name:
         return variable
     return replace(variable, child_templates=parent_variable.child_templates)
 

@@ -1064,6 +1064,7 @@ class SerialDebugAssistant(tk.Tk):
         threading.Thread(target=worker, name="jlink-symbol-loader", daemon=True).start()
 
     def _finish_jlink_load_success(self, variables) -> None:
+        self.jlink_tab.set_type_templates(self.jlink_service.type_templates)
         self.jlink_tab.set_variables(variables)
         self.jlink_tab.set_busy(False)
         message = f"Loaded {len(variables)} variable(s)."
@@ -1239,9 +1240,10 @@ class SerialDebugAssistant(tk.Tk):
 
         threading.Thread(target=worker, name="jlink-node-read", daemon=True).start()
 
-    def expand_jlink_pointer_variable(self, variable: DebugVariable) -> None:
+    def expand_jlink_pointer_variable(self, row_id: str, variable: DebugVariable) -> None:
         if not variable.child_templates:
             return
+        expression = self.jlink_tab.expression_for_node(row_id)
         self.jlink_tab.auto_detect_device()
         try:
             settings = self.jlink_tab.get_jlink_settings()
@@ -1251,8 +1253,9 @@ class SerialDebugAssistant(tk.Tk):
             return
 
         self.jlink_tab.set_busy(True)
-        self.jlink_tab.set_status(f"Reading pointer {variable.name} through J-Link...")
-        self.set_status(f"Expanding J-Link pointer: {variable.name}")
+        self.jlink_tab.set_status(f"Reading pointer {expression} through J-Link...")
+        self.set_status(f"Expanding J-Link pointer: {expression}")
+        self.logger.log("JLINK", f"expand request row={row_id} expression={expression} field=0x{variable.address:08X} type={variable.type_name}")
 
         def worker() -> None:
             try:
@@ -1264,19 +1267,20 @@ class SerialDebugAssistant(tk.Tk):
                 if target_address is None:
                     raise JLinkDebugError(f"Unable to read pointer value for {variable.name}.")
                 if target_address == 0:
-                    self.after(0, lambda: self._finish_jlink_pointer_expand_null(pointer_variable))
+                    self.after(0, lambda: self._finish_jlink_pointer_expand_null(row_id, pointer_variable))
                     return
                 if not is_jlink_expandable_address(target_address, self.jlink_service.memory_ranges):
                     raise JLinkDebugError(
                         f"{variable.name} points to unsupported address 0x{target_address:08X}; it is outside the ELF/MAP memory ranges."
                     )
+                self.logger.log("JLINK", f"expand target row={row_id} expression={expression} target=0x{target_address:08X}")
                 children = self._build_jlink_pointer_children(pointer_variable, target_address)
                 refreshed = self.jlink_service.read_variables(children, settings)
             except JLinkDebugError as exc:
                 message = str(exc)
-                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                self.after(0, lambda: self._finish_jlink_pointer_expand_error(row_id, variable, expression, message))
                 return
-            self.after(0, lambda: self._finish_jlink_pointer_expand_success(pointer_variable, refreshed))
+            self.after(0, lambda: self._finish_jlink_pointer_expand_success(row_id, pointer_variable, expression, refreshed))
 
         threading.Thread(target=worker, name="jlink-pointer-expand", daemon=True).start()
 
@@ -1294,25 +1298,32 @@ class SerialDebugAssistant(tk.Tk):
             for template in variable.child_templates
         ]
 
-    def _finish_jlink_pointer_expand_null(self, parent_variable: DebugVariable) -> None:
+    def _finish_jlink_pointer_expand_null(self, parent_key: str, parent_variable: DebugVariable) -> None:
         self.jlink_tab.update_visible_variables([parent_variable])
-        self.jlink_tab.clear_dynamic_children(parent_variable)
+        self.jlink_tab.clear_dynamic_children(parent_key)
         self.jlink_tab.set_busy(False)
         message = f"{parent_variable.name} is NULL."
         self.jlink_tab.set_status(message)
         self.set_status(message, error=True)
 
-    def _finish_jlink_pointer_expand_success(self, parent_variable: DebugVariable, children: list[DebugVariable]) -> None:
+    def _finish_jlink_pointer_expand_success(self, parent_key: str, parent_variable: DebugVariable, expression: str, children: list[DebugVariable]) -> None:
         self.jlink_tab.update_visible_variables([parent_variable])
         ok_count = sum(1 for variable in children if variable.status == "OK")
-        self.jlink_tab.set_dynamic_children(parent_variable, children)
+        self.jlink_tab.set_dynamic_children(parent_key, parent_variable, children)
         if ok_count:
             self.jlink_tab.remember_device()
         self.jlink_tab.set_busy(False)
-        message = f"J-Link expanded {parent_variable.name}: {ok_count}/{len(children)} field(s) read."
+        message = f"J-Link expanded {expression}: {ok_count}/{len(children)} field(s) read."
         self.jlink_tab.set_status(message)
         self.set_status(message)
-        self.logger.log("JLINK", f"expand pointer variable={parent_variable.name} ok={ok_count} total={len(children)}")
+        self.logger.log("JLINK", f"expand success row={parent_key} expression={expression} variable={parent_variable.name} ok={ok_count} total={len(children)}")
+
+    def _finish_jlink_pointer_expand_error(self, parent_key: str, parent_variable: DebugVariable, expression: str, message: str) -> None:
+        self.jlink_tab.set_dynamic_error(parent_key, message)
+        self.jlink_tab.set_busy(False)
+        self.jlink_tab.set_status(message)
+        self.set_status(message, error=True)
+        self.logger.log("ERROR", f"jlink pointer expand failed row={parent_key} expression={expression} variable={parent_variable.name}: {message}")
 
     def _finish_jlink_single_read_success(self, variables) -> None:
         ok_count = sum(1 for variable in variables if variable.status == "OK")

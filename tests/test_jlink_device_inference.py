@@ -16,8 +16,9 @@ from serial_debug_assistant.jlink_debug import (
     infer_jlink_device,
     infer_jlink_device_from_text,
     is_jlink_expandable_address,
+    jlink_type_template_key,
 )
-from serial_debug_assistant.ui.jlink_debug_tab import _expression_parts, _variable_matches_search
+from serial_debug_assistant.ui.jlink_debug_tab import _attach_pointer_templates, _expression_parts, _variable_matches_search
 
 
 class JLinkDeviceInferenceTest(unittest.TestCase):
@@ -118,6 +119,15 @@ Linker script and memory map
         self.assertEqual(enriched[0].size, 4)
         self.assertEqual(enriched[0].type_name, "sfra_t *")
         self.assertEqual(enriched[0].child_templates, (template,))
+
+    def test_attaches_templates_to_dynamic_pointer_field_by_type(self) -> None:
+        child_template = DebugVariable("priority", 0, 1, "", "demo.elf", type_name="int8_t")
+        parent = DebugVariable("p_init_first", 0x20005EF4, 4, ".bss", "demo.elf", type_name="reg_init_t *")
+        field = DebugVariable("p_next", 0x200000EC, 4, ".bss", "demo.elf", type_name="reg_init_t *")
+
+        updated = _attach_pointer_templates(parent, field, {jlink_type_template_key("reg_init_t"): (child_template,)})
+
+        self.assertEqual(updated.child_templates, (child_template,))
 
     def test_encodes_integer_write_value(self) -> None:
         variable = DebugVariable("counter", 0x20000000, 4, ".bss", "demo.elf", type_name="uint32_t")

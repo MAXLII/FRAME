@@ -87,6 +87,7 @@ class JLinkVariableService:
     def __init__(self) -> None:
         self.symbol_names: dict[int, str] = {}
         self.memory_ranges: list[JLinkMemoryRange] = []
+        self.type_templates: dict[str, tuple[DebugVariable, ...]] = {}
 
     def load_variables(self, *, elf_path: Path | None, map_path: Path | None) -> list[DebugVariable]:
         elf_variables: list[DebugVariable] = []
@@ -94,6 +95,7 @@ class JLinkVariableService:
         type_templates: dict[str, tuple[DebugVariable, ...]] = {}
         self.symbol_names = {}
         self.memory_ranges = []
+        self.type_templates = {}
         if elf_path is not None:
             elf_variables.extend(_load_elf_variables(elf_path))
             self.symbol_names.update(_load_elf_symbol_names(elf_path))
@@ -108,6 +110,7 @@ class JLinkVariableService:
         variables = _merge_symbol_sources(elf_variables, map_variables)
         _merge_symbol_names(self.symbol_names, _symbol_names_from_variables(variables))
         self.memory_ranges = _deduplicate_memory_ranges(self.memory_ranges)
+        self.type_templates = dict(type_templates)
         if not variables:
             raise JLinkDebugError("No variable symbols were parsed from ELF/MAP. Check that the ELF has symbols or provide a GNU ld MAP file.")
         return _deduplicate_variables(variables)
@@ -213,6 +216,10 @@ def infer_jlink_device(*, elf_path: Path | None, map_path: Path | None) -> str:
             continue
         candidates.extend(_device_candidates_from_bytes(data[:DEVICE_TEXT_SCAN_BYTES]))
     return _choose_device_candidate(candidates)
+
+
+def jlink_type_template_key(type_name: str) -> str:
+    return _normalized_type_key(type_name)
 
 
 def infer_jlink_device_from_text(text: str) -> str:
