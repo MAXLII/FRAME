@@ -16,3 +16,4 @@ config/quick_send.cfg
 Thumbs.db
 code
 .claude/
+config/frame_config.json
