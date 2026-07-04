@@ -35,6 +35,7 @@ CloseApplications=yes
 CloseApplicationsFilter={#MyAppExeName},{#MyAppCliExeName}
 RestartApplications=no
 SetupLogging=yes
+ChangesEnvironment=yes
 
 [Languages]
 Name: "default"; MessagesFile: "compiler:Default.isl"
@@ -62,3 +63,89 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  EnvironmentKey = 'Environment';
+
+function PathContainsSegment(PathValue: string; Segment: string): Boolean;
+begin
+  Result := Pos(';' + Uppercase(Segment) + ';', ';' + Uppercase(PathValue) + ';') > 0;
+end;
+
+function RemovePathSegment(PathValue: string; Segment: string): string;
+var
+  Remaining: string;
+  Part: string;
+  SeparatorPos: Integer;
+begin
+  Result := '';
+  Remaining := PathValue;
+  while Remaining <> '' do
+  begin
+    SeparatorPos := Pos(';', Remaining);
+    if SeparatorPos > 0 then
+    begin
+      Part := Copy(Remaining, 1, SeparatorPos - 1);
+      Delete(Remaining, 1, SeparatorPos);
+    end
+    else
+    begin
+      Part := Remaining;
+      Remaining := '';
+    end;
+
+    if (Part <> '') and (Uppercase(Part) <> Uppercase(Segment)) then
+    begin
+      if Result = '' then
+        Result := Part
+      else
+        Result := Result + ';' + Part;
+    end;
+  end;
+end;
+
+procedure AddInstallDirToUserPath;
+var
+  PathValue: string;
+  AppDir: string;
+begin
+  AppDir := ExpandConstant('{app}');
+  if not RegQueryStringValue(HKCU, EnvironmentKey, 'Path', PathValue) then
+    PathValue := '';
+  if not PathContainsSegment(PathValue, AppDir) then
+  begin
+    if PathValue = '' then
+      PathValue := AppDir
+    else
+      PathValue := PathValue + ';' + AppDir;
+    RegWriteStringValue(HKCU, EnvironmentKey, 'Path', PathValue);
+  end;
+end;
+
+procedure RemoveInstallDirFromUserPath;
+var
+  PathValue: string;
+  NewPathValue: string;
+  AppDir: string;
+begin
+  AppDir := ExpandConstant('{app}');
+  if RegQueryStringValue(HKCU, EnvironmentKey, 'Path', PathValue) then
+  begin
+    NewPathValue := RemovePathSegment(PathValue, AppDir);
+    if NewPathValue <> PathValue then
+      RegWriteStringValue(HKCU, EnvironmentKey, 'Path', NewPathValue);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    AddInstallDirToUserPath;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemoveInstallDirFromUserPath;
+end;
