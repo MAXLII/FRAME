@@ -204,32 +204,130 @@ hex: 01 02 03 04
 ## 3. 交互式终端使用
 
 启动终端：
-
 ```powershell
 .\frame shell
 ```
 
-进入后可执行：
+交互式终端的 J-Link 命令按 GUI 页面动作拆分：
 
 ```text
-jlink connect <device> [speed_khz]
-jlink read <elf> [map|-] [device] [filter] [limit]
+jlink elf <elf-or-axf>
+jlink map <map|->
+jlink device <target> [speed_khz]
+jlink load
+jlink list [filter] [limit]
+jlink search <keyword> [limit]
+jlink funcs [filter] [limit]
+jlink read <expression> [depth]
+jlink write <expression> <value>
+jlink source <expression|symbol|address> [context_lines]
+jlink connect <target> [speed_khz]
 ```
 
-示例：
+### 3.1 装载符号文件
 
 ```text
-jlink connect GD32G553RET6 4000
-jlink read D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.map GD32G553RET6 p_init 50
+jlink elf D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf
+jlink map D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.map
+jlink load
 ```
 
-参数说明：
+`jlink elf` 和 `jlink map` 会把路径保存到本地 JSON 配置。下次启动 GUI 或终端时会复用这些路径。`jlink map -` 表示清空 MAP 路径，只使用 ELF/AXF。
 
-- `<elf>`：ELF/AXF 文件路径。
-- `[map|-]`：MAP 文件路径；填 `-` 表示不使用 MAP。
-- `[device]`：J-Link target/device；省略时会尝试从 ELF/MAP 中识别。
-- `[filter]`：变量名过滤关键字。
-- `[limit]`：最多显示多少行。
+`jlink load` 只重新读取 ELF/MAP 并解析变量、类型、结构体、数组、指针和内存范围，不通过 J-Link 读取目标板内存。
+
+### 3.2 保存 Target / Device
+
+```text
+jlink device GD32G553RET6 10000
+jlink connect GD32G553RET6 10000
+```
+
+`jlink device` 会把 target 和 speed 保存到 JSON 配置。`jlink connect` 只测试当前 J-Link 连接。
+
+### 3.3 列出未展开变量
+
+```text
+jlink list
+jlink list p_init 20
+jlink search p_init 20
+```
+
+`jlink list` 只显示未展开的顶层变量列表，不读取目标板内存。`filter` 只过滤变量名，`limit` 控制最多显示多少行。
+
+`jlink search` 是明确的搜索命令，只搜索未展开的顶层变量名，不搜索结构体内部成员，也不通过 J-Link 读取目标板内存。
+
+### 3.4 展示函数列表
+
+```text
+jlink funcs
+jlink funcs main
+jlink funcs task 20
+```
+
+`jlink funcs` 从 ELF 函数符号表和 DWARF 子程序信息展示函数名、地址和源码位置，不通过 J-Link 读取目标板内存。可以先用它查函数名，再用 `jlink source <function>` 展示源码。
+
+如果某个函数只有 DWARF 源码位置，没有可用代码地址，`address` 会显示为 `-`，这种函数仍然可以用 `jlink source <function>` 展示源码。
+
+### 3.5 读取变量并展开
+
+```text
+jlink read p_init_first 1
+jlink read p_init_first.p_next 1
+jlink read p_init_first.p_next.p_next 1
+```
+
+`jlink read <expression> [depth]` 会通过 J-Link 读取指定表达式。表达式对应结构体、数组或指针时，会按 `depth` 展开成员。结构体和指针字段使用 `.` 分隔。
+
+读取指针时，FRAME 会先读取指针变量自身的值，再把该值作为目标结构体地址继续读取。目标地址必须落在 ELF/MAP 解析出的内存范围内。
+
+### 3.6 写入 RAM 变量
+
+```text
+jlink write p_init_first.p_next.priority 0
+jlink write my_float 3.14
+jlink write my_ptr 0x20000000
+```
+
+`jlink write` 使用和 GUI Value 单元格相同的写入逻辑。只允许写入 RAM 地址，Flash/code 区域会被拒绝。整数不带 `0x` 时按十进制写入，带 `0x` 时按十六进制写入，浮点变量支持浮点文本。
+
+### 3.7 显示函数源码
+
+```text
+jlink source p_init_first.p_next.p_func 6
+jlink source bsp_gpio_init 6
+jlink source 0x08001B09 6
+```
+
+`jlink source` 会根据 ELF 里的 DWARF 调试信息，把函数地址定位到源码文件和行号。不带 `context_lines` 时显示完整函数源码；带数字时显示目标行前后若干行源码。
+
+输入可以是函数符号名、裸地址，或者明确的函数指针字段。`jlink source` 不会从结构体里自动猜测 `p_func`，需要把要展示的函数或函数指针字段写清楚。
+
+交互式终端会记住最近一次显式执行的命令前缀。带子命令的命令会记住前两个词，例如 `jlink source`、`jlink funcs`、`perf dict`；普通带参数命令会记住第一个词，例如 `connect`。后续如果直接输入一个不是 FRAME 顶层命令的名字，会自动补上最近记住的前缀。
+
+例如执行过一次 `jlink source <function>` 后，后续可以直接输入函数名：
+
+```text
+jlink source main
+section_init
+```
+
+第二行等价于：
+
+```text
+jlink source section_init
+```
+
+再例如执行过 `jlink funcs task 20` 后，直接输入 `main 5` 等价于：
+
+```text
+jlink funcs main 5
+```
+
+该功能需要满足两个条件：
+
+- ELF/AXF 包含 DWARF 调试信息。
+- DWARF 中记录的源码路径在当前电脑上仍然存在。
 
 ## 4. 一次性 CLI 使用
 
@@ -237,6 +335,12 @@ jlink read D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf D:\OneDrive\LWX\GD
 
 ```powershell
 .\frame jlink --elf <elf> --map <map> --device <device> --speed 4000 --filter <keyword> --limit 50
+```
+
+如果 GUI 已经保存过 J-Link 配置，可以省略已保存的参数：
+
+```powershell
+.\frame jlink --filter p_init --limit 5
 ```
 
 只解析变量列表，不读取目标板内存：

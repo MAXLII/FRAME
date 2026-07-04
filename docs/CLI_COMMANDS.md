@@ -5,7 +5,7 @@
 源码工作区内：
 
 ```bat
-frame
+.\frame
 ```
 
 进入交互终端后，串口会保持连接，后续命令复用同一个连接。
@@ -29,9 +29,10 @@ PowerShell 在当前目录运行时，也可以使用：
 安装包安装后：
 
 ```bat
-frame-cli.exe
-frame.bat
+frame
 ```
+
+安装程序会把安装目录加入当前用户的 `PATH`。安装完成后需要新开一个终端，新的环境变量才会生效。
 
 开始菜单中提供两个入口：
 
@@ -48,6 +49,8 @@ status
 raw text <text>
 raw hex <AA 55 ...>
 raw read [seconds]
+raw query <text> [seconds]
+raw query-hex <AA 55 ...> [seconds]
 ```
 
 默认连接命令等价于：
@@ -57,6 +60,30 @@ connect COM8 921600 1.5
 ```
 
 `connect jlink` 会自动选择描述中包含 `JLink` 或 `J-Link` 的 CDC 串口。
+
+交互式终端的 `raw text` 支持常用转义字符。发送带回车换行的文本：
+
+```text
+raw text "list\r\n"
+```
+
+发送后接收 1 秒：
+
+```text
+raw query "list\r\n" 1
+```
+
+发送 HEX 后接收 1 秒：
+
+```text
+raw query-hex AA 55 01 02 1
+```
+
+一次性 PowerShell 命令中也可以直接写 `\r\n`：
+
+```powershell
+frame serial raw --port COM8 --baud 921600 --send-text "list\r\n" --read-seconds 1
+```
 
 ## 主页按钮
 
@@ -188,10 +215,11 @@ perf info
 perf summary
 perf dict [all|task|interrupt|code]
 perf sample [all|task|interrupt|code]
+perf pull [all|task|interrupt|code]
 perf reset
 ```
 
-对应 GUI Perf 页的拉取全部、Task、Interrupt、Code、更新字典、Reset Peak。
+`perf dict` 只拉取字典，`perf sample` 会拉取字典后再拉采样值，`perf pull` 会先打印字典再打印采样值。`perf summary` 优先读取设备 summary，设备未响应时会按 `sample all` 的 Task 和 Interrupt 记录计算汇总。对应 GUI Perf 页的拉取全部、Task、Interrupt、Code、更新字典、Reset Peak。
 
 ## Trace
 
@@ -205,18 +233,46 @@ trace stop
 ## J-Link
 
 ```text
-frame jlink --elf <elf> --map <map> --device <device> [--speed 4000] [--filter keyword] [--limit count]
+frame jlink [--elf <elf>] [--map <map>] [--device <device>] [--speed 4000] [--filter keyword] [--limit count]
 ```
 
-`JLink.exe` 会自动从 PATH 和 SEGGER 默认安装目录中查找，不需要手动选择 exe。
-如果只需要解析变量列表，不读取目标板内存，可以加 `--no-read`。
+`JLink.exe` 会自动从 PATH 和 SEGGER 默认安装目录中查找，不需要手动选择 exe。未填写 `--elf`、`--map`、`--device`、`--interface` 或 `--speed` 时，会优先复用 GUI 中保存的 J-Link 配置。如果只需要解析变量列表，不读取目标板内存，可以加 `--no-read`。
 
-交互式终端中仍可使用 `jlink connect <device> [speed_khz]` 和 `jlink read <elf> [map|-] [device] [filter] [limit]`。
-
-示例：
+交互式终端中的 J-Link 命令按 GUI 的交互方式拆分：
 
 ```text
+jlink elf <elf-or-axf>
+jlink map <map|->
+jlink device <target> [speed_khz]
+jlink load
+jlink list [filter] [limit]
+jlink search <keyword> [limit]
+jlink funcs [filter] [limit]
+jlink read <expression> [depth]
+jlink write <expression> <value>
+jlink source <expression|symbol|address> [context_lines]
+jlink connect <target> [speed_khz]
+```
+
+`jlink elf`、`jlink map` 和 `jlink device` 会写入本地 JSON 配置。`jlink list` 只加载未展开的顶层变量列表，不读取目标板内存。`jlink search` 只搜索未展开的顶层变量名，不搜索结构体内部成员。`jlink funcs` 从 ELF 函数符号表展示函数列表。`jlink read` 按表达式读取变量，如果变量可以展开，会按结构体、数组或指针类型继续展开。结构体和指针字段使用 `.` 分隔，例如 `p_init_first.p_next.priority`。`jlink source` 根据 ELF 的 DWARF 调试信息把指定函数名、函数地址或函数指针字段定位到源码文件和行号；不带 `context_lines` 时显示完整函数，带数字时显示命中行附近源码。
+
+交互式终端会记住最近一次显式执行的命令前缀。带子命令的命令会记住前两个词，例如 `jlink source`、`jlink funcs`、`perf dict`；普通带参数命令会记住第一个词，例如 `connect`。后续直接输入参数时，会自动补上最近记住的前缀。
+
+示例：
+```text
 frame jlink --elf D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf --map D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.map --device GD32G553RCT6 --filter s_task --limit 50
+jlink elf D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf
+jlink map D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.map
+jlink device GD32G553RET6 10000
+jlink list p_init 20
+jlink search p_init 20
+jlink funcs main
+jlink funcs task 20
+jlink read p_init_first.p_next 1
+jlink write p_init_first.p_next.priority 0
+jlink source p_init_first.p_next.p_func 6
+jlink source bsp_gpio_init 6
+jlink source 0x08001B09 6
 ```
 
 GUI、交互式终端和一次性 CLI 的完整使用方法见 [JLINK_USAGE.md](JLINK_USAGE.md)。
