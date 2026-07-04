@@ -274,16 +274,6 @@ SCOPE_PULL_PREPARE_DELAY_MS = 120
 SCOPE_LIST_TIMEOUT_MS = 1500
 
 
-def _parse_jlink_pointer_value(text: str) -> int | None:
-    match = re.search(r"0x[0-9A-Fa-f]+", text)
-    if match is None:
-        return None
-    try:
-        return int(match.group(0), 16)
-    except ValueError:
-        return None
-
-
 class SerialDebugAssistant(tk.Tk):
     def __init__(self, *, demo_mode: bool = False) -> None:
         super().__init__()
@@ -1260,10 +1250,10 @@ class SerialDebugAssistant(tk.Tk):
         def worker() -> None:
             try:
                 pointer_variable = variable
-                target_address = _parse_jlink_pointer_value(pointer_variable.value)
+                target_address = pointer_variable.pointer_value
                 if target_address is None:
                     pointer_variable = self.jlink_service.read_variables([variable], settings)[0]
-                    target_address = _parse_jlink_pointer_value(pointer_variable.value)
+                    target_address = pointer_variable.pointer_value
                 if target_address is None:
                     raise JLinkDebugError(f"Unable to read pointer value for {variable.name}.")
                 if target_address == 0:

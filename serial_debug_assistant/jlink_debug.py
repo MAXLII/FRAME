@@ -56,6 +56,7 @@ class DebugVariable:
     type_name: str = ""
     parent_types: tuple[tuple[str, str], ...] = ()
     child_templates: tuple["DebugVariable", ...] = ()
+    pointer_value: int | None = None
     raw_hex: str = ""
     value: str = ""
     status: str = "未读取"
@@ -1402,8 +1403,10 @@ def _with_memory_value(
         raw.extend(word.to_bytes(4, "little", signed=False))
     value_bytes = bytes(raw[offset : offset + read_size])
     suffix = " ..." if variable.size > MAX_VARIABLE_READ_BYTES else ""
+    pointer_value = _pointer_value_from_bytes(value_bytes, variable.type_name)
     return replace(
         variable,
+        pointer_value=pointer_value,
         raw_hex=value_bytes.hex(" ").upper() + suffix,
         value=_format_value(value_bytes, variable.type_name, symbol_names=symbol_names or {}, string_memory=string_memory or {}),
         status="OK",
@@ -1442,6 +1445,12 @@ def _format_value(
     if len(data) in (1, 2, 4, 8):
         return str(int.from_bytes(data, "little", signed=False))
     return f"{len(data)} bytes"
+
+
+def _pointer_value_from_bytes(data: bytes, type_name: str) -> int | None:
+    if len(data) < 4 or not _is_pointer_type(type_name.strip().lower()):
+        return None
+    return int.from_bytes(data[:4], "little", signed=False)
 
 
 def _is_pointer_type(type_text: str) -> bool:

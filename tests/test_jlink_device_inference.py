@@ -15,6 +15,7 @@ from serial_debug_assistant.jlink_debug import (
     _dwarf_scoped_variable_name,
     _symbol_names_from_variables,
     _validate_ram_write,
+    _with_memory_value,
     infer_jlink_device,
     infer_jlink_device_from_text,
     is_jlink_expandable_address,
@@ -48,6 +49,18 @@ class JLinkDeviceInferenceTest(unittest.TestCase):
             self.assertEqual([item.name for item in tab.get_refresh_variables()], ["task.priority", "counter"])
         finally:
             root.destroy()
+
+    def test_pointer_value_comes_from_memory_not_display_text(self) -> None:
+        variable = DebugVariable("p_com_first", 0x20006920, 4, ".bss", "demo.elf", type_name="section_com_t *")
+
+        updated = _with_memory_value(
+            variable,
+            {0x20006920: 0x200000F0},
+            symbol_names={0x200000F0: "section_com_0x30u_0x01u"},
+        )
+
+        self.assertEqual(updated.value, "section_com_0x30u_0x01u (0x200000F0)")
+        self.assertEqual(updated.pointer_value, 0x200000F0)
 
     def test_infers_device_from_file_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
