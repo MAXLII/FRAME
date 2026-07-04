@@ -19,8 +19,10 @@ class JLinkDebugTab(ttk.Frame):
         on_load_symbols,
         on_refresh_values,
         on_read_selected,
+        on_write_selected,
         on_test_connection,
         on_expand_variable,
+        on_expand_node,
         export_dir: Path,
         target_history_path: Path,
         file_history_path: Path,
@@ -29,8 +31,10 @@ class JLinkDebugTab(ttk.Frame):
         self.on_load_symbols = on_load_symbols
         self.on_refresh_values = on_refresh_values
         self.on_read_selected = on_read_selected
+        self.on_write_selected = on_write_selected
         self.on_test_connection = on_test_connection
         self.on_expand_variable = on_expand_variable
+        self.on_expand_node = on_expand_node
         self.export_dir = export_dir
         self.target_history_path = target_history_path
         self.file_history_path = file_history_path
@@ -50,8 +54,12 @@ class JLinkDebugTab(ttk.Frame):
             self.device_var.set(self._device_history[0])
         self._variable_keys: dict[str, DebugVariable] = {}
         self._node_expressions: dict[str, str] = {}
+        self._node_variables: dict[str, list[DebugVariable]] = {}
         self._focused_cell: tuple[str, str] | None = None
+        self._edit_entry: ttk.Entry | None = None
+        self._edit_value_var = tk.StringVar()
         self._expanded_dynamic: set[tuple[int, str]] = set()
+        self._expanded_nodes: set[str] = set()
         self._load_file_history()
         self._build()
 
@@ -98,8 +106,6 @@ class JLinkDebugTab(ttk.Frame):
         self.load_button.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self.refresh_button = ttk.Button(config, text="Refresh", command=self.on_refresh_values)
         self.refresh_button.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        self.read_selected_button = ttk.Button(config, text="Read Selected", command=self.on_read_selected)
-        self.read_selected_button.grid(row=14, column=0, columnspan=2, sticky="ew")
 
         variables_bar = ttk.Frame(self, style="Toolbar.TFrame", padding=(14, 10))
         variables_bar.grid(row=0, column=1, sticky="ew")
@@ -130,7 +136,7 @@ class JLinkDebugTab(ttk.Frame):
         for column in columns:
             self.tree.heading(column, text=headings[column], anchor="center")
             self.tree.column(column, width=widths[column], anchor="center")
-        self.tree.column("value", anchor="w")
+        self.tree.column("value", anchor="center")
         self.tree.column("raw", anchor="w")
         yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=yscroll.set)
@@ -142,7 +148,7 @@ class JLinkDebugTab(ttk.Frame):
         self.tree.tag_configure("failed", background="#fde8e8", foreground="#c23b3b")
         self.tree.bind("<Button-1>", self._on_tree_click, add=True)
         self.tree.bind("<Button-3>", self._on_tree_context_menu)
-        self.tree.bind("<Double-1>", self._copy_focused_cell)
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Control-c>", self._copy_focused_cell)
         self.tree.bind("<Control-C>", self._copy_focused_cell)
         self.tree.bind("<<TreeviewOpen>>", self._on_tree_open)
@@ -237,6 +243,8 @@ class JLinkDebugTab(ttk.Frame):
 
     def set_variables(self, variables: list[DebugVariable]) -> None:
         self._variables = list(variables)
+        self._expanded_nodes.clear()
+        self._expanded_dynamic.clear()
         self.count_var.set(f"{len(self._variables)} variables")
         self._refresh_rows()
 
@@ -244,6 +252,22 @@ class JLinkDebugTab(ttk.Frame):
         updates = {(variable.address, variable.name): variable for variable in variables}
         self._variables = [updates.get((variable.address, variable.name), variable) for variable in self._variables]
         self._refresh_rows()
+
+    def update_visible_variables(self, variables: list[DebugVariable]) -> None:
+        updates = {(variable.address, variable.name): variable for variable in variables}
+        self._variables = [updates.get((variable.address, variable.name), variable) for variable in self._variables]
+        for key, variable in list(self._variable_keys.items()):
+            updated = updates.get((variable.address, variable.name))
+            if updated is None:
+                continue
+            self._variable_keys[key] = updated
+            row_tag = "failed" if updated.status != "OK" and "fail" in updated.status.lower() else ""
+            self.tree.item(
+                key,
+                values=(updated.value, updated.type_name, f"0x{updated.address:08X}", updated.raw_hex, updated.status),
+            )
+            if row_tag:
+                self.tree.item(key, tags=(row_tag,))
 
     def set_dynamic_children(self, parent_variable: DebugVariable, children: list[DebugVariable]) -> None:
         parent_key = self._row_key_for_variable(parent_variable)
@@ -310,6 +334,15 @@ class JLinkDebugTab(ttk.Frame):
             return None
         return self._variable_keys.get(selected_key)
 
+    def get_write_value(self) -> str:
+        return self._edit_value_var.get().strip()
+
+    def mark_write_committed(self) -> None:
+        self._close_value_editor()
+
+    def expression_for_node(self, node_id: str) -> str:
+        return self._node_expressions.get(node_id, str(self.tree.item(node_id, "text")))
+
     def _row_key_for_variable(self, variable: DebugVariable) -> str | None:
         for key, item in self._variable_keys.items():
             if item.address == variable.address and item.name == variable.name:
@@ -321,9 +354,9 @@ class JLinkDebugTab(ttk.Frame):
 
     def set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
+        self._close_value_editor()
         self.load_button.configure(state=state)
         self.refresh_button.configure(state=state)
-        self.read_selected_button.configure(state=state)
         self.connect_button.configure(state=state)
         self.device_combo.configure(state=state)
 
@@ -391,12 +424,13 @@ class JLinkDebugTab(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         self._variable_keys.clear()
         self._node_expressions.clear()
+        self._node_variables.clear()
         inserted_nodes: dict[tuple[str, ...], str] = {}
         sibling_counts: dict[str, int] = {}
         visible_variables = [
             variable
             for variable in self._variables
-            if not query or query in variable.name.lower() or query in variable.section.lower() or query in variable.type_name.lower()
+            if _variable_matches_search(variable, query)
         ]
         parent_meta = _build_parent_metadata(visible_variables)
         visible_count = 0
@@ -422,8 +456,10 @@ class JLinkDebugTab(ttk.Frame):
                         text=part,
                         values=("", meta.type_name, meta.address_text(), "", ""),
                         tags=(node_tag,),
-                        open=bool(query),
+                        open=False,
                     )
+                if len(parts) == len(path) + 1:
+                    self._node_variables.setdefault(node, []).append(variable)
                 parent = node
 
             key = self._variable_key(variable, index)
@@ -461,10 +497,73 @@ class JLinkDebugTab(ttk.Frame):
             self.copy_menu.tk_popup(event.x_root, event.y_root)
         return "break"
 
+    def _on_tree_double_click(self, event) -> str:
+        if not self._set_focused_cell_from_event(event):
+            return "break"
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return "break"
+        column_id = self.tree.identify_column(event.x)
+        if column_id == "#1" and row_id in self._variable_keys:
+            self._begin_value_edit(row_id)
+            return "break"
+        variable = self._variable_keys.get(row_id)
+        if variable is not None:
+            self.on_read_selected()
+            return "break"
+        variables = self._node_variables.get(row_id, [])
+        if variables:
+            self._expanded_nodes.add(row_id)
+            self.tree.item(row_id, open=True)
+            self.on_expand_node(row_id, variables)
+        return "break"
+
+    def _on_write_enter(self, _event=None) -> str:
+        self.mark_write_committed()
+        self.on_write_selected()
+        return "break"
+
+    def _begin_value_edit(self, row_id: str) -> None:
+        self._close_value_editor()
+        bbox = self.tree.bbox(row_id, "value")
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        values = self.tree.item(row_id, "values")
+        current_value = str(values[0]) if values else ""
+        self._edit_value_var.set(current_value)
+        editor = tk.Entry(
+            self.tree,
+            textvariable=self._edit_value_var,
+            justify="center",
+            foreground="#c23b3b",
+            relief="solid",
+            borderwidth=1,
+        )
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.focus_set()
+        editor.selection_range(0, "end")
+        editor.bind("<Return>", self._on_write_enter)
+        editor.bind("<Escape>", lambda _event=None: self._close_value_editor())
+        self._edit_entry = editor
+        self.status_var.set("Not written - press Enter")
+
+    def _close_value_editor(self) -> None:
+        if self._edit_entry is None:
+            return
+        self._edit_entry.destroy()
+        self._edit_entry = None
+
     def _on_tree_open(self, _event=None) -> None:
         row_id = self.tree.focus()
         variable = self._variable_keys.get(row_id)
-        if variable is None or not variable.child_templates:
+        if variable is None:
+            variables = self._node_variables.get(row_id, [])
+            if variables and row_id not in self._expanded_nodes and any(item.status != "OK" for item in variables):
+                self._expanded_nodes.add(row_id)
+                self.on_expand_node(row_id, variables)
+            return
+        if not variable.child_templates:
             return
         dynamic_key = (variable.address, variable.name)
         if dynamic_key in self._expanded_dynamic:
@@ -565,6 +664,21 @@ def _expression_parts(name: str) -> list[str]:
     if token:
         parts.append("".join(token))
     return parts or [name]
+
+
+def _variable_matches_search(variable: DebugVariable, query: str) -> bool:
+    if not query:
+        return True
+    parts = _expression_parts(variable.name)
+    root_name = parts[0].lower() if parts else variable.name.lower()
+    if query in root_name:
+        return True
+    if len(parts) == 1:
+        return query in variable.section.lower() or query in variable.type_name.lower()
+    for expression, type_name in variable.parent_types:
+        if expression == parts[0] and query in type_name.lower():
+            return True
+    return False
 
 
 @dataclass

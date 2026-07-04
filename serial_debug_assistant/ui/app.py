@@ -594,8 +594,10 @@ class SerialDebugAssistant(tk.Tk):
             on_load_symbols=self.load_jlink_variables,
             on_refresh_values=self.refresh_jlink_variables,
             on_read_selected=self.read_selected_jlink_variable,
+            on_write_selected=self.write_selected_jlink_variable,
             on_test_connection=self.test_jlink_connection,
             on_expand_variable=self.expand_jlink_pointer_variable,
+            on_expand_node=self.read_jlink_node_variables,
             export_dir=self.paths.exports_dir,
             target_history_path=self.paths.config_dir / "jlink_targets.json",
             file_history_path=self.paths.config_dir / "jlink_files.json",
@@ -995,6 +997,65 @@ class SerialDebugAssistant(tk.Tk):
 
         threading.Thread(target=worker, name="jlink-variable-single-read", daemon=True).start()
 
+    def write_selected_jlink_variable(self) -> None:
+        variable = self.jlink_tab.get_selected_variable()
+        if variable is None:
+            self.jlink_tab.set_status("Select one variable row first.")
+            self.set_status("Select one J-Link variable row first.", error=True)
+            return
+        value_text = self.jlink_tab.get_write_value()
+        if not value_text:
+            self.jlink_tab.set_status("Enter a RAM write value first.")
+            self.set_status("Enter a J-Link RAM write value first.", error=True)
+            return
+        self.jlink_tab.auto_detect_device()
+        try:
+            settings = self.jlink_tab.get_jlink_settings()
+        except ValueError as exc:
+            self.jlink_tab.set_status(str(exc))
+            self.set_status(str(exc), error=True)
+            return
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status(f"Writing RAM variable {variable.name} through J-Link...")
+        self.set_status(f"Writing J-Link RAM variable: {variable.name}")
+
+        def worker() -> None:
+            try:
+                refreshed = self.jlink_service.write_variable(variable, value_text, settings)
+            except JLinkDebugError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_single_write_success(refreshed))
+
+        threading.Thread(target=worker, name="jlink-variable-single-write", daemon=True).start()
+
+    def read_jlink_node_variables(self, node_id: str, variables: list[DebugVariable]) -> None:
+        if not variables:
+            return
+        self.jlink_tab.auto_detect_device()
+        try:
+            settings = self.jlink_tab.get_jlink_settings()
+        except ValueError as exc:
+            self.jlink_tab.set_status(str(exc))
+            self.set_status(str(exc), error=True)
+            return
+        expression = self.jlink_tab.expression_for_node(node_id)
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status(f"Reading {expression} through J-Link...")
+        self.set_status(f"Reading J-Link node: {expression}")
+
+        def worker() -> None:
+            try:
+                refreshed = self.jlink_service.read_variables(variables, settings)
+            except JLinkDebugError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_node_read_success(expression, refreshed))
+
+        threading.Thread(target=worker, name="jlink-node-read", daemon=True).start()
+
     def expand_jlink_pointer_variable(self, variable: DebugVariable) -> None:
         if not variable.child_templates:
             return
@@ -1060,7 +1121,7 @@ class SerialDebugAssistant(tk.Tk):
 
     def _finish_jlink_single_read_success(self, variables) -> None:
         ok_count = sum(1 for variable in variables if variable.status == "OK")
-        self.jlink_tab.replace_variables(variables)
+        self.jlink_tab.update_visible_variables(variables)
         if ok_count:
             self.jlink_tab.remember_device()
         self.jlink_tab.set_busy(False)
@@ -1069,6 +1130,27 @@ class SerialDebugAssistant(tk.Tk):
         self.jlink_tab.set_status(message)
         self.set_status(message)
         self.logger.log("JLINK", f"single read variable={variable_name} ok={ok_count}")
+
+    def _finish_jlink_single_write_success(self, variable: DebugVariable) -> None:
+        self.jlink_tab.update_visible_variables([variable])
+        if variable.status == "OK":
+            self.jlink_tab.remember_device()
+        self.jlink_tab.set_busy(False)
+        message = f"J-Link RAM write complete: {variable.name}"
+        self.jlink_tab.set_status(message)
+        self.set_status(message)
+        self.logger.log("JLINK", f"write variable={variable.name} address=0x{variable.address:08X} status={variable.status}")
+
+    def _finish_jlink_node_read_success(self, expression: str, variables: list[DebugVariable]) -> None:
+        ok_count = sum(1 for variable in variables if variable.status == "OK")
+        self.jlink_tab.update_visible_variables(variables)
+        if ok_count:
+            self.jlink_tab.remember_device()
+        self.jlink_tab.set_busy(False)
+        message = f"J-Link expanded {expression}: {ok_count}/{len(variables)} field(s) read."
+        self.jlink_tab.set_status(message)
+        self.set_status(message)
+        self.logger.log("JLINK", f"read node expression={expression} ok={ok_count} total={len(variables)}")
 
     def _finish_jlink_refresh_success(self, variables) -> None:
         ok_count = sum(1 for variable in variables if variable.status == "OK")

@@ -14,6 +14,7 @@ import tempfile
 MAX_VARIABLE_READ_BYTES = 16
 MAX_DWARF_ARRAY_EXPAND_COUNT = 4096
 MAX_DWARF_EXPANDED_FIELDS_PER_VARIABLE = 4096
+RAM_WRITE_RANGES = ((0x20000000, 0x40000000),)
 OBJECT_SYMBOL_TYPE = 1
 FUNCTION_SYMBOL_TYPE = 2
 SHT_SYMTAB = 2
@@ -120,6 +121,24 @@ class JLinkVariableService:
             )
             string_memory = _parse_jlink_mem32_output(string_output)
         return [_with_memory_value(variable, memory, symbol_names=self.symbol_names, string_memory=string_memory) for variable in variables]
+
+    def write_variable(self, variable: DebugVariable, value_text: str, settings: JLinkSettings) -> DebugVariable:
+        executable = _resolve_jlink_executable(settings.executable)
+        if executable is None:
+            raise JLinkDebugError("未找到 J-Link 命令行工具。请填写 JLink.exe/JLinkExe.exe 路径，或把它加入 PATH。")
+        if not settings.device.strip():
+            raise JLinkDebugError("请填写 J-Link Device，例如 HC32F334K8TA、STM32F407VE。")
+        payload = _encode_write_value(variable, value_text)
+        _validate_ram_write(variable.address, len(payload))
+        _run_jlink_write(
+            executable=executable,
+            device=settings.device.strip(),
+            interface=settings.interface.strip() or "SWD",
+            speed_khz=settings.speed_khz,
+            address=variable.address,
+            payload=payload,
+        )
+        return self.read_variables([variable], settings)[0]
 
     def test_connection(self, settings: JLinkSettings) -> str:
         executable = _resolve_jlink_executable(settings.executable)
@@ -279,6 +298,16 @@ def _load_elf_symbol_names(path: Path) -> dict[int, str]:
 
 def _symbol_names_from_variables(variables: list[DebugVariable]) -> dict[int, str]:
     symbols: dict[int, str] = {}
+    parent_addresses: dict[str, int] = {}
+    for variable in variables:
+        for expression, _type_name in variable.parent_types:
+            if not expression or not _looks_like_mcu_address(variable.address):
+                continue
+            previous = parent_addresses.get(expression)
+            if previous is None or variable.address < previous:
+                parent_addresses[expression] = variable.address
+    for expression, address in sorted(parent_addresses.items(), key=lambda item: (item[1], item[0].lower())):
+        symbols.setdefault(address, expression)
     for variable in variables:
         if _looks_like_mcu_address(variable.address):
             symbols.setdefault(variable.address, variable.name)
@@ -442,21 +471,60 @@ def _dwarf_type_name(die) -> str:
         return ""
     name = _dwarf_die_name(die)
     if name:
-        return name
+        return _normalize_mcu_type_name(name, _dwarf_type_size(die))
     unwrapped = _dwarf_unwrap_type(die)
     if unwrapped is None:
         return ""
     if unwrapped is not die:
         return _dwarf_type_name(unwrapped)
     if unwrapped.tag == "DW_TAG_pointer_type":
-        return f"{_dwarf_type_name(_dwarf_type_die(unwrapped)) or 'void'} *"
+        return _normalize_mcu_type_name(f"{_dwarf_type_name(_dwarf_type_die(unwrapped)) or 'void'} *")
     if unwrapped.tag == "DW_TAG_array_type":
-        return f"{_dwarf_type_name(_dwarf_type_die(unwrapped))}[]"
+        return _normalize_mcu_type_name(f"{_dwarf_type_name(_dwarf_type_die(unwrapped))}[]")
     if unwrapped.tag == "DW_TAG_structure_type":
         return "struct"
     if unwrapped.tag == "DW_TAG_union_type":
         return "union"
-    return unwrapped.tag.replace("DW_TAG_", "")
+    return _normalize_mcu_type_name(unwrapped.tag.replace("DW_TAG_", ""), _dwarf_type_size(unwrapped))
+
+
+def _normalize_mcu_type_name(type_name: str, byte_size: int = 0) -> str:
+    text = " ".join(type_name.replace("\t", " ").split()).strip()
+    if not text:
+        return ""
+    if "*" in text:
+        base, stars = text.split("*", 1)
+        return f"{_normalize_mcu_type_name(base, byte_size).strip()} *{stars}".strip()
+    if text.endswith("[]"):
+        return f"{_normalize_mcu_type_name(text[:-2], byte_size)}[]"
+
+    lower = text.lower()
+    if lower in {"int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t", "uint64_t"}:
+        return lower
+    tokens = [token for token in lower.split() if token not in {"const", "volatile", "restrict"}]
+    if not tokens:
+        return text
+    unsigned = "unsigned" in tokens
+    signed = "signed" in tokens
+    long_count = tokens.count("long")
+
+    if "char" in tokens:
+        if unsigned:
+            return "uint8_t"
+        if signed:
+            return "int8_t"
+        return "char"
+    if "short" in tokens:
+        return "uint16_t" if unsigned else "int16_t"
+    if long_count >= 2:
+        return "uint64_t" if unsigned else "int64_t"
+    if long_count == 1:
+        return "uint32_t" if unsigned else "int32_t"
+    if "int" in tokens or tokens in (["unsigned"], ["signed"]):
+        return "uint32_t" if unsigned else "int32_t"
+    if byte_size == 4 and unsigned and "int" not in tokens:
+        return "uint32_t"
+    return text
 
 
 def _dwarf_type_size(die) -> int:
@@ -941,6 +1009,66 @@ def _pointer_value_from_memory(variable: DebugVariable, memory: dict[int, int]) 
     return int.from_bytes(bytes(raw[offset : offset + 4]), "little", signed=False)
 
 
+def _validate_ram_write(address: int, size: int) -> None:
+    if size <= 0:
+        raise JLinkDebugError("Write size must be greater than 0.")
+    end = address + size
+    for start, stop in RAM_WRITE_RANGES:
+        if start <= address and end <= stop:
+            return
+    raise JLinkDebugError(f"Refuse to write non-RAM address range 0x{address:08X}..0x{end - 1:08X}. Flash/code regions are protected.")
+
+
+def is_ram_address(address: int) -> bool:
+    return any(start <= address < stop for start, stop in RAM_WRITE_RANGES)
+
+
+def _encode_write_value(variable: DebugVariable, value_text: str) -> bytes:
+    text = value_text.strip()
+    if not text:
+        raise JLinkDebugError("Write value is empty.")
+    size = max(variable.size, 1)
+    if size > 8 and not _is_raw_hex_write(text):
+        raise JLinkDebugError("Only scalar values up to 8 bytes can be written. Use hex: for explicit raw bytes.")
+    type_text = variable.type_name.strip().lower()
+    if _is_raw_hex_write(text):
+        payload = _parse_raw_hex_write(text)
+        if len(payload) > size:
+            raise JLinkDebugError(f"Raw write has {len(payload)} byte(s), larger than variable size {size}.")
+        if len(payload) > 64:
+            raise JLinkDebugError("Raw write is limited to 64 bytes.")
+        return payload
+    if _is_prefixed_hex_write(text):
+        write_size = size if size in (1, 2, 4, 8) else min(size, 8)
+        return int(text, 16).to_bytes(write_size, "little", signed=False)
+    if _is_pointer_type(type_text):
+        return int(text, 0).to_bytes(min(size, 4), "little", signed=False)
+    if type_text in {"float", "single"}:
+        return struct.pack("<f", float(text))
+    if type_text == "double":
+        return struct.pack("<d", float(text))
+    if _is_integer_type(type_text) or size in (1, 2, 4, 8):
+        signed = _is_signed_integer_type(type_text) if type_text else False
+        return int(text, 0).to_bytes(size if size in (1, 2, 4, 8) else 4, "little", signed=signed)
+    raise JLinkDebugError(f"Unsupported J-Link RAM write type: {variable.type_name or 'unknown'}")
+
+
+def _is_raw_hex_write(text: str) -> bool:
+    return text.lower().startswith(("hex:", "raw:"))
+
+
+def _is_prefixed_hex_write(text: str) -> bool:
+    return text.lower().startswith("0x")
+
+
+def _parse_raw_hex_write(text: str) -> bytes:
+    payload = text.split(":", 1)[1]
+    compact = re.sub(r"[^0-9A-Fa-f]", "", payload)
+    if not compact or len(compact) % 2:
+        raise JLinkDebugError("Raw hex write must contain full bytes, for example: hex: 01 02 03 04")
+    return bytes.fromhex(compact)
+
+
 def _run_jlink_read(
     *,
     executable: str,
@@ -961,6 +1089,40 @@ def _run_jlink_read(
     return _run_jlink_script(executable=executable, script_lines=script_lines, timeout=30)
 
 
+def _run_jlink_write(
+    *,
+    executable: str,
+    device: str,
+    interface: str,
+    speed_khz: int,
+    address: int,
+    payload: bytes,
+) -> str:
+    script_lines = [
+        f"device {device}",
+        f"if {interface}",
+        f"speed {max(speed_khz, 1)}",
+        "connect",
+    ]
+    offset = 0
+    while offset < len(payload):
+        current_address = address + offset
+        remaining = len(payload) - offset
+        if current_address % 4 == 0 and remaining >= 4:
+            value = int.from_bytes(payload[offset : offset + 4], "little", signed=False)
+            script_lines.append(f"w4 0x{current_address:08X}, 0x{value:08X}")
+            offset += 4
+        elif current_address % 2 == 0 and remaining >= 2:
+            value = int.from_bytes(payload[offset : offset + 2], "little", signed=False)
+            script_lines.append(f"w2 0x{current_address:08X}, 0x{value:04X}")
+            offset += 2
+        else:
+            script_lines.append(f"w1 0x{current_address:08X}, 0x{payload[offset]:02X}")
+            offset += 1
+    script_lines.append("exit")
+    return _run_jlink_script(executable=executable, script_lines=script_lines, timeout=30)
+
+
 def _run_jlink_script(*, executable: str, script_lines: list[str], timeout: int) -> str:
     script_path = None
     try:
@@ -976,6 +1138,7 @@ def _run_jlink_script(*, executable: str, script_lines: list[str], timeout: int)
             errors="replace",
             timeout=timeout,
             check=False,
+            **_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise JLinkDebugError(f"J-Link 读取失败: {exc}") from exc
@@ -987,6 +1150,18 @@ def _run_jlink_script(*, executable: str, script_lines: list[str], timeout: int)
     if result.returncode != 0:
         raise JLinkDebugError(f"J-Link 返回错误码 {result.returncode}。\n{_tail_output(output)}")
     return output
+
+
+def _hidden_subprocess_kwargs() -> dict[str, object]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
 
 
 def _parse_jlink_mem32_output(output: str) -> dict[int, int]:
