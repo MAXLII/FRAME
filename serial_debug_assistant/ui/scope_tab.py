@@ -1,18 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from bisect import bisect_left
 import csv
 import math
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import ScopeCapture, ScopeInfo, ScopeListItem
 from serial_debug_assistant.scope_protocol import describe_scope_state
+from serial_debug_assistant.ui.file_dialogs import ask_save_file
+from serial_debug_assistant.ui.theme import ACCENT, ACCENT_SOFT, BORDER, BORDER_MUTED, FONT_MONO, SURFACE, SURFACE_ALT, TEXT, TEXT_MUTED
 
 SERIES_COLORS = (
-    "#2563eb",
+    ACCENT,
     "#dc2626",
     "#16a34a",
     "#d97706",
@@ -244,7 +246,7 @@ class ScopeTab(ttk.Frame):
         ttk.Entry(vars_toolbar, textvariable=self.var_scale_input_var, width=10).grid(row=0, column=3, sticky="w")
         ttk.Button(vars_toolbar, text="应用倍率", command=self.apply_selected_variable_scale, width=10).grid(row=0, column=4, padx=(8, 0), sticky="w")
 
-        self.vars_canvas = tk.Canvas(vars_frame, bg="#ffffff", highlightthickness=1, highlightbackground="#d8e3ef", width=280)
+        self.vars_canvas = tk.Canvas(vars_frame, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER_MUTED, width=280)
         self.vars_canvas.grid(row=1, column=0, sticky="nsew")
         vars_scroll = ttk.Scrollbar(vars_frame, orient="vertical", command=self.vars_canvas.yview)
         vars_scroll.grid(row=1, column=1, sticky="ns")
@@ -268,12 +270,12 @@ class ScopeTab(ttk.Frame):
         capture_list_label.grid(row=0, column=0, sticky="w")
         self._remember_text(capture_list_label, "Local Captures")
 
-        self.capture_canvas = tk.Canvas(captures_frame, bg="#ffffff", highlightthickness=1, highlightbackground="#d8e3ef", width=280)
+        self.capture_canvas = tk.Canvas(captures_frame, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER_MUTED, width=280)
         self.capture_canvas.grid(row=1, column=0, sticky="nsew")
         capture_scroll = ttk.Scrollbar(captures_frame, orient="vertical", command=self.capture_canvas.yview)
         capture_scroll.grid(row=1, column=1, sticky="ns")
         self.capture_canvas.configure(yscrollcommand=capture_scroll.set)
-        self.capture_inner = tk.Frame(self.capture_canvas, bg="#ffffff")
+        self.capture_inner = tk.Frame(self.capture_canvas, bg=SURFACE)
         self.capture_window = self.capture_canvas.create_window((0, 0), window=self.capture_inner, anchor="nw")
         self.capture_inner.bind("<Configure>", self._on_capture_inner_configure)
         self.capture_canvas.bind("<Configure>", self._on_capture_canvas_configure)
@@ -300,7 +302,7 @@ class ScopeTab(ttk.Frame):
             justify="left",
         ).grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
-        self.plot_canvas = tk.Canvas(capture_frame, bg="#f8fbfe", highlightthickness=1, highlightbackground="#bfd0e3", relief="flat")
+        self.plot_canvas = tk.Canvas(capture_frame, bg=SURFACE_ALT, highlightthickness=1, highlightbackground=BORDER, relief="flat")
         self.plot_canvas.grid(row=1, column=0, sticky="nsew")
         self.plot_canvas.bind("<Configure>", lambda _event: self.redraw_plot())
         self.plot_canvas.bind("<Motion>", self._on_plot_motion)
@@ -531,7 +533,8 @@ class ScopeTab(ttk.Frame):
 
         self.export_dir.mkdir(parents=True, exist_ok=True)
         default_name = f"scope_{capture.scope_name}_capture_{capture.capture_index}_tag_{capture.capture_tag}.csv"
-        path = filedialog.asksaveasfilename(
+        path = ask_save_file(
+            key="scope_csv",
             title=self.i18n.translate_text("Save Scope CSV"),
             initialdir=str(self.export_dir),
             initialfile=default_name,
@@ -597,9 +600,9 @@ class ScopeTab(ttk.Frame):
         for index, capture in enumerate(self._captures):
             row = tk.Frame(
                 self.capture_inner,
-                bg="#eaf2fb" if index == self._selected_capture_index else "#ffffff",
+                bg=ACCENT_SOFT if index == self._selected_capture_index else SURFACE,
                 highlightthickness=1,
-                highlightbackground="#d8e3ef",
+                highlightbackground=BORDER_MUTED,
                 bd=0,
             )
             row.grid(row=index, column=0, sticky="ew", pady=2)
@@ -632,7 +635,7 @@ class ScopeTab(ttk.Frame):
                 text=label_text,
                 anchor="w",
                 bg=row.cget("bg"),
-                fg="#112033",
+                fg=TEXT,
             )
             label.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=4)
             for widget in (row, label):
@@ -716,7 +719,7 @@ class ScopeTab(ttk.Frame):
                 width / 2,
                 height / 2,
                 text=self.i18n.translate_text("No local scope captures to display."),
-                fill="#5b6b7f",
+                fill=TEXT_MUTED,
                 font=("Segoe UI", 11),
             )
             return
@@ -727,7 +730,7 @@ class ScopeTab(ttk.Frame):
                 width / 2,
                 height / 2,
                 text=self.i18n.translate_text("Select one local capture to preview."),
-                fill="#5b6b7f",
+                fill=TEXT_MUTED,
                 font=("Segoe UI", 11),
             )
             return
@@ -738,7 +741,7 @@ class ScopeTab(ttk.Frame):
                 width / 2,
                 height / 2,
                 text=self.i18n.translate_text("No variables are visible. Enable at least one variable to draw the scope."),
-                fill="#5b6b7f",
+                fill=TEXT_MUTED,
                 font=("Segoe UI", 11),
             )
             return
@@ -748,7 +751,7 @@ class ScopeTab(ttk.Frame):
         plot_right = width - 18
         plot_bottom = height - 36
         self._plot_bounds = (plot_left, plot_top, plot_right, plot_bottom)
-        canvas.create_rectangle(plot_left, plot_top, plot_right, plot_bottom, outline="#cbd5e1", width=1)
+        canvas.create_rectangle(plot_left, plot_top, plot_right, plot_bottom, outline=BORDER_MUTED, width=1)
 
         flattened: list[tuple[float, float]] = []
         capture_positions: list[tuple[int, ScopeCapture, float, float, float]] = []
@@ -776,7 +779,7 @@ class ScopeTab(ttk.Frame):
                 width / 2,
                 height / 2,
                 text=self.i18n.translate_text("Scope captures contain no finite data."),
-                fill="#5b6b7f",
+                fill=TEXT_MUTED,
                 font=("Segoe UI", 11),
             )
             return
@@ -801,21 +804,21 @@ class ScopeTab(ttk.Frame):
         def map_y(value: float) -> float:
             return plot_bottom - (value - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
 
-        canvas.create_text(plot_left - 10, plot_top, text=f"{y_max:.3f}", anchor="e", fill="#475569", font=("Consolas", 9))
-        canvas.create_text(plot_left - 10, plot_bottom, text=f"{y_min:.3f}", anchor="e", fill="#475569", font=("Consolas", 9))
-        canvas.create_text(plot_left, plot_bottom + 14, text=f"{x_min:.3f} ms", anchor="w", fill="#475569", font=("Consolas", 9))
-        canvas.create_text(plot_right, plot_bottom + 14, text=f"{x_max:.3f} ms", anchor="e", fill="#475569", font=("Consolas", 9))
+        canvas.create_text(plot_left - 10, plot_top, text=f"{y_max:.3f}", anchor="e", fill=TEXT_MUTED, font=(FONT_MONO, 9))
+        canvas.create_text(plot_left - 10, plot_bottom, text=f"{y_min:.3f}", anchor="e", fill=TEXT_MUTED, font=(FONT_MONO, 9))
+        canvas.create_text(plot_left, plot_bottom + 14, text=f"{x_min:.3f} ms", anchor="w", fill=TEXT_MUTED, font=(FONT_MONO, 9))
+        canvas.create_text(plot_right, plot_bottom + 14, text=f"{x_max:.3f} ms", anchor="e", fill=TEXT_MUTED, font=(FONT_MONO, 9))
 
         legend_entries: list[tuple[str, str]] = []
         for capture_index, capture, capture_start_x, _capture_end_x, capture_trigger_x in capture_positions:
-            canvas.create_line(map_x(capture_start_x), plot_top, map_x(capture_start_x), plot_bottom, fill="#cbd5e1", dash=(3, 4))
+            canvas.create_line(map_x(capture_start_x), plot_top, map_x(capture_start_x), plot_bottom, fill=BORDER_MUTED, dash=(3, 4))
             canvas.create_line(map_x(capture_trigger_x), plot_top, map_x(capture_trigger_x), plot_bottom, fill="#dc2626", dash=(5, 4))
             canvas.create_text(
                 map_x(capture_start_x) + 4,
                 plot_top + 4,
                 text=f"#{capture.capture_index} {capture.scope_name}",
                 anchor="nw",
-                fill="#334155",
+                fill=TEXT,
                 font=("Segoe UI", 9, "bold"),
             )
 
@@ -858,7 +861,7 @@ class ScopeTab(ttk.Frame):
         for idx, (label, color) in enumerate(legend_entries[: min(8, len(visible_var_indices))]):
             y = legend_y + idx * 18
             canvas.create_line(legend_x, y + 7, legend_x + 18, y + 7, fill=color, width=2)
-            canvas.create_text(legend_x + 24, y, text=label, anchor="nw", fill="#334155", font=("Segoe UI", 9))
+            canvas.create_text(legend_x + 24, y, text=label, anchor="nw", fill=TEXT, font=("Segoe UI", 9))
 
         if self._hover_entry is not None:
             hover_capture_index = int(self._hover_entry.get("capture_index", -1))
@@ -1142,7 +1145,7 @@ class ScopeTab(ttk.Frame):
             return
         x0, y0 = self._zoom_rect_start
         x1, y1 = self._zoom_rect_end
-        self.plot_canvas.create_rectangle(x0, y0, x1, y1, outline="#2563eb", dash=(4, 4), width=1)
+        self.plot_canvas.create_rectangle(x0, y0, x1, y1, outline=ACCENT, dash=(4, 4), width=1)
 
     def _draw_hover_overlay(self, entry: dict[str, object]) -> None:
         if not self._plot_bounds or not self._x_range or not self._y_range:
@@ -1156,7 +1159,7 @@ class ScopeTab(ttk.Frame):
         capture = entry["capture"]
         sample_index = int(entry["sample_index"])
         values = list(entry["sample_values"])
-        self.plot_canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill="#64748b", dash=(4, 4))
+        self.plot_canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill=TEXT_MUTED, dash=(4, 4))
 
         lines = [
             self.i18n.format_text(
@@ -1206,16 +1209,16 @@ class ScopeTab(ttk.Frame):
         box_height = padding * 2 + len(visible_rows) * line_height
         x = max(plot_left + 12, plot_right - box_width - 12)
         y = plot_top + 12
-        self.plot_canvas.create_rectangle(x, y, x + box_width, y + box_height, fill="#ffffff", outline="#94a3b8", width=1)
+        self.plot_canvas.create_rectangle(x, y, x + box_width, y + box_height, fill="#ffffff", outline=BORDER, width=1)
         for row_index, row_text in enumerate(visible_rows):
-            fill = "#0f172a"
+            fill = TEXT
             if "=" in row_text:
                 name = row_text.split("=", 1)[0].strip()
                 for label_name, _value_text, color in point_labels:
                     if label_name == name:
                         fill = color
                         break
-            self.plot_canvas.create_text(x + padding, y + padding + row_index * line_height, text=row_text, anchor="nw", fill=fill, font=("Consolas", 9))
+            self.plot_canvas.create_text(x + padding, y + padding + row_index * line_height, text=row_text, anchor="nw", fill=fill, font=(FONT_MONO, 9))
 
     def _value_to_canvas_y(self, value: float, plot_top: float, plot_bottom: float, y_min: float, y_max: float) -> float:
         return plot_bottom - (value - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
@@ -1265,3 +1268,4 @@ class ScopeTab(ttk.Frame):
     def _on_capture_canvas_mousewheel(self, event) -> str:
         self.capture_canvas.yview_scroll(int(-event.delta / 120), "units")
         return "break"
+

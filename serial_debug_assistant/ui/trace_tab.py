@@ -5,18 +5,35 @@ import tkinter as tk
 from tkinter import ttk
 
 from serial_debug_assistant.i18n import I18nManager
+from serial_debug_assistant.ui.theme import (
+    ACCENT,
+    ACCENT_SOFT,
+    BORDER,
+    CYAN,
+    DANGER,
+    GREEN,
+    ORANGE,
+    PURPLE,
+    SURFACE,
+    SURFACE_ALT,
+    TEXT,
+    TEXT_MUTED,
+    WARNING,
+    WARNING_SOFT,
+    configure_feature_style_aliases,
+)
 
-TRACE_BG = "#08161b"
-TRACE_PANEL = "#0d1b22"
-TRACE_PANEL_ALT = "#101f27"
-TRACE_BORDER = "#263b45"
-TRACE_TEXT = "#d8e2e7"
-TRACE_MUTED = "#8fa3ad"
-TRACE_CYAN = "#2ec7f0"
-TRACE_PURPLE = "#8b6df6"
-TRACE_ORANGE = "#ff9f2f"
-TRACE_GREEN = "#62d26f"
-TRACE_BLUE_SELECT = "#123552"
+TRACE_BG = SURFACE
+TRACE_PANEL = SURFACE
+TRACE_PANEL_ALT = SURFACE_ALT
+TRACE_BORDER = BORDER
+TRACE_TEXT = TEXT
+TRACE_MUTED = TEXT_MUTED
+TRACE_CYAN = CYAN
+TRACE_PURPLE = PURPLE
+TRACE_ORANGE = ORANGE
+TRACE_GREEN = GREEN
+TRACE_BLUE_SELECT = ACCENT_SOFT
 
 
 @dataclass(frozen=True)
@@ -49,7 +66,7 @@ class TraceTab(ttk.Frame):
         self.on_toggle_trace = on_toggle_trace
         self.on_status = on_status
 
-        self.target_addr_var = tk.StringVar(value="3")
+        self.target_addr_var = tk.StringVar(value="2")
         self.dynamic_addr_var = tk.StringVar(value="0")
         self.search_line_var = tk.StringVar()
         self.status_var = tk.StringVar(value="等待开始")
@@ -68,29 +85,9 @@ class TraceTab(ttk.Frame):
 
     def _configure_trace_styles(self) -> None:
         style = ttk.Style(self)
-        style.configure("Trace.TFrame", background=TRACE_BG)
-        style.configure("Trace.Panel.TFrame", background=TRACE_PANEL)
-        style.configure("Trace.Toolbar.TFrame", background=TRACE_PANEL_ALT)
-        style.configure("Trace.TLabel", background=TRACE_BG, foreground=TRACE_TEXT, font=("Segoe UI", 10))
-        style.configure("Trace.Muted.TLabel", background=TRACE_BG, foreground=TRACE_MUTED, font=("Segoe UI", 9))
-        style.configure("Trace.Panel.TLabel", background=TRACE_PANEL, foreground=TRACE_TEXT, font=("Segoe UI", 10))
-        style.configure("Trace.PanelMuted.TLabel", background=TRACE_PANEL, foreground=TRACE_MUTED, font=("Segoe UI", 9))
-        style.configure("Trace.Title.TLabel", background=TRACE_BG, foreground=TRACE_TEXT, font=("Segoe UI Semibold", 18))
-        style.configure("Trace.Header.TLabel", background=TRACE_BG, foreground=TRACE_TEXT, font=("Segoe UI Semibold", 11))
-        style.configure("Trace.PanelTitle.TLabel", background=TRACE_PANEL, foreground=TRACE_TEXT, font=("Segoe UI Semibold", 18))
-        style.configure("Trace.PanelHeader.TLabel", background=TRACE_PANEL, foreground=TRACE_TEXT, font=("Segoe UI Semibold", 11))
-        style.configure("Trace.Value.TLabel", background=TRACE_PANEL, foreground=TRACE_TEXT, font=("Segoe UI Semibold", 19))
-        style.configure("Trace.Cyan.TLabel", background=TRACE_BG, foreground=TRACE_CYAN, font=("Segoe UI Semibold", 10))
-        style.configure("Trace.Status.TLabel", background=TRACE_PANEL_ALT, foreground=TRACE_CYAN, font=("Segoe UI Semibold", 10))
-        style.configure("Trace.TButton", background=TRACE_PANEL_ALT, foreground=TRACE_TEXT, bordercolor=TRACE_BORDER, padding=(12, 7))
-        style.map("Trace.TButton", background=[("active", "#162a34"), ("pressed", "#1b3440")])
-        style.configure("Trace.Accent.TButton", background="#123a4c", foreground=TRACE_TEXT, bordercolor=TRACE_CYAN, padding=(12, 7))
-        style.map("Trace.Accent.TButton", background=[("active", "#174b62"), ("pressed", "#1d5c78")])
-        style.configure("Trace.Stop.TButton", background="#2a1720", foreground=TRACE_TEXT, bordercolor="#ff5d73", padding=(12, 7))
-        style.map("Trace.Stop.TButton", background=[("active", "#3a1e2a"), ("pressed", "#4b2635")])
-        style.configure("Trace.TEntry", fieldbackground="#0b151b", foreground=TRACE_TEXT, insertcolor=TRACE_TEXT, bordercolor=TRACE_BORDER)
-        style.configure("Trace.Treeview", background=TRACE_PANEL, fieldbackground=TRACE_PANEL, foreground=TRACE_TEXT, bordercolor=TRACE_BORDER, rowheight=34)
-        style.configure("Trace.Treeview.Heading", background="#0a151b", foreground=TRACE_MUTED, font=("Segoe UI Semibold", 10), bordercolor=TRACE_BORDER)
+        configure_feature_style_aliases(style)
+        style.configure("Trace.Accent.TButton", background=ACCENT, foreground="#ffffff", bordercolor=ACCENT, padding=(12, 7))
+        style.configure("Trace.Stop.TButton", background=DANGER, foreground="#ffffff", bordercolor=DANGER, padding=(12, 7))
         style.map(
             "Trace.Treeview",
             background=[("selected", TRACE_BLUE_SELECT)],
@@ -159,7 +156,7 @@ class TraceTab(ttk.Frame):
         self.tree.configure(yscrollcommand=yscroll.set)
         self.tree.grid(row=1, column=0, sticky="nsew", padx=(10, 0), pady=(0, 10))
         yscroll.grid(row=1, column=1, sticky="ns", pady=(0, 10))
-        self.tree.tag_configure("line_match", background="#3a3315", foreground=TRACE_TEXT)
+        self.tree.tag_configure("line_match", background=WARNING_SOFT, foreground=WARNING)
 
     def _add_metric(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, column: int, accent: str) -> None:
         card = tk.Frame(parent, bg=TRACE_PANEL, highlightbackground=TRACE_BORDER, highlightthickness=1)

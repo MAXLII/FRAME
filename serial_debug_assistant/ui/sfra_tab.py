@@ -8,6 +8,7 @@ from tkinter import ttk
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import SfraInfo, SfraListItem, SfraPoint
 from serial_debug_assistant.sfra_protocol import describe_sfra_state
+from serial_debug_assistant.ui.theme import ACCENT, BORDER_MUTED, DANGER, SURFACE_ALT, TEXT, TEXT_MUTED
 
 
 class SfraTab(ttk.Frame):
@@ -144,8 +145,8 @@ class SfraTab(ttk.Frame):
         plot_frame.columnconfigure(0, weight=1)
         plot_frame.rowconfigure(0, weight=1)
         plot_frame.rowconfigure(1, weight=1)
-        self.mag_canvas = tk.Canvas(plot_frame, bg="#fffbe6", highlightthickness=1, highlightbackground="#cfd8e3")
-        self.phase_canvas = tk.Canvas(plot_frame, bg="#fffbe6", highlightthickness=1, highlightbackground="#cfd8e3")
+        self.mag_canvas = tk.Canvas(plot_frame, bg=SURFACE_ALT, highlightthickness=1, highlightbackground=BORDER_MUTED)
+        self.phase_canvas = tk.Canvas(plot_frame, bg=SURFACE_ALT, highlightthickness=1, highlightbackground=BORDER_MUTED)
         self.mag_canvas.grid(row=0, column=0, sticky="nsew")
         self.phase_canvas.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         ttk.Label(plot_frame, textvariable=self._plot_status_var, style="Status.TLabel").grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -261,7 +262,7 @@ class SfraTab(ttk.Frame):
             title="Magnitude (dB) vs Frequency (Hz)",
             value_getter=lambda point: point.magnitude_db,
             y_label="dB",
-            color="#dc2626",
+            color=DANGER,
             bounds_attr="_mag_bounds",
         )
         self._draw_plot(
@@ -270,7 +271,7 @@ class SfraTab(ttk.Frame):
             title="Phase (deg) vs Frequency (Hz)",
             value_getter=lambda point: point.phase_deg,
             y_label="deg",
-            color="#2563eb",
+            color=ACCENT,
             bounds_attr="_phase_bounds",
         )
 
@@ -280,17 +281,17 @@ class SfraTab(ttk.Frame):
         height = max(1, canvas.winfo_height())
         left, top, right, bottom = 58.0, 28.0, width - 18.0, height - 34.0
         setattr(self, bounds_attr, (left, top, right, bottom))
-        canvas.create_text(width / 2, 14, text=title, fill="#111827", font=("Segoe UI", 10, "bold"))
-        canvas.create_rectangle(left, top, right, bottom, outline="#d1d5db")
+        canvas.create_text(width / 2, 14, text=title, fill=TEXT, font=("Segoe UI", 10, "bold"))
+        canvas.create_rectangle(left, top, right, bottom, outline=BORDER_MUTED)
         for i in range(1, 5):
             y = top + (bottom - top) * i / 5.0
-            canvas.create_line(left, y, right, y, fill="#e5e7eb")
+            canvas.create_line(left, y, right, y, fill=BORDER_MUTED)
             x = left + (right - left) * i / 5.0
-            canvas.create_line(x, top, x, bottom, fill="#e5e7eb")
+            canvas.create_line(x, top, x, bottom, fill=BORDER_MUTED)
 
         finite = [(point.freq_hz, value_getter(point)) for point in points if point.freq_hz > 0 and math.isfinite(value_getter(point))]
         if not finite:
-            canvas.create_text((left + right) / 2, (top + bottom) / 2, text="No sweep data", fill="#6b7280")
+            canvas.create_text((left + right) / 2, (top + bottom) / 2, text="No sweep data", fill=TEXT_MUTED)
             return
 
         freqs = [item[0] for item in finite]
@@ -315,8 +316,8 @@ class SfraTab(ttk.Frame):
         for i in range(6):
             value = y_min + (y_max - y_min) * (5 - i) / 5.0
             y = top + (bottom - top) * i / 5.0
-            canvas.create_text(left - 8, y, text=f"{value:.1f}", anchor="e", fill="#4b5563", font=("Segoe UI", 8))
-        canvas.create_text(8, (top + bottom) / 2, text=y_label, anchor="w", fill="#4b5563", font=("Segoe UI", 8))
+            canvas.create_text(left - 8, y, text=f"{value:.1f}", anchor="e", fill=TEXT_MUTED, font=("Segoe UI", 8))
+        canvas.create_text(8, (top + bottom) / 2, text=y_label, anchor="w", fill=TEXT_MUTED, font=("Segoe UI", 8))
 
         coords: list[float] = []
         for freq, value in finite:
@@ -328,8 +329,8 @@ class SfraTab(ttk.Frame):
         for x, y in zip(coords[0::2], coords[1::2]):
             canvas.create_oval(x - 2.5, y - 2.5, x + 2.5, y + 2.5, fill=color, outline="")
 
-        canvas.create_text(left, bottom + 16, text=f"{min_freq:.3g}", anchor="w", fill="#4b5563", font=("Segoe UI", 8))
-        canvas.create_text(right, bottom + 16, text=f"{max_freq:.3g}", anchor="e", fill="#4b5563", font=("Segoe UI", 8))
+        canvas.create_text(left, bottom + 16, text=f"{min_freq:.3g}", anchor="w", fill=TEXT_MUTED, font=("Segoe UI", 8))
+        canvas.create_text(right, bottom + 16, text=f"{max_freq:.3g}", anchor="e", fill=TEXT_MUTED, font=("Segoe UI", 8))
 
     def _on_plot_motion(self, event: tk.Event) -> None:
         if not self._hover_points:

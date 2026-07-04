@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.perf_protocol import (
@@ -25,19 +25,35 @@ from serial_debug_assistant.perf_protocol import (
     describe_perf_record_type,
     describe_perf_reject_reason,
 )
+from serial_debug_assistant.ui.theme import (
+    ACCENT,
+    ACCENT_SOFT,
+    BORDER,
+    BORDER_MUTED,
+    CYAN,
+    GREEN,
+    ORANGE,
+    PURPLE,
+    SURFACE,
+    SURFACE_ALT,
+    TEXT,
+    TEXT_MUTED,
+    configure_feature_style_aliases,
+)
+from serial_debug_assistant.ui.file_dialogs import ask_save_file
 
 PERF_PERIODIC_INTERVAL_MS = 1000
-PERF_BG = "#08161b"
-PERF_PANEL = "#0d1b22"
-PERF_PANEL_ALT = "#101f27"
-PERF_BORDER = "#263b45"
-PERF_TEXT = "#d8e2e7"
-PERF_MUTED = "#8fa3ad"
-PERF_CYAN = "#2ec7f0"
-PERF_PURPLE = "#8b6df6"
-PERF_ORANGE = "#ff9f2f"
-PERF_GREEN = "#62d26f"
-PERF_BLUE_SELECT = "#123552"
+PERF_BG = SURFACE
+PERF_PANEL = SURFACE
+PERF_PANEL_ALT = SURFACE_ALT
+PERF_BORDER = BORDER
+PERF_TEXT = TEXT
+PERF_MUTED = TEXT_MUTED
+PERF_CYAN = CYAN
+PERF_PURPLE = PURPLE
+PERF_ORANGE = ORANGE
+PERF_GREEN = GREEN
+PERF_BLUE_SELECT = ACCENT_SOFT
 PERF_SORTABLE_COLUMNS = {"time", "max", "load", "peak"}
 
 
@@ -98,25 +114,8 @@ class PerfTab(ttk.Frame):
 
     def _configure_perf_styles(self) -> None:
         style = ttk.Style(self)
-        style.configure("Perf.TFrame", background=PERF_BG)
-        style.configure("Perf.Panel.TFrame", background=PERF_PANEL)
-        style.configure("Perf.Toolbar.TFrame", background=PERF_PANEL_ALT)
-        style.configure("Perf.TLabel", background=PERF_BG, foreground=PERF_TEXT, font=("Segoe UI", 10))
-        style.configure("Perf.Muted.TLabel", background=PERF_BG, foreground=PERF_MUTED, font=("Segoe UI", 9))
-        style.configure("Perf.Panel.TLabel", background=PERF_PANEL, foreground=PERF_TEXT, font=("Segoe UI", 10))
-        style.configure("Perf.PanelMuted.TLabel", background=PERF_PANEL, foreground=PERF_MUTED, font=("Segoe UI", 9))
-        style.configure("Perf.Title.TLabel", background=PERF_BG, foreground=PERF_TEXT, font=("Segoe UI Semibold", 18))
-        style.configure("Perf.Header.TLabel", background=PERF_BG, foreground=PERF_TEXT, font=("Segoe UI Semibold", 11))
-        style.configure("Perf.Value.TLabel", background=PERF_PANEL, foreground=PERF_TEXT, font=("Segoe UI Semibold", 19))
-        style.configure("Perf.Cyan.TLabel", background=PERF_BG, foreground=PERF_CYAN, font=("Segoe UI Semibold", 10))
-        style.configure("Perf.Status.TLabel", background=PERF_PANEL_ALT, foreground=PERF_CYAN, font=("Segoe UI Semibold", 10))
-        style.configure("Perf.TButton", background=PERF_PANEL_ALT, foreground=PERF_TEXT, bordercolor=PERF_BORDER, padding=(12, 7))
-        style.map("Perf.TButton", background=[("active", "#162a34"), ("pressed", "#1b3440")])
-        style.configure("Perf.Accent.TButton", background="#123a4c", foreground=PERF_TEXT, bordercolor=PERF_CYAN, padding=(12, 7))
-        style.map("Perf.Accent.TButton", background=[("active", "#174b62"), ("pressed", "#1d5c78")])
-        style.configure("Perf.TEntry", fieldbackground="#0b151b", foreground=PERF_TEXT, insertcolor=PERF_TEXT, bordercolor=PERF_BORDER)
-        style.configure("Perf.Treeview", background=PERF_PANEL, fieldbackground=PERF_PANEL, foreground=PERF_TEXT, bordercolor=PERF_BORDER, rowheight=34)
-        style.configure("Perf.Treeview.Heading", background="#0a151b", foreground=PERF_MUTED, font=("Segoe UI Semibold", 10), bordercolor=PERF_BORDER)
+        configure_feature_style_aliases(style)
+        style.configure("Perf.Accent.TButton", background=ACCENT, foreground="#ffffff", bordercolor=ACCENT, padding=(12, 7))
         style.map(
             "Perf.Treeview",
             background=[("selected", PERF_BLUE_SELECT)],
@@ -166,7 +165,7 @@ class PerfTab(ttk.Frame):
         self._add_metric(summary, "任务总占用", self.task_load_var, 0, 0, PERF_CYAN)
         self._add_metric(summary, "任务峰值", self.task_peak_var, 0, 1, PERF_PURPLE)
         self._add_metric(summary, "中断总占用", self.interrupt_load_var, 0, 2, PERF_ORANGE)
-        self._add_metric(summary, "中断峰值", self.interrupt_peak_var, 0, 3, "#ffbf3d")
+        self._add_metric(summary, "中断峰值", self.interrupt_peak_var, 0, 3, ORANGE)
 
         content = ttk.Frame(self, style="Perf.TFrame")
         content.grid(row=3, column=0, sticky="nsew", pady=(18, 0))
@@ -309,7 +308,8 @@ class PerfTab(ttk.Frame):
             self.set_status("No perf records to export.", error=True)
             return
         self.export_dir.mkdir(parents=True, exist_ok=True)
-        path = filedialog.asksaveasfilename(
+        path = ask_save_file(
+            key="perf_csv",
             initialdir=str(self.export_dir),
             initialfile="perf_records.csv",
             defaultextension=".csv",
@@ -539,7 +539,7 @@ class PerfTab(ttk.Frame):
         height = 28
         record = self._selected_record
         canvas.create_text(x0, 20, text="占用率对比", anchor="w", fill=PERF_TEXT, font=("Segoe UI", 10, "bold"))
-        canvas.create_rectangle(x0, y, x1, y + height, fill="#263138", outline=PERF_BORDER)
+        canvas.create_rectangle(x0, y, x1, y + height, fill=BORDER_MUTED, outline=PERF_BORDER)
         if record is None:
             return
         if record.record_type == PERF_RECORD_CODE:

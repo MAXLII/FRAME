@@ -3,6 +3,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from serial_debug_assistant.ui.theme import ACCENT, FONT_MONO, SURFACE, TEXT
+
 
 class DebugLogTab(ttk.Frame):
     def __init__(self, master, *, log_path: str) -> None:
@@ -32,10 +34,10 @@ class DebugLogTab(ttk.Frame):
             wrap="char",
             relief="flat",
             borderwidth=0,
-            font=("Consolas", 10),
-            bg="#ffffff",
-            fg="#111827",
-            insertbackground="#2563eb",
+            font=(FONT_MONO, 10),
+            bg=SURFACE,
+            fg=TEXT,
+            insertbackground=ACCENT,
             padx=12,
             pady=12,
         )

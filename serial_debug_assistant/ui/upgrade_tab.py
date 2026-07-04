@@ -7,6 +7,7 @@ from tkinter import ttk
 from serial_debug_assistant.firmware_update import UPDATE_TYPE_FORCE, UPDATE_TYPE_NORMAL
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import FirmwareImage
+from serial_debug_assistant.ui.theme import FONT_MONO, SURFACE_ALT, TEXT
 
 
 class UpgradeTab(ttk.Frame):
@@ -159,9 +160,9 @@ class UpgradeTab(ttk.Frame):
             wrap="word",
             relief="flat",
             borderwidth=0,
-            font=("Consolas", 10),
-            bg="#f8fbfe",
-            fg="#122033",
+            font=(FONT_MONO, 10),
+            bg=SURFACE_ALT,
+            fg=TEXT,
             padx=10,
             pady=10,
         )

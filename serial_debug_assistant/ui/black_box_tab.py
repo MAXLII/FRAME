@@ -4,10 +4,11 @@ import csv
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.black_box_protocol import BLACK_BOX_UINT32, format_black_box_value
+from serial_debug_assistant.ui.file_dialogs import ask_save_file
 
 
 class BlackBoxTab(ttk.Frame):
@@ -206,7 +207,8 @@ class BlackBoxTab(ttk.Frame):
             if self._query_read_length > 0
             else "black_box.csv"
         )
-        path = filedialog.asksaveasfilename(
+        path = ask_save_file(
+            key="black_box_csv",
             title=self.i18n.translate_text("Save Black Box CSV"),
             initialdir=str(self.export_dir),
             initialfile=default_name,

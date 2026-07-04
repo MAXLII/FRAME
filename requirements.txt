@@ -1,3 +1,4 @@
 pyserial>=3.5,<4.0
 python-can>=4.4,<5.0
 pywin32>=311
+pyelftools>=0.31,<0.33

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import struct
 import re
 from pathlib import Path
+import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 
 import serial
 from serial_debug_assistant.app_paths import ensure_runtime_dirs, get_app_paths, migrate_legacy_data
@@ -63,6 +65,7 @@ from serial_debug_assistant.constants import (
     STOP_BITS_OPTIONS,
 )
 from serial_debug_assistant.comm import CommunicationManager
+from serial_debug_assistant.controllers import ProtocolControllerHub
 from serial_debug_assistant.demo_mode import DemoRuntime
 from serial_debug_assistant.debug_logger import DebugLogger
 from serial_debug_assistant.firmware_update import (
@@ -89,6 +92,7 @@ from serial_debug_assistant.firmware_update import (
     parse_llc_pfc_upgrade_progress_ack,
 )
 from serial_debug_assistant.i18n import I18nManager
+from serial_debug_assistant.jlink_debug import DebugVariable, JLinkDebugError, JLinkVariableService
 from serial_debug_assistant.models import (
     FirmwareImage,
     FirmwareUpdateSession,
@@ -206,12 +210,15 @@ from serial_debug_assistant.services.serial_service import SerialService
 from serial_debug_assistant.services.transport_helpers import CAN_BITRATES, CAN_INTERFACES
 from serial_debug_assistant.ui.black_box_tab import BlackBoxTab
 from serial_debug_assistant.ui.factory_mode_tab import FactoryModeTab
+from serial_debug_assistant.ui.file_dialogs import ask_open_file, ask_save_file
 from serial_debug_assistant.ui.home_tab import HomeTab
+from serial_debug_assistant.ui.jlink_debug_tab import JLinkDebugTab
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
 from serial_debug_assistant.ui.perf_tab import PerfTab
 from serial_debug_assistant.ui.scope_tab import ScopeTab
 from serial_debug_assistant.ui.sfra_tab import SfraTab
+from serial_debug_assistant.ui.theme import APP_BG, configure_app_styles
 from serial_debug_assistant.ui.trace_tab import TraceTab
 from serial_debug_assistant.ui.upgrade_tab import UpgradeTab
 from serial_debug_assistant.ui.wave_tab import WaveformTab
@@ -266,6 +273,16 @@ SCOPE_PULL_PREPARE_DELAY_MS = 120
 SCOPE_LIST_TIMEOUT_MS = 1500
 
 
+def _parse_jlink_pointer_value(text: str) -> int | None:
+    match = re.search(r"0x[0-9A-Fa-f]+", text)
+    if match is None:
+        return None
+    try:
+        return int(match.group(0), 16)
+    except ValueError:
+        return None
+
+
 class SerialDebugAssistant(tk.Tk):
     def __init__(self, *, demo_mode: bool = False) -> None:
         super().__init__()
@@ -281,7 +298,7 @@ class SerialDebugAssistant(tk.Tk):
         title = APP_TITLE if not demo_mode else f"{APP_TITLE} Demo"
         self.title(title)
         self._configure_window_geometry()
-        self.configure(bg="#edf3f8")
+        self.configure(bg=APP_BG)
 
         self.paths = get_app_paths()
         ensure_runtime_dirs(self.paths)
@@ -294,8 +311,10 @@ class SerialDebugAssistant(tk.Tk):
             can_service=self.can_service,
             logger=self.logger,
         )
+        self.jlink_service = JLinkVariableService()
         self.comm.set_frame_logger(self._log_protocol_frame)
-        self.comm.router.register_fallback(self.handle_protocol_frame)
+        self.protocol_controllers = ProtocolControllerHub(self)
+        self.protocol_controllers.register_routes(self.comm.router)
         self.connected_transport: str | None = None
         self._applying_transport_settings = False
         self._current_serial_settings: dict[str, object] = {}
@@ -323,6 +342,8 @@ class SerialDebugAssistant(tk.Tk):
         self.wave_debug_batches_remaining = 0
         self.wave_debug_frame_budget = 0
         self.last_wave_table_sync = 0.0
+        self._last_wave_selection_names: tuple[str, ...] = ()
+        self._wave_selection_sync_job: str | None = None
         self.parameter_list_request_job: str | None = None
         self.ignore_wave_frames_until = 0.0
         self.loaded_firmware: FirmwareImage | None = None
@@ -432,124 +453,7 @@ class SerialDebugAssistant(tk.Tk):
         return int(match.group(1)), int(match.group(2))
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        app_bg = "#edf3f8"
-        panel_bg = "#fbfdff"
-        sidebar_bg = "#e3ebf4"
-        border = "#bfd0e3"
-        accent = "#1f6feb"
-        accent_active = "#1557b5"
-        muted_text = "#5b6b7f"
-        text = "#112033"
-
-        self.configure(bg=app_bg)
-
-        style.configure("App.TFrame", background=app_bg)
-        style.configure("Panel.TFrame", background=panel_bg, relief="flat")
-        style.configure("Sidebar.TFrame", background=sidebar_bg, relief="flat")
-        style.configure("Section.TLabelframe", background=panel_bg, borderwidth=1, relief="solid", bordercolor=border)
-        style.configure("Sidebar.Section.TLabelframe", background=sidebar_bg, borderwidth=1, relief="solid", bordercolor=border)
-        style.configure(
-            "Section.TLabelframe.Label",
-            background=panel_bg,
-            foreground="#36506b",
-            font=("Segoe UI Semibold", 10),
-        )
-        style.configure(
-            "Sidebar.Section.TLabelframe.Label",
-            background=sidebar_bg,
-            foreground="#36506b",
-            font=("Segoe UI Semibold", 10),
-        )
-        style.configure("TLabel", background=panel_bg, foreground=text, font=("Segoe UI", 10))
-        style.configure("Status.TLabel", background=app_bg, foreground=muted_text, font=("Segoe UI", 10))
-        style.configure("ErrorStatus.TLabel", background=app_bg, foreground="#c23b3b", font=("Segoe UI", 10))
-        style.configure(
-            "Header.TLabel",
-            background=app_bg,
-            foreground=text,
-            font=("Segoe UI Semibold", 11),
-        )
-        style.configure(
-            "SidebarHeader.TLabel",
-            background=sidebar_bg,
-            foreground=text,
-            font=("Segoe UI Semibold", 11),
-        )
-        style.configure("Sidebar.TLabel", background=sidebar_bg, foreground=text, font=("Segoe UI", 10))
-        style.configure(
-            "TButton",
-            font=("Segoe UI", 10),
-            padding=(10, 6),
-            background="#f6f9fc",
-            foreground=text,
-            borderwidth=1,
-            relief="solid",
-            bordercolor=border,
-        )
-        style.map(
-            "TButton",
-            background=[("active", "#e8f0f8"), ("pressed", "#dde8f5")],
-            bordercolor=[("focus", accent)],
-        )
-        style.configure(
-            "Accent.TButton",
-            foreground="#ffffff",
-            background=accent,
-            borderwidth=0,
-            font=("Segoe UI Semibold", 10),
-            padding=(12, 8),
-        )
-        style.map("Accent.TButton", background=[("active", accent_active), ("disabled", "#8fb8f2")])
-        style.configure("TCheckbutton", background=panel_bg, foreground=text, font=("Segoe UI", 10))
-        style.configure("Sidebar.TCheckbutton", background=sidebar_bg, foreground=text, font=("Segoe UI", 10))
-        style.configure("TRadiobutton", background=panel_bg, foreground=text, font=("Segoe UI", 10))
-        style.configure(
-            "TEntry",
-            fieldbackground="#ffffff",
-            foreground=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            insertcolor=accent,
-            padding=5,
-        )
-        style.configure(
-            "TCombobox",
-            padding=5,
-            fieldbackground="#f4f8fc",
-            foreground=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            arrowsize=14,
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", "#f4f8fc"), ("focus", "#f4f8fc")],
-            selectbackground=[("readonly", "#dce9f7")],
-            selectforeground=[("readonly", text)],
-        )
-        style.configure("Horizontal.TProgressbar", background=accent, troughcolor="#dce6f1", bordercolor="#dce6f1", lightcolor=accent, darkcolor=accent)
-        style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground=text, bordercolor=border, rowheight=28)
-        style.configure("Treeview.Heading", background="#edf4fb", foreground="#36506b", relief="flat", font=("Segoe UI Semibold", 10))
-        style.map("Treeview.Heading", background=[("active", "#dfeaf6")])
-        style.configure("TNotebook", background=panel_bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
-        style.configure(
-            "TNotebook.Tab",
-            background="#e7eef6",
-            foreground="#4a5d73",
-            padding=(14, 7),
-            font=("Segoe UI Semibold", 10),
-            borderwidth=0,
-        )
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", panel_bg), ("active", "#dbe6f2")],
-            foreground=[("selected", text), ("active", text)],
-            padding=[("selected", (16, 11, 16, 9)), ("!selected", (14, 6, 14, 6))],
-        )
+        configure_app_styles(self)
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, style="App.TFrame", padding=16)
@@ -685,6 +589,17 @@ class SerialDebugAssistant(tk.Tk):
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
             i18n=self.i18n,
         )
+        self.jlink_tab = JLinkDebugTab(
+            self.notebook,
+            on_load_symbols=self.load_jlink_variables,
+            on_refresh_values=self.refresh_jlink_variables,
+            on_read_selected=self.read_selected_jlink_variable,
+            on_test_connection=self.test_jlink_connection,
+            on_expand_variable=self.expand_jlink_pointer_variable,
+            export_dir=self.paths.exports_dir,
+            target_history_path=self.paths.config_dir / "jlink_targets.json",
+            file_history_path=self.paths.config_dir / "jlink_files.json",
+        )
 
         self._add_notebook_tab("home", self.home_tab, "主页")
         self._add_notebook_tab("monitor", monitor_page, "串口调试")
@@ -697,6 +612,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("sfra", self.sfra_tab, "SFRA")
         self._add_notebook_tab("perf", self.perf_tab, "Perf")
         self._add_notebook_tab("trace", self.trace_tab, "Trace")
+        self._add_notebook_tab("jlink", self.jlink_tab, "J-Link")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
         if "parameter" not in self.hidden_tab_ids:
             self.notebook.select(self.parameter_tab)
@@ -880,7 +796,7 @@ class SerialDebugAssistant(tk.Tk):
         holder = ttk.Frame(parent, style="Sidebar.TFrame")
         holder.grid(row=row, column=column, sticky="ew", padx=(0, 12))
         holder.columnconfigure(0, weight=1)
-        self.port_combo = ttk.Combobox(holder, textvariable=self.port_var, state="readonly", width=18)
+        self.port_combo = ttk.Combobox(holder, textvariable=self.port_var, state="readonly", width=28)
         self.port_combo.grid(row=0, column=0, sticky="ew")
         self.port_combo.bind("<<ComboboxSelected>>", self._on_port_setting_changed)
         self.port_refresh_button = ttk.Button(holder, text=self.i18n.translate_text("刷新"), command=self.refresh_ports, width=5)
@@ -937,6 +853,239 @@ class SerialDebugAssistant(tk.Tk):
     def _on_notebook_tab_changed(self, _event=None) -> None:
         if self.notebook.select() == str(self.perf_tab):
             self.prepare_perf_dictionary()
+
+    def load_jlink_variables(self) -> None:
+        elf_path, map_path = self.jlink_tab.get_symbol_paths()
+        if elf_path is None and map_path is None:
+            self.jlink_tab.set_status("Please select an ELF or MAP file first.")
+            self.set_status("Please select an ELF or MAP file first.", error=True)
+            return
+        self.jlink_tab.save_file_history()
+        self.jlink_tab.auto_detect_device()
+        self.jlink_tab.set_variables([])
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status("Reloading ELF/MAP variable symbols from disk...")
+        self.set_status("Reloading J-Link ELF/MAP variable symbols from disk...")
+
+        def worker() -> None:
+            try:
+                variables = self.jlink_service.load_variables(elf_path=elf_path, map_path=map_path)
+            except (OSError, JLinkDebugError) as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_load_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_load_success(variables))
+
+        threading.Thread(target=worker, name="jlink-symbol-loader", daemon=True).start()
+
+    def _finish_jlink_load_success(self, variables) -> None:
+        self.jlink_tab.set_variables(variables)
+        self.jlink_tab.set_busy(False)
+        message = f"Loaded {len(variables)} variable(s)."
+        self.jlink_tab.set_status(message)
+        self.set_status(message)
+        self.logger.log("JLINK", f"loaded variables count={len(variables)}")
+
+    def _finish_jlink_load_error(self, message: str) -> None:
+        self.jlink_tab.set_busy(False)
+        self.jlink_tab.set_status(message)
+        self.set_status(message, error=True)
+        self.logger.log("ERROR", f"jlink load variables failed: {message}")
+
+    def test_jlink_connection(self) -> None:
+        try:
+            settings = self.jlink_tab.get_jlink_settings()
+        except ValueError as exc:
+            self.jlink_tab.set_status(str(exc))
+            self.set_status(str(exc), error=True)
+            return
+        use_native_selector = not settings.device.strip()
+        self.jlink_tab.set_busy(True)
+        if use_native_selector:
+            self.jlink_tab.set_status("Select a J-Link target in the SEGGER dialog...")
+            self.set_status("Select a J-Link target in the SEGGER dialog...")
+        else:
+            self.jlink_tab.set_status("Connecting to J-Link...")
+            self.set_status("Connecting to J-Link...")
+
+        def worker() -> None:
+            try:
+                if use_native_selector:
+                    device, message = self.jlink_service.select_device_with_native_dialog(settings)
+                else:
+                    device = settings.device.strip()
+                    message = self.jlink_service.test_connection(settings)
+            except JLinkDebugError as exc:
+                error_message = str(exc)
+                self.after(0, lambda: self._finish_jlink_connect_error(error_message))
+                return
+            self.after(0, lambda: self._finish_jlink_connect_success(message, device))
+
+        threading.Thread(target=worker, name="jlink-connect-test", daemon=True).start()
+
+    def _finish_jlink_connect_success(self, message: str, device: str = "") -> None:
+        self.jlink_tab.set_busy(False)
+        if device:
+            self.jlink_tab.set_device(device)
+            self.jlink_tab.remember_device(device)
+        first_line = message.splitlines()[0] if message else "J-Link connected."
+        self.jlink_tab.set_status(first_line)
+        self.set_status(first_line)
+        self.logger.log("JLINK", message.replace("\n", " | "))
+
+    def _finish_jlink_connect_error(self, message: str) -> None:
+        self.jlink_tab.set_busy(False)
+        self.jlink_tab.set_status(message)
+        self.set_status(message, error=True)
+        self.logger.log("ERROR", f"jlink connect failed: {message}")
+
+    def refresh_jlink_variables(self) -> None:
+        variables = self.jlink_tab.get_variables()
+        if not variables:
+            self.jlink_tab.set_status("Load the variable list first.")
+            self.set_status("Load the variable list first.", error=True)
+            return
+        self.jlink_tab.auto_detect_device()
+        try:
+            settings = self.jlink_tab.get_jlink_settings()
+        except ValueError as exc:
+            self.jlink_tab.set_status(str(exc))
+            self.set_status(str(exc), error=True)
+            return
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status(f"Refreshing {len(variables)} variable(s) through J-Link...")
+        self.set_status("Refreshing J-Link variables...")
+
+        def worker() -> None:
+            try:
+                refreshed = self.jlink_service.read_variables(variables, settings)
+            except JLinkDebugError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_refresh_success(refreshed))
+
+        threading.Thread(target=worker, name="jlink-variable-refresh", daemon=True).start()
+
+    def read_selected_jlink_variable(self) -> None:
+        variable = self.jlink_tab.get_selected_variable()
+        if variable is None:
+            self.jlink_tab.set_status("Select one variable row first.")
+            self.set_status("Select one J-Link variable row first.", error=True)
+            return
+        self.jlink_tab.auto_detect_device()
+        try:
+            settings = self.jlink_tab.get_jlink_settings()
+        except ValueError as exc:
+            self.jlink_tab.set_status(str(exc))
+            self.set_status(str(exc), error=True)
+            return
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status(f"Reading {variable.name} through J-Link...")
+        self.set_status(f"Reading J-Link variable: {variable.name}")
+
+        def worker() -> None:
+            try:
+                refreshed = self.jlink_service.read_variables([variable], settings)
+            except JLinkDebugError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_single_read_success(refreshed))
+
+        threading.Thread(target=worker, name="jlink-variable-single-read", daemon=True).start()
+
+    def expand_jlink_pointer_variable(self, variable: DebugVariable) -> None:
+        if not variable.child_templates:
+            return
+        target_address = _parse_jlink_pointer_value(variable.value)
+        if target_address is None:
+            message = f"Read {variable.name} first, then expand the pointed struct."
+            self.jlink_tab.set_status(message)
+            self.set_status(message, error=True)
+            return
+        if target_address == 0:
+            message = f"{variable.name} is NULL."
+            self.jlink_tab.clear_dynamic_children(variable)
+            self.jlink_tab.set_status(message)
+            self.set_status(message, error=True)
+            return
+        self.jlink_tab.auto_detect_device()
+        try:
+            settings = self.jlink_tab.get_jlink_settings()
+        except ValueError as exc:
+            self.jlink_tab.set_status(str(exc))
+            self.set_status(str(exc), error=True)
+            return
+
+        children = [
+            replace(
+                template,
+                address=target_address + template.address,
+                section=variable.section,
+                source=variable.source,
+                raw_hex="",
+                value="",
+            )
+            for template in variable.child_templates
+        ]
+        if not children:
+            return
+
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status(f"Reading {variable.type_name} at 0x{target_address:08X}...")
+        self.set_status(f"Expanding J-Link pointer: {variable.name}")
+
+        def worker() -> None:
+            try:
+                refreshed = self.jlink_service.read_variables(children, settings)
+            except JLinkDebugError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_pointer_expand_success(variable, refreshed))
+
+        threading.Thread(target=worker, name="jlink-pointer-expand", daemon=True).start()
+
+    def _finish_jlink_pointer_expand_success(self, parent_variable: DebugVariable, children: list[DebugVariable]) -> None:
+        ok_count = sum(1 for variable in children if variable.status == "OK")
+        self.jlink_tab.set_dynamic_children(parent_variable, children)
+        if ok_count:
+            self.jlink_tab.remember_device()
+        self.jlink_tab.set_busy(False)
+        message = f"J-Link expanded {parent_variable.name}: {ok_count}/{len(children)} field(s) read."
+        self.jlink_tab.set_status(message)
+        self.set_status(message)
+        self.logger.log("JLINK", f"expand pointer variable={parent_variable.name} ok={ok_count} total={len(children)}")
+
+    def _finish_jlink_single_read_success(self, variables) -> None:
+        ok_count = sum(1 for variable in variables if variable.status == "OK")
+        self.jlink_tab.replace_variables(variables)
+        if ok_count:
+            self.jlink_tab.remember_device()
+        self.jlink_tab.set_busy(False)
+        variable_name = variables[0].name if variables else "-"
+        message = f"J-Link read complete: {variable_name}"
+        self.jlink_tab.set_status(message)
+        self.set_status(message)
+        self.logger.log("JLINK", f"single read variable={variable_name} ok={ok_count}")
+
+    def _finish_jlink_refresh_success(self, variables) -> None:
+        ok_count = sum(1 for variable in variables if variable.status == "OK")
+        self.jlink_tab.set_variables(variables)
+        if ok_count:
+            self.jlink_tab.remember_device()
+        self.jlink_tab.set_busy(False)
+        message = f"J-Link refresh complete: {ok_count}/{len(variables)} variable(s) read successfully."
+        self.jlink_tab.set_status(message)
+        self.set_status(message)
+        self.logger.log("JLINK", f"refresh variables ok={ok_count} total={len(variables)}")
+
+    def _finish_jlink_refresh_error(self, message: str) -> None:
+        self.jlink_tab.set_busy(False)
+        self.jlink_tab.set_status(message)
+        self.set_status(message, error=True)
+        self.logger.log("ERROR", f"jlink refresh failed: {message}")
 
     def _on_language_changed(self, _event=None) -> None:
         self.i18n.set_language(self.i18n.get_language_from_label(self.language_var.get()))
@@ -1451,7 +1600,8 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_status("Firmware loaded", "演示固件已就绪，可直接开始升级。", error_code="-")
             self.set_status("演示模式: 已载入假固件")
             return
-        path = filedialog.askopenfilename(
+        path = ask_open_file(
+            key="firmware_image",
             title="Select Firmware Image",
             filetypes=[("Binary Files", "*.bin"), (self.i18n.translate_text("All Files"), "*.*")],
         )
@@ -1888,51 +2038,34 @@ class SerialDebugAssistant(tk.Tk):
         )
         self.wave_debug_batches_remaining -= 1
 
-    def handle_protocol_frame(self, frame: ProtocolFrame) -> None:
-        if self._handle_home_protocol_frame(frame):
-            return
+    def _handle_parameter_wave_protocol_frame(self, frame: ProtocolFrame) -> bool:
         if frame.cmd_set != 0x01:
-            return
-        if self._handle_upgrade_protocol_frame(frame):
-            return
-        if self._handle_factory_mode_protocol_frame(frame):
-            return
-        if self._handle_black_box_protocol_frame(frame):
-            return
-        if self._handle_scope_protocol_frame(frame):
-            return
-        if self._handle_sfra_protocol_frame(frame):
-            return
-        if self._handle_perf_protocol_frame(frame):
-            return
-        if self._handle_trace_protocol_frame(frame):
-            return
+            return False
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
             self.parameters.clear()
             self.parameter_tab.clear_parameters()
+            self.parameter_tab.begin_bulk_update()
+            self._clear_wave_selection()
             self.parameter_tab.set_expected_count(0, self.expected_param_count)
             self.parameter_tab.set_message("开始接收参数列表")
-            self.sync_wave_selection()
             self.logger.log("PARAM", f"count ack total={self.expected_param_count}")
-            return
+            return True
         if frame.cmd_word == 0x04 and len(frame.payload) >= 15:
             entry = self._parse_parameter_list_item(frame.payload)
             if entry:
                 self.parameters[entry.name] = entry
-                self.parameter_tab.add_or_update_parameter(entry)
+                self.parameter_tab.queue_parameter_update(entry)
                 current_count = len(self.parameters)
                 self.parameter_tab.set_expected_count(current_count, self.expected_param_count)
-                if current_count % 5 == 0 or current_count == self.expected_param_count:
+                if current_count % 20 == 0 or current_count == self.expected_param_count:
                     self.parameter_tab.set_message(self.i18n.format_text("已加载参数: {name}", name=entry.name))
-                if entry.auto_report and (current_count % 10 == 0 or current_count == self.expected_param_count):
-                    self.sync_wave_selection()
-                elif current_count == self.expected_param_count:
-                    self.sync_wave_selection()
+                if current_count == self.expected_param_count:
+                    self.schedule_wave_selection_sync()
                 self.logger.log("PARAM", f"list item name={entry.name} type={entry.type_id} raw={entry.data_raw}")
             else:
                 self.logger.log("PARAM", f"list item parse failed payload={frame.payload.hex(' ').upper()}")
-            return
+            return True
         if frame.cmd_word == 0x02 and frame.is_ack == 1 and len(frame.payload) >= 6:
             entry = self._parse_single_parameter(frame.payload)
             if entry:
@@ -1957,7 +2090,7 @@ class SerialDebugAssistant(tk.Tk):
                 if not entry.is_command:
                     self.wave_tab.update_latest_value(entry.name, format_value(entry.data_raw, entry.type_id))
                 self.logger.log("PARAM", f"read ack name={entry.name} raw={entry.data_raw}")
-            return
+            return True
         if frame.cmd_word == 0x03 and frame.is_ack == 1 and len(frame.payload) >= 14:
             entry = self._parse_write_response(frame.payload)
             if entry:
@@ -1975,32 +2108,30 @@ class SerialDebugAssistant(tk.Tk):
                 if not entry.is_command:
                     self.wave_tab.update_latest_value(entry.name, format_value(entry.data_raw, entry.type_id))
                 self.logger.log("PARAM", f"write ack name={entry.name} raw={entry.data_raw}")
-            return
+            return True
         if frame.cmd_word == 0x05 and frame.is_ack == 1:
             self.parameter_tab.set_message("波形勾选状态已更新")
             self.sync_wave_selection()
             self.logger.log("WAVE", "auto report select ack")
-            return
+            return True
         if frame.cmd_word == 0x06 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.wave_report_period_ms = int.from_bytes(frame.payload[:4], "little")
             self.wave_tab.set_period(self.wave_report_period_ms)
             self.logger.log("WAVE", f"period ack {self.wave_report_period_ms}ms")
-            return
+            return True
         if frame.cmd_word == 0x0C and frame.is_ack == 1:
             self.wave_tab.set_running(self.wave_running)
             self.logger.log("WAVE", f"run ack running={self.wave_running}")
-            return
+            return True
         if frame.cmd_word == 0x07:
             if time.monotonic() < self.ignore_wave_frames_until:
-                return
+                return True
             self._handle_wave_report_payload(frame.payload)
-            return
-        if self.connected_transport == "can":
-            self.logger.log(
-                "PARAM",
-                f"unhandled frame on CAN cmd_set=0x{frame.cmd_set:02X} cmd_word=0x{frame.cmd_word:02X} "
-                f"is_ack={frame.is_ack} len={len(frame.payload)} payload={frame.payload.hex(' ').upper()}",
-            )
+            return True
+        return False
+
+    def handle_protocol_frame(self, frame: ProtocolFrame) -> None:
+        self.protocol_controllers.handle_frame(frame)
 
     def _handle_home_protocol_frame(self, frame: ProtocolFrame) -> bool:
         if frame.cmd_set != 0x02:
@@ -2884,7 +3015,7 @@ class SerialDebugAssistant(tk.Tk):
         end_index = min(index + batch_size, len(items))
         for name, entry in items[index:end_index]:
             self.parameters[name] = entry
-            self.parameter_tab.add_or_update_parameter(entry)
+            self.parameter_tab.queue_parameter_update(entry)
         self.parameter_tab.set_expected_count(end_index, len(items))
         if end_index < len(items):
             last_name = items[end_index - 1][0]
@@ -2892,7 +3023,7 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status(f"演示模式: 参数列表加载中 {end_index}/{len(items)}")
             self._schedule_demo_parameter_loading(items=items, index=end_index, batch_size=batch_size)
             return
-        self.sync_wave_selection()
+        self.schedule_wave_selection_sync()
         self.parameter_tab.set_message("演示参数列表加载完成，可点击读取和写入")
         self.set_status(f"演示模式: 已加载 {len(items)} 个参数")
         self.logger.log("DEMO", f"load parameter list count={len(items)}")
@@ -3439,10 +3570,12 @@ class SerialDebugAssistant(tk.Tk):
             ordered_items = sorted(all_parameters.items(), key=lambda item: item[0].lower())
             self.parameters.clear()
             self.parameter_tab.clear_parameters()
+            self.parameter_tab.begin_bulk_update()
+            self._clear_wave_selection()
             self.parameter_tab.set_expected_count(0, len(ordered_items))
             self.parameter_tab.set_message("演示参数加载中，请观察列表逐条刷新")
             self.set_status("演示模式: 正在逐条加载参数列表")
-            self._schedule_demo_parameter_loading(items=ordered_items, index=0, batch_size=1)
+            self._schedule_demo_parameter_loading(items=ordered_items, index=0, batch_size=80)
             self.logger.log("DEMO", f"start staged parameter load count={len(ordered_items)}")
             return
         if not self._is_connected():
@@ -3455,8 +3588,9 @@ class SerialDebugAssistant(tk.Tk):
         self.expected_param_count = 0
         self.parameters.clear()
         self.parameter_tab.clear_parameters()
+        self.parameter_tab.begin_bulk_update()
+        self._clear_wave_selection()
         self.parameter_tab.set_message("正在准备读取参数列表")
-        self.sync_wave_selection()
         self.parameter_list_request_job = self.after(1, self._send_parameter_list_request)
 
     def _send_parameter_list_request(self) -> None:
@@ -4590,8 +4724,31 @@ class SerialDebugAssistant(tk.Tk):
         self.send_protocol_frame(cmd_set=0x01, cmd_word=0x05, payload=payload)
 
     def sync_wave_selection(self) -> None:
-        names = [name for name, entry in self.parameters.items() if entry.auto_report and not entry.is_command]
-        self.wave_tab.set_selected_parameters(sorted(names, key=str.lower))
+        pending_job = self._wave_selection_sync_job
+        self._wave_selection_sync_job = None
+        if pending_job is not None:
+            try:
+                self.after_cancel(pending_job)
+            except tk.TclError:
+                pass
+        names = tuple(sorted((name for name, entry in self.parameters.items() if entry.auto_report and not entry.is_command), key=str.lower))
+        if names == self._last_wave_selection_names:
+            return
+        self._last_wave_selection_names = names
+        self.wave_tab.set_selected_parameters(list(names))
+
+    def schedule_wave_selection_sync(self) -> None:
+        if self._wave_selection_sync_job is None:
+            self._wave_selection_sync_job = self.after(1, self.sync_wave_selection)
+
+    def _clear_wave_selection(self) -> None:
+        if self._wave_selection_sync_job is not None:
+            self.after_cancel(self._wave_selection_sync_job)
+            self._wave_selection_sync_job = None
+        if not self._last_wave_selection_names:
+            return
+        self._last_wave_selection_names = ()
+        self.wave_tab.set_selected_parameters([])
 
     def apply_wave_period(self) -> None:
         if self.demo_mode:
@@ -4802,7 +4959,8 @@ class SerialDebugAssistant(tk.Tk):
 
     def save_receive_snapshot(self) -> None:
         self.paths.exports_dir.mkdir(parents=True, exist_ok=True)
-        path = filedialog.asksaveasfilename(
+        path = ask_save_file(
+            key="monitor_snapshot",
             title="Save Receive Data",
             initialdir=str(self.paths.exports_dir),
             defaultextension=".txt",
@@ -4817,7 +4975,8 @@ class SerialDebugAssistant(tk.Tk):
     def on_toggle_save_to_file(self) -> None:
         if self.save_to_file_var.get():
             self.paths.exports_dir.mkdir(parents=True, exist_ok=True)
-            path = filedialog.asksaveasfilename(
+            path = ask_save_file(
+                key="monitor_stream",
                 title="Select output file",
                 initialdir=str(self.paths.exports_dir),
                 defaultextension=".bin",

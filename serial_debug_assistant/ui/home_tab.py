@@ -5,6 +5,7 @@ from tkinter import ttk
 from typing import Optional
 
 from serial_debug_assistant.i18n import I18nManager
+from serial_debug_assistant.ui.theme import BORDER, BORDER_MUTED, FONT_MONO, SUCCESS, SURFACE, SURFACE_ALT, TEXT
 
 
 class HomeTab(ttk.Frame):
@@ -209,15 +210,15 @@ class HomeTab(ttk.Frame):
             frame,
             height=5,
             wrap="word",
-            bg="#f8fbfe",
-            fg="#223548",
-            insertbackground="#223548",
+            bg=SURFACE_ALT,
+            fg=TEXT,
+            insertbackground=TEXT,
             relief="flat",
             highlightthickness=1,
-            highlightbackground="#bfd0e3",
+            highlightbackground=BORDER,
             padx=8,
             pady=8,
-            font=("Consolas", 10),
+            font=(FONT_MONO, 10),
         )
         text.grid(row=0, column=0, sticky="nsew")
 
@@ -465,9 +466,9 @@ class HomeTab(ttk.Frame):
         item.grid(row=row, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0), pady=(0, 8 if row < 2 else 0))
         item.columnconfigure(1, weight=1)
 
-        dot = tk.Canvas(item, width=16, height=16, bg="#fbfdff", highlightthickness=0, bd=0)
+        dot = tk.Canvas(item, width=16, height=16, bg=SURFACE, highlightthickness=0, bd=0)
         dot.grid(row=0, column=0, padx=(0, 8), sticky="w")
-        dot.create_oval(2, 2, 14, 14, fill="#c4c4c4", outline="")
+        dot.create_oval(2, 2, 14, 14, fill=BORDER_MUTED, outline="")
         self.indicator_dots[key] = dot
 
         label = ttk.Label(item, text=self.i18n.translate_text(title), style="TLabel")
@@ -539,7 +540,7 @@ class HomeTab(ttk.Frame):
         if self._indicator_state_cache.get(key) is active:
             return
         self._indicator_state_cache[key] = active
-        fill = "#c4c4c4" if active is None else ("#2fb36d" if active else "#c4c4c4")
+        fill = BORDER_MUTED if active is None else (SUCCESS if active else BORDER_MUTED)
         dot.delete("all")
         dot.create_oval(2, 2, 14, 14, fill=fill, outline="")
 

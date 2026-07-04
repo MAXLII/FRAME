@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from serial_debug_assistant.i18n import I18nManager
+from serial_debug_assistant.ui.theme import ACCENT, BORDER, BORDER_MUTED, FONT_MONO, SUCCESS, SURFACE_ALT, TEXT
 
 
 class SerialMonitorTab(ttk.Frame):
@@ -62,7 +63,7 @@ class SerialMonitorTab(ttk.Frame):
             orient="vertical",
             sashrelief="raised",
             sashwidth=6,
-            bg="#c7d6e5",
+            bg=BORDER_MUTED,
             bd=0,
             relief="flat",
         )
@@ -81,7 +82,7 @@ class SerialMonitorTab(ttk.Frame):
             orient="horizontal",
             sashrelief="raised",
             sashwidth=6,
-            bg="#c7d6e5",
+            bg=BORDER_MUTED,
             bd=0,
             relief="flat",
         )
@@ -104,15 +105,15 @@ class SerialMonitorTab(ttk.Frame):
             wrap="char",
             relief="flat",
             borderwidth=0,
-            font=("Consolas", 11),
-            bg="#f8fbfe",
-            fg="#122033",
-            insertbackground="#1f6feb",
+            font=(FONT_MONO, 11),
+            bg=SURFACE_ALT,
+            fg=TEXT,
+            insertbackground=ACCENT,
             padx=12,
             pady=12,
         )
         self.send_log_text.grid(row=1, column=0, sticky="nsew")
-        self.send_log_text.tag_configure("tx", foreground="#0f766e")
+        self.send_log_text.tag_configure("tx", foreground=SUCCESS)
 
         send_log_scroll = ttk.Scrollbar(send_log_container, orient="vertical", command=self.send_log_text.yview)
         send_log_scroll.grid(row=1, column=1, sticky="ns")
@@ -134,15 +135,15 @@ class SerialMonitorTab(ttk.Frame):
             wrap="char",
             relief="flat",
             borderwidth=0,
-            font=("Consolas", 11),
-            bg="#f8fbfe",
-            fg="#122033",
-            insertbackground="#1f6feb",
+            font=(FONT_MONO, 11),
+            bg=SURFACE_ALT,
+            fg=TEXT,
+            insertbackground=ACCENT,
             padx=12,
             pady=12,
         )
         self.receive_text.grid(row=1, column=0, sticky="nsew")
-        self.receive_text.tag_configure("rx", foreground="#122033")
+        self.receive_text.tag_configure("rx", foreground=TEXT)
 
         recv_scroll = ttk.Scrollbar(receive_container, orient="vertical", command=self.receive_text.yview)
         recv_scroll.grid(row=1, column=1, sticky="ns")
@@ -175,10 +176,10 @@ class SerialMonitorTab(ttk.Frame):
             wrap="word",
             relief="solid",
             borderwidth=1,
-            font=("Consolas", 11),
-            bg="#f8fbfe",
-            fg="#122033",
-            insertbackground="#1f6feb",
+            font=(FONT_MONO, 11),
+            bg=SURFACE_ALT,
+            fg=TEXT,
+            insertbackground=ACCENT,
             padx=10,
             pady=8,
         )
@@ -236,9 +237,9 @@ class SerialMonitorTab(ttk.Frame):
 
         self.preset_canvas = tk.Canvas(
             preset_frame,
-            bg="#f4f8fc",
+            bg=SURFACE_ALT,
             highlightthickness=1,
-            highlightbackground="#bfd0e3",
+            highlightbackground=BORDER,
             relief="flat",
             height=160,
         )

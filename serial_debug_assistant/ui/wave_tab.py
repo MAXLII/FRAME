@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from datetime import datetime
@@ -7,10 +7,12 @@ from pathlib import Path
 import math
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 from typing import TextIO
 
 from serial_debug_assistant.i18n import I18nManager
+from serial_debug_assistant.ui.file_dialogs import ask_open_file, ask_save_file
+from serial_debug_assistant.ui.theme import ACCENT, ACCENT_SOFT, BORDER, BORDER_MUTED, CYAN, FONT_MONO, SUCCESS, SURFACE, SURFACE_ALT, TEXT, TEXT_MUTED
 
 
 REDRAW_MS = 40
@@ -258,7 +260,7 @@ class WaveformTab(ttk.Frame):
             sashwidth=6,
             bd=0,
             relief="flat",
-            bg="#c7d6e5",
+            bg=BORDER_MUTED,
         )
         content_paned.grid(row=1, column=0, sticky="nsew")
 
@@ -293,9 +295,9 @@ class WaveformTab(ttk.Frame):
         name_label.grid(row=0, column=1, sticky="w")
         self._remember_text(name_label, "参数名")
 
-        self.series_canvas = tk.Canvas(left, bg="#f8fbfe", highlightthickness=1, highlightbackground="#bfd0e3", relief="flat")
+        self.series_canvas = tk.Canvas(left, bg=SURFACE_ALT, highlightthickness=1, highlightbackground=BORDER, relief="flat")
         self.series_canvas.grid(row=3, column=0, sticky="nsew")
-        self.series_list_frame = tk.Frame(self.series_canvas, bg="#f8fbfe")
+        self.series_list_frame = tk.Frame(self.series_canvas, bg=SURFACE_ALT)
         self.series_window = self.series_canvas.create_window((0, 0), window=self.series_list_frame, anchor="nw")
         self.series_list_frame.bind("<Configure>", self._on_series_frame_configure)
         self.series_canvas.bind("<Configure>", self._on_series_canvas_configure)
@@ -319,7 +321,7 @@ class WaveformTab(ttk.Frame):
             sashwidth=6,
             bd=0,
             relief="flat",
-            bg="#c7d6e5",
+            bg=BORDER_MUTED,
         )
         right_paned.grid(row=0, column=0, sticky="nsew")
 
@@ -329,7 +331,7 @@ class WaveformTab(ttk.Frame):
         plot_frame.rowconfigure(1, weight=0)
         plot_frame.columnconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(plot_frame, bg="#f8fbfe", highlightthickness=0, relief="flat")
+        self.canvas = tk.Canvas(plot_frame, bg=SURFACE_ALT, highlightthickness=0, relief="flat")
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Configure>", lambda _event: self._queue_redraw())
         self.canvas.bind("<Motion>", self._on_canvas_motion)
@@ -346,14 +348,14 @@ class WaveformTab(ttk.Frame):
 
         self.latest_canvas = tk.Canvas(
             latest_frame,
-            bg="#f8fbfe",
+            bg=SURFACE_ALT,
             highlightthickness=1,
-            highlightbackground="#bfd0e3",
+            highlightbackground=BORDER,
             relief="flat",
             width=240,
         )
         self.latest_canvas.grid(row=0, column=0, sticky="nsew")
-        self.latest_list_frame = tk.Frame(self.latest_canvas, bg="#f8fbfe")
+        self.latest_list_frame = tk.Frame(self.latest_canvas, bg=SURFACE_ALT)
         self.latest_window = self.latest_canvas.create_window((0, 0), window=self.latest_list_frame, anchor="nw")
         self.latest_list_frame.bind("<Configure>", self._on_latest_frame_configure)
         self.latest_canvas.bind("<Configure>", self._on_latest_canvas_configure)
@@ -388,19 +390,19 @@ class WaveformTab(ttk.Frame):
             self.series_data.setdefault(name, [])
             if name not in self._row_widgets:
                 row_var = tk.BooleanVar(value=name in self.visible_names)
-                row = tk.Frame(self.series_list_frame, bg="#f8fbfe", highlightthickness=0, bd=0)
+                row = tk.Frame(self.series_list_frame, bg=SURFACE_ALT, highlightthickness=0, bd=0)
                 checkbox = tk.Checkbutton(
                     row,
                     variable=row_var,
-                    bg="#f8fbfe",
-                    activebackground="#f8fbfe",
+                    bg=SURFACE_ALT,
+                    activebackground=SURFACE_ALT,
                     highlightthickness=0,
                     bd=0,
                     relief="flat",
                     command=lambda item=name: self._on_row_toggle(item),
                 )
                 checkbox.grid(row=0, column=0, padx=(4, 8))
-                label = tk.Label(row, text=name, anchor="w", bg="#f8fbfe", fg="#112033")
+                label = tk.Label(row, text=name, anchor="w", bg=SURFACE_ALT, fg=TEXT)
                 label.grid(row=0, column=1, sticky="w", padx=(0, 6))
                 row.columnconfigure(1, weight=1)
                 row.pack(fill="x", padx=2, pady=1)
@@ -799,7 +801,8 @@ class WaveformTab(ttk.Frame):
             self.on_status("当前没有可导出的波形数据", True)
             return
         default_path = self._default_export_path()
-        path = filedialog.asksaveasfilename(
+        path = ask_save_file(
+            key="wave_export",
             title="导出波形文件",
             initialdir=str(self.export_dir),
             initialfile=default_path.name,
@@ -874,7 +877,8 @@ class WaveformTab(ttk.Frame):
 
     def import_waveform_file(self) -> None:
         self.export_dir.mkdir(parents=True, exist_ok=True)
-        path = filedialog.askopenfilename(
+        path = ask_open_file(
+            key="wave_import",
             title="导入波形文件",
             initialdir=str(self.export_dir),
             filetypes=[
@@ -1036,8 +1040,8 @@ class WaveformTab(ttk.Frame):
                     text=self.i18n.translate_text("当前没有勾选显示的参数。"),
                     anchor="w",
                     justify="left",
-                    bg="#f8fbfe",
-                    fg="#64748b",
+                    bg=SURFACE_ALT,
+                    fg=TEXT_MUTED,
                 )
                 self._latest_empty_label.pack(fill="x", padx=8, pady=8)
             return
@@ -1050,16 +1054,16 @@ class WaveformTab(ttk.Frame):
             value_text = self.latest_values.get(name, "-")
             widgets = self._latest_widgets.get(name)
             if widgets is None:
-                row = tk.Frame(self.latest_list_frame, bg="#f8fbfe", highlightthickness=0, bd=0)
-                swatch = tk.Canvas(row, width=12, height=12, bg="#f8fbfe", highlightthickness=0, bd=0)
+                row = tk.Frame(self.latest_list_frame, bg=SURFACE_ALT, highlightthickness=0, bd=0)
+                swatch = tk.Canvas(row, width=12, height=12, bg=SURFACE_ALT, highlightthickness=0, bd=0)
                 swatch.grid(row=0, column=0, padx=(0, 6), sticky="n")
                 name_label = tk.Label(
                     row,
                     text=name,
                     anchor="w",
                     justify="left",
-                    bg="#f8fbfe",
-                    fg="#112033",
+                    bg=SURFACE_ALT,
+                    fg=TEXT,
                     wraplength=130,
                 )
                 name_label.grid(row=0, column=1, sticky="w")
@@ -1068,9 +1072,9 @@ class WaveformTab(ttk.Frame):
                     text=value_text,
                     anchor="e",
                     justify="right",
-                    bg="#f8fbfe",
-                    fg="#334155",
-                    font=("Consolas", 10),
+                    bg=SURFACE_ALT,
+                    fg=TEXT,
+                    font=(FONT_MONO, 10),
                 )
                 value_label.grid(row=0, column=2, sticky="e", padx=(8, 0))
                 row.columnconfigure(1, weight=1)
@@ -1104,8 +1108,8 @@ class WaveformTab(ttk.Frame):
             return
         row, checkbox, label = widgets
         visible = name in self.visible_names
-        bg = "#e3eefb" if visible else "#f8fbfe"
-        fg = "#112033" if visible else "#4c5f73"
+        bg = ACCENT_SOFT if visible else SURFACE_ALT
+        fg = TEXT if visible else TEXT_MUTED
         row.configure(bg=bg)
         checkbox.configure(bg=bg, activebackground=bg, selectcolor=bg)
         label.configure(bg=bg, fg=fg)
@@ -1170,16 +1174,16 @@ class WaveformTab(ttk.Frame):
         plot_top = pad_top
         plot_right = width - pad_right
         plot_bottom = height - pad_bottom
-        self.canvas.create_rectangle(plot_left, plot_top, plot_right, plot_bottom, outline="#cbd5e1")
+        self.canvas.create_rectangle(plot_left, plot_top, plot_right, plot_bottom, outline=BORDER_MUTED)
 
         if not self.selected_names:
-            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("还没有选择任何波形参数，请先在参数页勾选。"), fill="#64748b", font=("Segoe UI", 12))
+            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("还没有选择任何波形参数，请先在参数页勾选。"), fill=TEXT_MUTED, font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 无数据"))
             return
 
         visible_names = [name for name in self.selected_names if name in self.visible_names]
         if not visible_names:
-            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("当前没有勾选任何可显示的波形，请先在左侧勾选。"), fill="#64748b", font=("Segoe UI", 12))
+            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("当前没有勾选任何可显示的波形，请先在左侧勾选。"), fill=TEXT_MUTED, font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 已全部隐藏"))
             return
 
@@ -1189,7 +1193,7 @@ class WaveformTab(ttk.Frame):
             if timestamps:
                 time_bounds.append((timestamps[0], timestamps[-1]))
         if not time_bounds:
-            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("已选择参数，但暂时还没有收到波形数据。"), fill="#64748b", font=("Segoe UI", 12))
+            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("已选择参数，但暂时还没有收到波形数据。"), fill=TEXT_MUTED, font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 等待数据"))
             return
 
@@ -1227,7 +1231,7 @@ class WaveformTab(ttk.Frame):
                     if value is not None and math.isfinite(value)
                 )
         if not visible_samples:
-            self.canvas.create_text(width / 2, height / 2, text="Selected parameters have no numeric waveform data.", fill="#64748b", font=("Segoe UI", 12))
+            self.canvas.create_text(width / 2, height / 2, text="Selected parameters have no numeric waveform data.", fill=TEXT_MUTED, font=("Segoe UI", 12))
             self.view_var.set("View window: waiting for data")
             return
 
@@ -1240,21 +1244,21 @@ class WaveformTab(ttk.Frame):
         for index in range(5):
             ratio = index / 4
             y = plot_top + (plot_bottom - plot_top) * ratio
-            self.canvas.create_line(plot_left, y, plot_right, y, fill="#cbd5e1", dash=(3, 3))
+            self.canvas.create_line(plot_left, y, plot_right, y, fill=BORDER_MUTED, dash=(3, 3))
             value = y_max - (y_max - y_min) * ratio
-            self.canvas.create_text(plot_left - 8, y, text=self._format_numeric(value), anchor="e", fill="#475569")
+            self.canvas.create_text(plot_left - 8, y, text=self._format_numeric(value), anchor="e", fill=TEXT_MUTED)
 
         for tick in range(5):
             ratio = tick / 4
             x = plot_left + (plot_right - plot_left) * ratio
-            self.canvas.create_line(x, plot_top, x, plot_bottom, fill="#e2e8f0", dash=(3, 3))
+            self.canvas.create_line(x, plot_top, x, plot_bottom, fill=BORDER_MUTED, dash=(3, 3))
             tick_ts = x_min + (x_max - x_min) * ratio
-            self.canvas.create_text(x, plot_bottom + 18, text=datetime.fromtimestamp(tick_ts).strftime("%H:%M:%S"), fill="#475569")
+            self.canvas.create_text(x, plot_bottom + 18, text=datetime.fromtimestamp(tick_ts).strftime("%H:%M:%S"), fill=TEXT_MUTED)
 
         if y_min <= 0.0 <= y_max:
             zero_y = plot_bottom - (0.0 - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
             self.canvas.create_line(plot_left, zero_y, plot_right, zero_y, fill="#94a3b8", width=1)
-            self.canvas.create_text(plot_left - 8, zero_y, text="0", anchor="e", fill="#334155", font=("Segoe UI", 9, "bold"))
+            self.canvas.create_text(plot_left - 8, zero_y, text="0", anchor="e", fill=TEXT, font=("Segoe UI", 9, "bold"))
 
         self._draw_markers(plot_left, plot_top, plot_bottom, x_min, x_max)
         self._draw_reference_lines(plot_left, plot_top, plot_right, plot_bottom, x_min, x_max, y_min, y_max)
@@ -1364,7 +1368,7 @@ class WaveformTab(ttk.Frame):
             plot_top - 8,
             text=self.i18n.translate_text("拖动框选区域缩放，Shift+拖动缩放横轴，Ctrl+拖动缩放纵轴，Shift+滚轮横向移动，Ctrl+滚轮纵向移动。"),
             anchor="nw",
-            fill="#64748b",
+            fill=TEXT_MUTED,
             font=("Segoe UI", 9),
         )
 
@@ -1381,16 +1385,16 @@ class WaveformTab(ttk.Frame):
         box_width = 150
         box_x0 = label_x - 6
         box_y0 = plot_top + 8
-        self.canvas.create_rectangle(box_x0, box_y0, box_x0 + box_width, box_y0 + box_height, fill="#ffffff", outline="#cbd5e1")
-        self.canvas.create_text(box_x0 + padding, box_y0 + padding - 1, text=self.i18n.translate_text("图例"), anchor="nw", fill="#475569", font=("Segoe UI", 9, "bold"))
+        self.canvas.create_rectangle(box_x0, box_y0, box_x0 + box_width, box_y0 + box_height, fill=SURFACE, outline=BORDER_MUTED)
+        self.canvas.create_text(box_x0 + padding, box_y0 + padding - 1, text=self.i18n.translate_text("图例"), anchor="nw", fill=TEXT_MUTED, font=("Segoe UI", 9, "bold"))
         base_y = box_y0 + padding + 16
         for idx, (name, color) in enumerate(visible_items):
             y = base_y + idx * line_height
             self.canvas.create_line(box_x0 + padding, y + 6, box_x0 + padding + 14, y + 6, fill=color, width=3)
-            self.canvas.create_text(box_x0 + padding + 20, y + 6, text=name, anchor="w", fill="#0f172a", font=("Segoe UI", 9))
+            self.canvas.create_text(box_x0 + padding + 20, y + 6, text=name, anchor="w", fill=TEXT, font=("Segoe UI", 9))
         if hidden_count:
             more_y = base_y + len(visible_items) * line_height
-            self.canvas.create_text(box_x0 + padding, more_y + 6, text=self.i18n.format_text("还有 {count} 条", count=hidden_count), anchor="w", fill="#64748b", font=("Segoe UI", 9))
+            self.canvas.create_text(box_x0 + padding, more_y + 6, text=self.i18n.format_text("还有 {count} 条", count=hidden_count), anchor="w", fill=TEXT_MUTED, font=("Segoe UI", 9))
 
     def _draw_markers(self, plot_left: float, plot_top: float, plot_bottom: float, x_min: float, x_max: float) -> None:
         plot_right = self._plot_bounds[2] if self._plot_bounds else plot_left
@@ -1435,14 +1439,14 @@ class WaveformTab(ttk.Frame):
                     plot_top,
                     x,
                     plot_bottom,
-                    fill="#06b6d4" if is_preview else "#0f766e",
+                    fill=CYAN if is_preview else SUCCESS,
                     dash=(6, 4),
                     width=2,
                 )
                 label = f"参考 {datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]}"
                 if is_preview:
                     label = f"预览 {datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]}"
-                self.canvas.create_text(x + 4, plot_top + 18, text=label, anchor="nw", fill="#0f766e", font=("Consolas", 9))
+                self.canvas.create_text(x + 4, plot_top + 18, text=label, anchor="nw", fill=SUCCESS, font=("Consolas", 9))
             elif orientation == "horizontal":
                 if value < y_min or value > y_max:
                     continue
@@ -1466,7 +1470,7 @@ class WaveformTab(ttk.Frame):
             return
         x0, y0 = self._zoom_rect_start
         x1, y1 = self._zoom_rect_end
-        self.canvas.create_rectangle(x0, y0, x1, y1, outline="#2563eb", dash=(4, 2), width=2)
+        self.canvas.create_rectangle(x0, y0, x1, y1, outline=ACCENT, dash=(4, 2), width=2)
 
     def _on_window_changed(self, *_args) -> None:
         if self._manual_range is None and not self._paused_view:
@@ -1896,7 +1900,7 @@ class WaveformTab(ttk.Frame):
         cursor_x = x
         if self._alt_pressed and self._last_hover_canvas_x is not None:
             cursor_x = min(max(self._last_hover_canvas_x, plot_left), plot_right)
-        self.canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill="#64748b", dash=(4, 4))
+        self.canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill=TEXT_MUTED, dash=(4, 4))
 
         base_text = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S.%f")[:-3]
         lines = [base_text]
@@ -1946,9 +1950,9 @@ class WaveformTab(ttk.Frame):
         box_height = padding * 2 + len(visible_rows) * line_height
         x = max(plot_left + 12, plot_right - box_width - 12)
         y = plot_top + 12
-        self.canvas.create_rectangle(x, y, x + box_width, y + box_height, fill="#ffffff", outline="#94a3b8", width=1)
+        self.canvas.create_rectangle(x, y, x + box_width, y + box_height, fill=SURFACE, outline=BORDER, width=1)
         for i, line in enumerate(visible_rows):
-            fill = "#0f172a"
+            fill = TEXT
             if "=" in line and i > 0:
                 name = line.split("=", 1)[0].strip()
                 for label_name, _value_text, color, _row_y in point_labels:
@@ -1996,9 +2000,10 @@ class WaveformTab(ttk.Frame):
         box_height = len(lines) * line_height + padding * 2
         if x + box_width > plot_right:
             x = max(16, plot_right - box_width - 8)
-        self.canvas.create_rectangle(x, y, x + box_width, y + box_height, fill="#ffffff", outline="#94a3b8", width=1)
+        self.canvas.create_rectangle(x, y, x + box_width, y + box_height, fill=SURFACE, outline=BORDER, width=1)
         for i, line in enumerate(lines):
-            self.canvas.create_text(x + padding, y + padding + i * line_height, text=line, anchor="nw", fill="#0f172a", font=("Consolas", 9))
+            self.canvas.create_text(x + padding, y + padding + i * line_height, text=line, anchor="nw", fill=TEXT, font=(FONT_MONO, 9))
 
     def _format_numeric(self, value: float) -> str:
         return f"{value:.6f}".rstrip("0").rstrip(".")
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from typing import Callable
 import tkinter as tk
 from tkinter import ttk
@@ -7,9 +8,28 @@ from tkinter import ttk
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import ParameterEntry
 from serial_debug_assistant.protocol import TYPE_NAMES, format_value
+from serial_debug_assistant.ui.theme import ACCENT, ACCENT_SOFT, DANGER, DANGER_SOFT, SUCCESS, SUCCESS_SOFT, TEXT, WARNING, WARNING_SOFT
 
 
-WAVE_TAG = ("wave", "#e4f7ee", "#0f766e")
+WAVE_TAG = ("wave", SUCCESS_SOFT, SUCCESS)
+INTEGER_TYPE_WIDTHS = {
+    0: 8,
+    1: 8,
+    2: 16,
+    3: 16,
+    4: 32,
+    5: 32,
+}
+PARAMETER_TREE_BATCH_SIZE = 80
+
+
+def format_hex_value(raw: int, type_id: int) -> str:
+    width = INTEGER_TYPE_WIDTHS.get(type_id)
+    if width is None:
+        return "/"
+    mask = (1 << width) - 1
+    digits = width // 4
+    return f"0x{raw & mask:0{digits}X}"
 
 
 class ParameterReadWriteTab(ttk.Frame):
@@ -40,8 +60,11 @@ class ParameterReadWriteTab(ttk.Frame):
         self._busy_name: str | None = None
         self._invalid_name: str | None = None
         self._tree_style = "Param.Treeview"
-        self._tree_selected_bg = "#dce9f7"
+        self._tree_selected_bg = ACCENT_SOFT
         self._tree_selected_fg = "#ffffff"
+        self._pending_tree_entries: deque[str] = deque()
+        self._pending_tree_names: set[str] = set()
+        self._tree_flush_job: str | None = None
 
         self._build()
         self.search_var.trace_add("write", self._on_search_changed)
@@ -87,25 +110,26 @@ class ParameterReadWriteTab(ttk.Frame):
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
-        columns = ("name", "type", "data", "min", "max")
+        columns = ("name", "type", "data", "hex", "min", "max")
         style = ttk.Style(self)
         style.configure(self._tree_style, rowheight=28)
         style.map(
             self._tree_style,
             background=[("selected", self._tree_selected_bg)],
-            foreground=[("selected", "#112033")],
+            foreground=[("selected", TEXT)],
         )
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse", height=20, style=self._tree_style)
         self.tree.grid(row=0, column=0, sticky="nsew")
-        self.tree.tag_configure("dirty", foreground="#d14343")
-        self.tree.tag_configure("busy", background="#fde8e8", foreground="#a83838")
-        self.tree.tag_configure("invalid", background="#fff1cc", foreground="#9a6700")
+        self.tree.tag_configure("dirty", foreground=DANGER)
+        self.tree.tag_configure("busy", background=DANGER_SOFT, foreground=DANGER)
+        self.tree.tag_configure("invalid", background=WARNING_SOFT, foreground=WARNING)
         self.tree.tag_configure(WAVE_TAG[0], background=WAVE_TAG[1], foreground=WAVE_TAG[2])
 
         headings = {
             "name": "参数名称",
             "type": "类型",
             "data": "数据",
+            "hex": "HEX",
             "min": "最小值",
             "max": "最大值",
         }
@@ -113,6 +137,7 @@ class ParameterReadWriteTab(ttk.Frame):
             "name": 260,
             "type": 90,
             "data": 120,
+            "hex": 120,
             "min": 120,
             "max": 120,
         }
@@ -143,8 +168,53 @@ class ParameterReadWriteTab(ttk.Frame):
         self.parameters = dict(sorted(parameters.items(), key=lambda item: item[0].lower()))
         self._refresh_rows()
 
+    def begin_bulk_update(self) -> None:
+        if self._tree_flush_job is not None:
+            self.after_cancel(self._tree_flush_job)
+            self._tree_flush_job = None
+        self._pending_tree_entries.clear()
+        self._pending_tree_names.clear()
+
+    def queue_parameter_update(self, entry: ParameterEntry) -> None:
+        self.parameters[entry.name] = entry
+        if entry.name not in self._pending_tree_names:
+            self._pending_tree_entries.append(entry.name)
+            self._pending_tree_names.add(entry.name)
+        self._schedule_tree_flush()
+
+    def flush_pending_updates(self) -> None:
+        if self._tree_flush_job is not None:
+            self.after_cancel(self._tree_flush_job)
+            self._tree_flush_job = None
+        while self._pending_tree_entries:
+            self._flush_tree_batch(limit=PARAMETER_TREE_BATCH_SIZE)
+        self._update_action_bar()
+
     def add_or_update_parameter(self, entry: ParameterEntry) -> None:
         self.parameters[entry.name] = entry
+        self._apply_tree_entry(entry)
+        self.after_idle(self._update_action_bar)
+
+    def _schedule_tree_flush(self) -> None:
+        if self._tree_flush_job is None:
+            self._tree_flush_job = self.after(1, self._flush_tree_batch)
+
+    def _flush_tree_batch(self, limit: int = PARAMETER_TREE_BATCH_SIZE) -> None:
+        self._tree_flush_job = None
+        processed = 0
+        while self._pending_tree_entries and processed < limit:
+            name = self._pending_tree_entries.popleft()
+            self._pending_tree_names.discard(name)
+            entry = self.parameters.get(name)
+            if entry is not None:
+                self._apply_tree_entry(entry)
+            processed += 1
+        if self._pending_tree_entries:
+            self._schedule_tree_flush()
+        else:
+            self.after_idle(self._update_action_bar)
+
+    def _apply_tree_entry(self, entry: ParameterEntry) -> None:
         if not self._matches_filter(entry.name):
             if self.tree.exists(entry.name):
                 self.tree.delete(entry.name)
@@ -153,12 +223,11 @@ class ParameterReadWriteTab(ttk.Frame):
         values = self._entry_values(entry)
         tags = self._entry_tags(entry.name, entry.dirty)
         if self.tree.exists(entry.name):
-            for column, value in zip(("name", "type", "data", "min", "max"), values):
+            for column, value in zip(("name", "type", "data", "hex", "min", "max"), values):
                 self.tree.set(entry.name, column, value)
             self.tree.item(entry.name, tags=tags)
         else:
             self.tree.insert("", "end", iid=entry.name, values=values, tags=tags)
-        self.after_idle(self._update_action_bar)
 
     def update_parameter(self, entry: ParameterEntry) -> None:
         self.add_or_update_parameter(entry)
@@ -172,6 +241,7 @@ class ParameterReadWriteTab(ttk.Frame):
         self.after_idle(self._update_action_bar)
 
     def clear_parameters(self) -> None:
+        self.begin_bulk_update()
         self.parameters.clear()
         self._busy_name = None
         self._invalid_name = None
@@ -197,9 +267,10 @@ class ParameterReadWriteTab(ttk.Frame):
 
     def _entry_values(self, entry: ParameterEntry) -> tuple[str, ...]:
         data_text = "/" if entry.is_command else format_value(entry.data_raw, entry.type_id)
+        hex_text = "/" if entry.is_command else format_hex_value(entry.data_raw, entry.type_id)
         min_text = "/" if entry.is_command else format_value(entry.min_raw, entry.type_id)
         max_text = "/" if entry.is_command else format_value(entry.max_raw, entry.type_id)
-        return (entry.name, TYPE_NAMES.get(entry.type_id, str(entry.type_id)), data_text, min_text, max_text)
+        return (entry.name, TYPE_NAMES.get(entry.type_id, str(entry.type_id)), data_text, hex_text, min_text, max_text)
 
     def _matches_filter(self, name: str) -> bool:
         keyword = self.search_var.get().strip().lower()
@@ -234,7 +305,7 @@ class ParameterReadWriteTab(ttk.Frame):
         if row_id and column == "#1":
             self._toggle_wave_for_parameter(row_id)
             return
-        if row_id and column in {"#3", "#4", "#5"}:
+        if row_id and column in {"#3", "#5", "#6"}:
             self._edit_value_cell(row_id, column)
 
     def _edit_value_cell(self, name: str, column_id: str) -> None:
@@ -242,7 +313,7 @@ class ParameterReadWriteTab(ttk.Frame):
         if entry is None or entry.is_command:
             return
 
-        column_name = {"#3": "data", "#4": "min", "#5": "max"}.get(column_id)
+        column_name = {"#3": "data", "#5": "min", "#6": "max"}.get(column_id)
         if column_name is None:
             return
 
@@ -424,13 +495,13 @@ class ParameterReadWriteTab(ttk.Frame):
         selected_bg = self._tree_selected_bg
         selected_fg = self._tree_selected_fg
         if selected and selected == self._invalid_name:
-            selected_bg = "#facc15"
-            selected_fg = "#713f12"
+            selected_bg = WARNING_SOFT
+            selected_fg = WARNING
         elif selected and selected == self._busy_name:
-            selected_bg = "#f87171"
-            selected_fg = "#7f1d1d"
+            selected_bg = DANGER_SOFT
+            selected_fg = DANGER
         elif selected and self._is_wave_enabled(selected):
-            selected_bg = "#16a34a"
+            selected_bg = ACCENT
             selected_fg = "#ffffff"
         style = ttk.Style(self)
         style.map(
