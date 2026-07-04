@@ -34,6 +34,10 @@ if not exist "%DIST_APP_DIR%\frame.exe" (
     echo [ERROR] Expected executable was not found: "%DIST_APP_DIR%\frame.exe"
     exit /b 1
 )
+if not exist "%DIST_APP_DIR%\frame-cli.exe" (
+    echo [ERROR] Expected terminal executable was not found: "%DIST_APP_DIR%\frame-cli.exe"
+    exit /b 1
+)
 
 > "%BRAND_FILE%" (
     echo app_name=FRAME

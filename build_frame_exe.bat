@@ -59,10 +59,18 @@ if exist "%DIST_APP_DIR%" (
     )
 )
 
-echo [INFO] Building frame.exe...
-call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame --distpath "dist" --workpath "build" --collect-submodules can.interfaces "main.py"
+echo [INFO] Building frame.exe GUI...
+call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame --distpath "dist" --workpath "build" --collect-submodules can.interfaces "main_gui.py"
 if errorlevel 1 (
-    echo [ERROR] Build failed
+    echo [ERROR] GUI build failed
+    if "%FRAME_INTERACTIVE%"=="1" pause
+    exit /b 1
+)
+
+echo [INFO] Building frame-cli.exe terminal...
+call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --onefile --console --name frame-cli --distpath "%DIST_APP_DIR%" --workpath "build_cli" --collect-submodules can.interfaces "main.py"
+if errorlevel 1 (
+    echo [ERROR] Terminal build failed
     if "%FRAME_INTERACTIVE%"=="1" pause
     exit /b 1
 )
@@ -70,9 +78,14 @@ if errorlevel 1 (
 if exist "build" (
     rmdir /s /q "build"
 )
+if exist "build_cli" (
+    rmdir /s /q "build_cli"
+)
 
 echo.
-echo [OK] Build complete: %~dp0dist\frame\frame.exe
+echo [OK] Build complete:
+echo      %~dp0dist\frame\frame.exe
+echo      %~dp0dist\frame\frame-cli.exe
 if "%FRAME_INTERACTIVE%"=="1" (
     start "" "%DIST_APP_DIR%"
     pause

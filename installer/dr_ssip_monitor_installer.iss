@@ -2,6 +2,7 @@
 
 #define MyAppName "DR_SSIP_Monitor"
 #define MyAppExeName "frame.exe"
+#define MyAppCliExeName "frame-cli.exe"
 #ifndef MyAppVersion
 #define MyAppVersion "1.3.0"
 #endif
@@ -31,7 +32,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
-CloseApplicationsFilter={#MyAppExeName}
+CloseApplicationsFilter={#MyAppExeName},{#MyAppCliExeName}
 RestartApplications=no
 SetupLogging=yes
 
@@ -43,14 +44,18 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [InstallDelete]
 Type: files; Name: "{app}\{#MyAppExeName}"
+Type: files; Name: "{app}\{#MyAppCliExeName}"
+Type: files; Name: "{app}\frame.bat"
 Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "..\dist\frame\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "dr_ssip_monitor_brand.txt"; DestDir: "{app}"; DestName: "app_brand.txt"; Flags: ignoreversion
+Source: "..\scripts\frame-installed.bat"; DestDir: "{app}"; DestName: "frame.bat"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName} Terminal"; Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyAppCliExeName}"""; WorkingDir: "{app}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
