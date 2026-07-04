@@ -17,6 +17,7 @@ class AppPaths:
     install_root: Path
     data_root: Path
     config_dir: Path
+    app_config_file: Path
     exports_dir: Path
     logs_dir: Path
     quick_send_config: Path
@@ -33,6 +34,7 @@ def get_app_paths() -> AppPaths:
         install_root=install_root,
         data_root=data_root,
         config_dir=config_dir,
+        app_config_file=config_dir / "frame_config.json",
         exports_dir=exports_dir,
         logs_dir=logs_dir,
         quick_send_config=config_dir / "quick_send.cfg",

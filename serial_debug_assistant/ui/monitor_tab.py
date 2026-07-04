@@ -6,6 +6,7 @@ import re
 import tkinter as tk
 from tkinter import ttk
 
+from serial_debug_assistant.app_config import load_config_section, save_config_section
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.ui.theme import ACCENT, BORDER, BORDER_MUTED, FONT_MONO, SUCCESS, SURFACE_ALT, TEXT
 
@@ -26,6 +27,7 @@ class SerialMonitorTab(ttk.Frame):
         on_send_preset,
         on_reset_count,
         config_path: Path,
+        legacy_config_path: Path | None = None,
         on_layout_change=None,
         receive_hex_var: tk.BooleanVar | None = None,
         send_hex_var: tk.BooleanVar | None = None,
@@ -38,6 +40,7 @@ class SerialMonitorTab(ttk.Frame):
         self.on_send_preset = on_send_preset
         self.on_reset_count = on_reset_count
         self.config_path = config_path
+        self.legacy_config_path = legacy_config_path
         self.on_layout_change = on_layout_change
         self.preset_hex_vars: list[tk.BooleanVar] = []
         self.preset_line_vars: list[tk.BooleanVar] = []
@@ -500,14 +503,15 @@ class SerialMonitorTab(ttk.Frame):
 
     def _load_config_parser(self) -> tuple[configparser.ConfigParser, bool]:
         config = configparser.ConfigParser()
-        if not self.config_path.exists():
+        legacy_path = self.legacy_config_path or self.config_path
+        if not legacy_path.exists():
             return config, False
         try:
-            with self.config_path.open("r", encoding="utf-8") as handle:
+            with legacy_path.open("r", encoding="utf-8") as handle:
                 config.read_file(handle)
             return config, False
         except (OSError, UnicodeError, configparser.Error):
-            repaired_text = self._repair_config_text()
+            repaired_text = self._repair_config_text(legacy_path)
             repaired = configparser.ConfigParser()
             try:
                 repaired.read_string(repaired_text)
@@ -515,9 +519,9 @@ class SerialMonitorTab(ttk.Frame):
                 return configparser.ConfigParser(), False
             return repaired, True
 
-    def _repair_config_text(self) -> str:
+    def _repair_config_text(self, path: Path) -> str:
         try:
-            raw_text = self.config_path.read_text(encoding="utf-8")
+            raw_text = path.read_text(encoding="utf-8")
         except OSError:
             return ""
 
@@ -537,28 +541,13 @@ class SerialMonitorTab(ttk.Frame):
         self._suspend_save = True
         should_rewrite = False
         try:
-            config, should_rewrite = self._load_config_parser()
-            for index in range(self.PRESET_ROWS):
-                section = f"preset_{index + 1}"
-                text_value = ""
-                hex_value = False
-                line_value = True
-                if config.has_section(section):
-                    text_value = config.get(section, "text", fallback="")
-                    hex_value = config.getboolean(section, "hex", fallback=False)
-                    line_value = config.getboolean(section, "crlf", fallback=True)
-                self.preset_hex_vars[index].set(hex_value)
-                self.preset_line_vars[index].set(line_value)
-                self.preset_text_vars[index].set(text_value)
-            if config.has_section("layout"):
-                self._saved_sash_y = config.getint("layout", "main_sash_y", fallback=0) or None
-                ratio_value = config.get("layout", "main_sash_ratio", fallback="").strip()
-                if ratio_value:
-                    try:
-                        ratio = float(ratio_value)
-                    except ValueError:
-                        ratio = 0.0
-                    self._saved_sash_ratio = ratio if 0.0 < ratio < 1.0 else None
+            config_data = load_config_section(self.config_path, "quick_send")
+            if config_data:
+                self._apply_quick_send_config(config_data)
+            else:
+                legacy_config, should_rewrite = self._load_config_parser()
+                self._apply_legacy_preset_config(legacy_config)
+                should_rewrite = should_rewrite or legacy_config.sections() != []
         finally:
             self._suspend_save = False
         if should_rewrite:
@@ -567,18 +556,74 @@ class SerialMonitorTab(ttk.Frame):
     def _save_preset_config(self) -> None:
         if self._suspend_save:
             return
-        config = configparser.ConfigParser()
+        save_config_section(self.config_path, "quick_send", self._quick_send_config_payload())
+
+    def _quick_send_config_payload(self) -> dict[str, object]:
+        return {
+            "presets": [
+                {
+                    "hex": self.preset_hex_vars[index].get(),
+                    "crlf": self.preset_line_vars[index].get(),
+                    "text": self.preset_text_vars[index].get(),
+                }
+                for index in range(self.PRESET_ROWS)
+            ],
+            "layout": {
+                "main_sash_y": self._saved_sash_y or self._last_sash_y or 0,
+                "main_sash_ratio": round(self._saved_sash_ratio or 0.78, 4),
+            },
+        }
+
+    def _apply_quick_send_config(self, config_data: dict[str, object]) -> None:
+        presets = config_data.get("presets")
+        if isinstance(presets, list):
+            for index in range(self.PRESET_ROWS):
+                item = presets[index] if index < len(presets) else {}
+                preset = item if isinstance(item, dict) else {}
+                self.preset_hex_vars[index].set(bool(preset.get("hex", False)))
+                self.preset_line_vars[index].set(bool(preset.get("crlf", True)))
+                self.preset_text_vars[index].set(str(preset.get("text", "")))
+        layout = config_data.get("layout")
+        if isinstance(layout, dict):
+            self._saved_sash_y = _positive_int(layout.get("main_sash_y"))
+            ratio = _ratio_float(layout.get("main_sash_ratio"))
+            self._saved_sash_ratio = ratio
+
+    def _apply_legacy_preset_config(self, config: configparser.ConfigParser) -> None:
         for index in range(self.PRESET_ROWS):
             section = f"preset_{index + 1}"
-            config[section] = {
-                "hex": "true" if self.preset_hex_vars[index].get() else "false",
-                "crlf": "true" if self.preset_line_vars[index].get() else "false",
-                "text": self.preset_text_vars[index].get(),
-            }
-        config["layout"] = {
-            "main_sash_y": str(self._saved_sash_y or self._last_sash_y or 0),
-            "main_sash_ratio": f"{(self._saved_sash_ratio or 0.78):.4f}",
-        }
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.config_path.open("w", encoding="utf-8") as handle:
-            config.write(handle)
+            text_value = ""
+            hex_value = False
+            line_value = True
+            if config.has_section(section):
+                text_value = config.get(section, "text", fallback="")
+                hex_value = config.getboolean(section, "hex", fallback=False)
+                line_value = config.getboolean(section, "crlf", fallback=True)
+            self.preset_hex_vars[index].set(hex_value)
+            self.preset_line_vars[index].set(line_value)
+            self.preset_text_vars[index].set(text_value)
+        if config.has_section("layout"):
+            self._saved_sash_y = config.getint("layout", "main_sash_y", fallback=0) or None
+            ratio_value = config.get("layout", "main_sash_ratio", fallback="").strip()
+            if ratio_value:
+                try:
+                    ratio = float(ratio_value)
+                except ValueError:
+                    ratio = 0.0
+                self._saved_sash_ratio = ratio if 0.0 < ratio < 1.0 else None
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _ratio_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 0.0 < number < 1.0 else None

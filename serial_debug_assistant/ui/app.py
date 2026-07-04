@@ -304,7 +304,7 @@ class SerialDebugAssistant(tk.Tk):
         self.paths = get_app_paths()
         ensure_runtime_dirs(self.paths)
         migration_notes = migrate_legacy_data(self.paths)
-        self.ui_settings_path = self.paths.config_dir / "ui_settings.json"
+        self.ui_settings_path = self.paths.app_config_file
         self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
         self.can_service = CANService()
@@ -678,7 +678,8 @@ class SerialDebugAssistant(tk.Tk):
             on_send=self.send_payload,
             on_send_preset=self.send_preset_payload,
             on_reset_count=self.reset_counters,
-            config_path=self.paths.quick_send_config,
+            config_path=self.paths.app_config_file,
+            legacy_config_path=self.paths.quick_send_config,
             on_layout_change=self._log_monitor_layout,
             receive_hex_var=self.recv_hex_var,
             send_hex_var=self.send_hex_var,
@@ -780,8 +781,9 @@ class SerialDebugAssistant(tk.Tk):
             on_expand_variable=self.expand_jlink_pointer_variable,
             on_expand_node=self.read_jlink_node_variables,
             export_dir=self.paths.exports_dir,
-            target_history_path=self.paths.config_dir / "jlink_targets.json",
-            file_history_path=self.paths.config_dir / "jlink_files.json",
+            config_path=self.paths.app_config_file,
+            legacy_target_history_path=self.paths.config_dir / "jlink_targets.json",
+            legacy_file_history_path=self.paths.config_dir / "jlink_files.json",
         )
 
         self._add_notebook_tab("home", self.home_tab, "主页")

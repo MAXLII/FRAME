@@ -6,6 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
+from serial_debug_assistant.app_config import load_config_section, save_config_section
 from serial_debug_assistant.jlink_debug import DebugVariable, JLinkSettings, infer_jlink_device
 from serial_debug_assistant.ui.file_dialogs import ask_open_file, preferred_dir
 from serial_debug_assistant.ui.theme import ACCENT_SOFT, SURFACE_ALT, TEXT, TEXT_MUTED
@@ -24,8 +25,9 @@ class JLinkDebugTab(ttk.Frame):
         on_expand_variable,
         on_expand_node,
         export_dir: Path,
-        target_history_path: Path,
-        file_history_path: Path,
+        config_path: Path,
+        legacy_target_history_path: Path,
+        legacy_file_history_path: Path,
     ) -> None:
         super().__init__(master, style="Panel.TFrame", padding=16)
         self.on_load_symbols = on_load_symbols
@@ -36,8 +38,9 @@ class JLinkDebugTab(ttk.Frame):
         self.on_expand_variable = on_expand_variable
         self.on_expand_node = on_expand_node
         self.export_dir = export_dir
-        self.target_history_path = target_history_path
-        self.file_history_path = file_history_path
+        self.config_path = config_path
+        self.legacy_target_history_path = legacy_target_history_path
+        self.legacy_file_history_path = legacy_file_history_path
 
         self.elf_path_var = tk.StringVar()
         self.map_path_var = tk.StringVar()
@@ -371,31 +374,31 @@ class JLinkDebugTab(ttk.Frame):
         self.remember_device()
 
     def _load_device_history(self) -> list[str]:
+        data = load_config_section(self.config_path, "jlink").get("target_history")
+        if isinstance(data, list):
+            return _normalize_device_history(data)
         try:
-            data = json.loads(self.target_history_path.read_text(encoding="utf-8"))
+            data = json.loads(self.legacy_target_history_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
-        if not isinstance(data, list):
-            return []
-        history: list[str] = []
-        for item in data:
-            if not isinstance(item, str):
-                continue
-            target = item.strip().upper()
-            if target and target not in history:
-                history.append(target)
-        return history[:20]
+        return _normalize_device_history(data) if isinstance(data, list) else []
 
     def _save_device_history(self) -> None:
-        try:
-            self.target_history_path.parent.mkdir(parents=True, exist_ok=True)
-            self.target_history_path.write_text(json.dumps(self._device_history, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError:
-            return
+        self._save_jlink_config()
 
     def _load_file_history(self) -> None:
+        config = load_config_section(self.config_path, "jlink")
+        files = config.get("files")
+        if isinstance(files, dict):
+            elf_path = str(files.get("elf_path", "")).strip()
+            map_path = str(files.get("map_path", "")).strip()
+            if elf_path:
+                self.elf_path_var.set(elf_path)
+            if map_path:
+                self.map_path_var.set(map_path)
+            return
         try:
-            data = json.loads(self.file_history_path.read_text(encoding="utf-8"))
+            data = json.loads(self.legacy_file_history_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
         if not isinstance(data, dict):
@@ -408,15 +411,20 @@ class JLinkDebugTab(ttk.Frame):
             self.map_path_var.set(map_path)
 
     def save_file_history(self) -> None:
-        payload = {
-            "elf_path": self.elf_path_var.get().strip(),
-            "map_path": self.map_path_var.get().strip(),
-        }
-        try:
-            self.file_history_path.parent.mkdir(parents=True, exist_ok=True)
-            self.file_history_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError:
-            return
+        self._save_jlink_config()
+
+    def _save_jlink_config(self) -> None:
+        save_config_section(
+            self.config_path,
+            "jlink",
+            {
+                "target_history": self._device_history,
+                "files": {
+                    "elf_path": self.elf_path_var.get().strip(),
+                    "map_path": self.map_path_var.get().strip(),
+                },
+            },
+        )
 
     def _refresh_rows(self) -> None:
         query = self.search_var.get().strip().lower()
@@ -679,6 +687,17 @@ def _variable_matches_search(variable: DebugVariable, query: str) -> bool:
         if expression == parts[0] and query in type_name.lower():
             return True
     return False
+
+
+def _normalize_device_history(data: list[object]) -> list[str]:
+    history: list[str] = []
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        target = item.strip().upper()
+        if target and target not in history:
+            history.append(target)
+    return history[:20]
 
 
 @dataclass
