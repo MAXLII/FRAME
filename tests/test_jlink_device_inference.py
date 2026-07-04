@@ -1,4 +1,5 @@
 import tempfile
+import tkinter as tk
 import unittest
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from serial_debug_assistant.jlink_debug import (
     is_jlink_expandable_address,
     jlink_type_template_key,
 )
-from serial_debug_assistant.ui.jlink_debug_tab import _attach_pointer_templates, _expression_parts, _variable_matches_search
+from serial_debug_assistant.ui.jlink_debug_tab import JLinkDebugTab, _attach_pointer_templates, _expression_parts, _variable_matches_search
 
 
 class JLinkDeviceInferenceTest(unittest.TestCase):
@@ -28,6 +29,25 @@ class JLinkDeviceInferenceTest(unittest.TestCase):
         variable = _FakeDwarfDie("DW_TAG_variable", name="p", parent=function)
 
         self.assertEqual(_dwarf_scoped_variable_name(variable, "p"), "shell_init::p")
+
+    def test_refresh_variables_only_include_visible_rows(self) -> None:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            tab = _make_jlink_tab(root)
+            tab.set_variables(
+                [
+                    DebugVariable("task.priority", 0x20000000, 1, ".bss", "demo.elf", type_name="int8_t"),
+                    DebugVariable("counter", 0x20000010, 4, ".bss", "demo.elf", type_name="uint32_t"),
+                ]
+            )
+
+            self.assertEqual([item.name for item in tab.get_refresh_variables()], ["counter"])
+            task_node = next(row for row in tab.tree.get_children("") if tab.tree.item(row, "text") == "task")
+            tab.tree.item(task_node, open=True)
+            self.assertEqual([item.name for item in tab.get_refresh_variables()], ["task.priority", "counter"])
+        finally:
+            root.destroy()
 
     def test_infers_device_from_file_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -216,6 +236,26 @@ class _FakeDwarfDie:
 
     def get_parent(self):
         return self._parent
+
+
+def _make_jlink_tab(root) -> JLinkDebugTab:
+    def noop(*_args, **_kwargs) -> None:
+        return None
+
+    return JLinkDebugTab(
+        root,
+        on_load_symbols=noop,
+        on_refresh_values=noop,
+        on_read_selected=noop,
+        on_write_selected=noop,
+        on_test_connection=noop,
+        on_expand_variable=noop,
+        on_expand_node=noop,
+        export_dir=Path("."),
+        config_path=Path("NUL"),
+        legacy_target_history_path=Path("NUL"),
+        legacy_file_history_path=Path("NUL"),
+    )
 
 
 if __name__ == "__main__":

@@ -1126,10 +1126,10 @@ class SerialDebugAssistant(tk.Tk):
         self.logger.log("ERROR", f"jlink connect failed: {message}")
 
     def refresh_jlink_variables(self) -> None:
-        variables = self.jlink_tab.get_variables()
+        variables = self.jlink_tab.get_refresh_variables()
         if not variables:
-            self.jlink_tab.set_status("Load the variable list first.")
-            self.set_status("Load the variable list first.", error=True)
+            self.jlink_tab.set_status("No visible J-Link variable rows to refresh.")
+            self.set_status("No visible J-Link variable rows to refresh.", error=True)
             return
         self.jlink_tab.auto_detect_device()
         try:
@@ -1360,7 +1360,7 @@ class SerialDebugAssistant(tk.Tk):
 
     def _finish_jlink_refresh_success(self, variables) -> None:
         ok_count = sum(1 for variable in variables if variable.status == "OK")
-        self.jlink_tab.set_variables(variables)
+        self.jlink_tab.update_visible_variables(variables)
         if ok_count:
             self.jlink_tab.remember_device()
         self.jlink_tab.set_busy(False)

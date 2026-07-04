@@ -247,6 +247,12 @@ class JLinkDebugTab(ttk.Frame):
     def get_variables(self) -> list[DebugVariable]:
         return list(self._variables)
 
+    def get_refresh_variables(self) -> list[DebugVariable]:
+        variables: list[DebugVariable] = []
+        seen_rows: set[str] = set()
+        self._collect_visible_variables("", variables, seen_rows)
+        return variables
+
     def set_variables(self, variables: list[DebugVariable]) -> None:
         self._variables = list(variables)
         self._expanded_nodes.clear()
@@ -518,6 +524,15 @@ class JLinkDebugTab(ttk.Frame):
         if not selection:
             return None
         return str(selection[0])
+
+    def _collect_visible_variables(self, parent: str, variables: list[DebugVariable], seen_rows: set[str]) -> None:
+        for row_id in self.tree.get_children(parent):
+            variable = self._variable_keys.get(row_id)
+            if variable is not None and row_id not in seen_rows:
+                variables.append(variable)
+                seen_rows.add(row_id)
+            if self.tree.item(row_id, "open"):
+                self._collect_visible_variables(row_id, variables, seen_rows)
 
     def _on_tree_click(self, event) -> None:
         self._set_focused_cell_from_event(event)
