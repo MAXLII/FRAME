@@ -92,7 +92,7 @@ from serial_debug_assistant.firmware_update import (
     parse_llc_pfc_upgrade_progress_ack,
 )
 from serial_debug_assistant.i18n import I18nManager
-from serial_debug_assistant.jlink_debug import DebugVariable, JLinkDebugError, JLinkVariableService
+from serial_debug_assistant.jlink_debug import DebugVariable, JLinkDebugError, JLinkVariableService, is_jlink_expandable_address
 from serial_debug_assistant.models import (
     FirmwareImage,
     FirmwareUpdateSession,
@@ -1240,18 +1240,6 @@ class SerialDebugAssistant(tk.Tk):
     def expand_jlink_pointer_variable(self, variable: DebugVariable) -> None:
         if not variable.child_templates:
             return
-        target_address = _parse_jlink_pointer_value(variable.value)
-        if target_address is None:
-            message = f"Read {variable.name} first, then expand the pointed struct."
-            self.jlink_tab.set_status(message)
-            self.set_status(message, error=True)
-            return
-        if target_address == 0:
-            message = f"{variable.name} is NULL."
-            self.jlink_tab.clear_dynamic_children(variable)
-            self.jlink_tab.set_status(message)
-            self.set_status(message, error=True)
-            return
         self.jlink_tab.auto_detect_device()
         try:
             settings = self.jlink_tab.get_jlink_settings()
@@ -1260,7 +1248,39 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status(str(exc), error=True)
             return
 
-        children = [
+        self.jlink_tab.set_busy(True)
+        self.jlink_tab.set_status(f"Reading pointer {variable.name} through J-Link...")
+        self.set_status(f"Expanding J-Link pointer: {variable.name}")
+
+        def worker() -> None:
+            try:
+                pointer_variable = variable
+                target_address = _parse_jlink_pointer_value(pointer_variable.value)
+                if target_address is None:
+                    pointer_variable = self.jlink_service.read_variables([variable], settings)[0]
+                    target_address = _parse_jlink_pointer_value(pointer_variable.value)
+                if target_address is None:
+                    raise JLinkDebugError(f"Unable to read pointer value for {variable.name}.")
+                if target_address == 0:
+                    self.after(0, lambda: self._finish_jlink_pointer_expand_null(pointer_variable))
+                    return
+                if not is_jlink_expandable_address(target_address, self.jlink_service.memory_ranges):
+                    raise JLinkDebugError(
+                        f"{variable.name} points to unsupported address 0x{target_address:08X}; it is outside the ELF/MAP memory ranges."
+                    )
+                children = self._build_jlink_pointer_children(pointer_variable, target_address)
+                refreshed = self.jlink_service.read_variables(children, settings)
+            except JLinkDebugError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_jlink_refresh_error(message))
+                return
+            self.after(0, lambda: self._finish_jlink_pointer_expand_success(pointer_variable, refreshed))
+
+        threading.Thread(target=worker, name="jlink-pointer-expand", daemon=True).start()
+
+    @staticmethod
+    def _build_jlink_pointer_children(variable: DebugVariable, target_address: int) -> list[DebugVariable]:
+        return [
             replace(
                 template,
                 address=target_address + template.address,
@@ -1271,25 +1291,17 @@ class SerialDebugAssistant(tk.Tk):
             )
             for template in variable.child_templates
         ]
-        if not children:
-            return
 
-        self.jlink_tab.set_busy(True)
-        self.jlink_tab.set_status(f"Reading {variable.type_name} at 0x{target_address:08X}...")
-        self.set_status(f"Expanding J-Link pointer: {variable.name}")
-
-        def worker() -> None:
-            try:
-                refreshed = self.jlink_service.read_variables(children, settings)
-            except JLinkDebugError as exc:
-                message = str(exc)
-                self.after(0, lambda: self._finish_jlink_refresh_error(message))
-                return
-            self.after(0, lambda: self._finish_jlink_pointer_expand_success(variable, refreshed))
-
-        threading.Thread(target=worker, name="jlink-pointer-expand", daemon=True).start()
+    def _finish_jlink_pointer_expand_null(self, parent_variable: DebugVariable) -> None:
+        self.jlink_tab.update_visible_variables([parent_variable])
+        self.jlink_tab.clear_dynamic_children(parent_variable)
+        self.jlink_tab.set_busy(False)
+        message = f"{parent_variable.name} is NULL."
+        self.jlink_tab.set_status(message)
+        self.set_status(message, error=True)
 
     def _finish_jlink_pointer_expand_success(self, parent_variable: DebugVariable, children: list[DebugVariable]) -> None:
+        self.jlink_tab.update_visible_variables([parent_variable])
         ok_count = sum(1 for variable in children if variable.status == "OK")
         self.jlink_tab.set_dynamic_children(parent_variable, children)
         if ok_count:

@@ -15,10 +15,12 @@ MAX_VARIABLE_READ_BYTES = 16
 MAX_DWARF_ARRAY_EXPAND_COUNT = 4096
 MAX_DWARF_EXPANDED_FIELDS_PER_VARIABLE = 4096
 RAM_WRITE_RANGES = ((0x20000000, 0x40000000),)
+JLINK_POINTER_EXPAND_RANGES = ((0x00000000, 0x20000000), (0x20000000, 0x40000000))
 OBJECT_SYMBOL_TYPE = 1
 FUNCTION_SYMBOL_TYPE = 2
 SHT_SYMTAB = 2
 SHT_DYNSYM = 11
+SHF_ALLOC = 0x02
 DEVICE_TEXT_SCAN_BYTES = 2 * 1024 * 1024
 DEVICE_TOKEN_RE = re.compile(
     r"(?<![A-Z0-9])("
@@ -67,6 +69,16 @@ class JLinkSettings:
     speed_khz: int
 
 
+@dataclass(frozen=True)
+class JLinkMemoryRange:
+    name: str
+    start: int
+    end: int
+
+    def contains(self, address: int) -> bool:
+        return self.start <= address < self.end
+
+
 class JLinkDebugError(RuntimeError):
     pass
 
@@ -74,19 +86,28 @@ class JLinkDebugError(RuntimeError):
 class JLinkVariableService:
     def __init__(self) -> None:
         self.symbol_names: dict[int, str] = {}
+        self.memory_ranges: list[JLinkMemoryRange] = []
 
     def load_variables(self, *, elf_path: Path | None, map_path: Path | None) -> list[DebugVariable]:
         elf_variables: list[DebugVariable] = []
         map_variables: list[DebugVariable] = []
+        type_templates: dict[str, tuple[DebugVariable, ...]] = {}
         self.symbol_names = {}
+        self.memory_ranges = []
         if elf_path is not None:
             elf_variables.extend(_load_elf_variables(elf_path))
             self.symbol_names.update(_load_elf_symbol_names(elf_path))
+            self.memory_ranges.extend(_load_elf_memory_ranges(elf_path))
+            type_templates = _load_dwarf_type_templates(elf_path)
         if map_path is not None:
             map_variables.extend(_load_map_variables(map_path))
+            if elf_path is not None:
+                map_variables = _apply_map_type_templates(map_variables, type_templates)
             _merge_symbol_names(self.symbol_names, _symbol_names_from_variables(map_variables))
+            self.memory_ranges.extend(_load_map_memory_ranges(map_path))
         variables = _merge_symbol_sources(elf_variables, map_variables)
         _merge_symbol_names(self.symbol_names, _symbol_names_from_variables(variables))
+        self.memory_ranges = _deduplicate_memory_ranges(self.memory_ranges)
         if not variables:
             raise JLinkDebugError("No variable symbols were parsed from ELF/MAP. Check that the ELF has symbols or provide a GNU ld MAP file.")
         return _deduplicate_variables(variables)
@@ -296,6 +317,58 @@ def _load_elf_symbol_names(path: Path) -> dict[int, str]:
     return symbols
 
 
+def _load_elf_memory_ranges(path: Path) -> list[JLinkMemoryRange]:
+    data = path.read_bytes()
+    if len(data) < 16 or data[:4] != b"\x7fELF":
+        return []
+    is_64_bit = data[4] == 2
+    endian = "<" if data[5] == 1 else ">"
+    sections = _read_elf_sections(data, is_64_bit=is_64_bit, endian=endian)
+    names = _read_section_names(data, sections)
+    ranges: list[JLinkMemoryRange] = []
+    for index, section in enumerate(sections):
+        address = section.get("addr", 0)
+        size = section.get("size", 0)
+        flags = section.get("flags", 0)
+        name = names[index] if index < len(names) else ""
+        if not address or not size or not (flags & SHF_ALLOC) or _is_debug_or_metadata_section(name):
+            continue
+        ranges.append(JLinkMemoryRange(name=name or f"section_{index}", start=address, end=address + size))
+    return _deduplicate_memory_ranges(ranges)
+
+
+def _load_map_memory_ranges(path: Path) -> list[JLinkMemoryRange]:
+    return _parse_map_memory_ranges(path.read_text(encoding="utf-8", errors="ignore"))
+
+
+def _parse_map_memory_ranges(text: str) -> list[JLinkMemoryRange]:
+    ranges: list[JLinkMemoryRange] = []
+    in_memory_config = False
+    line_re = re.compile(r"^\s*(\S+)\s+0x([0-9A-Fa-f]+)\s+0x([0-9A-Fa-f]+)(?:\s+\S+)?\s*$")
+    for line in text.splitlines():
+        if line.strip() == "Memory Configuration":
+            in_memory_config = True
+            continue
+        if not in_memory_config:
+            continue
+        if not line.strip():
+            if ranges:
+                break
+            continue
+        match = line_re.match(line)
+        if match is None:
+            continue
+        name = match.group(1)
+        if name == "*default*":
+            continue
+        start = int(match.group(2), 16)
+        length = int(match.group(3), 16)
+        if length <= 0:
+            continue
+        ranges.append(JLinkMemoryRange(name=name, start=start, end=start + length))
+    return _deduplicate_memory_ranges(ranges)
+
+
 def _symbol_names_from_variables(variables: list[DebugVariable]) -> dict[int, str]:
     symbols: dict[int, str] = {}
     parent_addresses: dict[str, int] = {}
@@ -317,6 +390,14 @@ def _symbol_names_from_variables(variables: list[DebugVariable]) -> dict[int, st
 def _merge_symbol_names(target: dict[int, str], source: dict[int, str]) -> None:
     for address, name in source.items():
         target.setdefault(address, name)
+
+
+def _deduplicate_memory_ranges(ranges: list[JLinkMemoryRange]) -> list[JLinkMemoryRange]:
+    by_key: dict[tuple[int, int, str], JLinkMemoryRange] = {}
+    for item in ranges:
+        if item.start < item.end:
+            by_key[(item.start, item.end, item.name.lower())] = item
+    return sorted(by_key.values(), key=lambda item: (item.start, item.end, item.name.lower()))
 
 
 def _device_candidates_from_bytes(data: bytes) -> list[str]:
@@ -402,6 +483,94 @@ def _load_dwarf_variables(path: Path) -> list[DebugVariable]:
             return _deduplicate_variables(variables)
     except Exception:
         return []
+
+
+def _load_dwarf_type_templates(path: Path) -> dict[str, tuple[DebugVariable, ...]]:
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        return {}
+
+    templates: dict[str, tuple[DebugVariable, ...]] = {}
+    try:
+        with path.open("rb") as handle:
+            elf = ELFFile(handle)
+            if not elf.has_dwarf_info():
+                return {}
+            dwarf = elf.get_dwarf_info()
+            for cu in dwarf.iter_CUs():
+                for die in cu.iter_DIEs():
+                    if die.tag not in {"DW_TAG_typedef", "DW_TAG_structure_type", "DW_TAG_union_type"}:
+                        continue
+                    type_name = _dwarf_type_name(die)
+                    if not type_name:
+                        continue
+                    child_templates = _dwarf_pointee_templates(die)
+                    if child_templates:
+                        templates.setdefault(_normalized_type_key(type_name), child_templates)
+    except Exception:
+        return {}
+    return templates
+
+
+def _apply_map_type_templates(
+    variables: list[DebugVariable],
+    type_templates: dict[str, tuple[DebugVariable, ...]],
+) -> list[DebugVariable]:
+    if not type_templates:
+        return variables
+    enriched: list[DebugVariable] = []
+    for variable in variables:
+        if variable.type_name or variable.child_templates:
+            enriched.append(variable)
+            continue
+        type_name = _infer_map_pointer_type_name(variable.name, type_templates)
+        if not type_name:
+            enriched.append(variable)
+            continue
+        enriched.append(replace(variable, size=4, type_name=f"{type_name} *", child_templates=type_templates[_normalized_type_key(type_name)]))
+    return enriched
+
+
+def _infer_map_pointer_type_name(name: str, type_templates: dict[str, tuple[DebugVariable, ...]]) -> str:
+    for candidate in _map_pointer_type_candidates(name):
+        key = _normalized_type_key(candidate)
+        if key in type_templates:
+            return candidate
+    return ""
+
+
+def _map_pointer_type_candidates(name: str) -> list[str]:
+    base = name.strip()
+    if not base:
+        return []
+    candidates: list[str] = []
+    for prefix in ("g_", "p_", "s_"):
+        if base.startswith(prefix):
+            candidates.append(base[len(prefix) :])
+    candidates.append(base)
+    expanded: list[str] = []
+    for item in candidates:
+        expanded.append(item)
+        for suffix in ("_first", "_head", "_tail", "_current", "_next"):
+            if item.endswith(suffix):
+                expanded.append(item[: -len(suffix)])
+    result: list[str] = []
+    for item in expanded:
+        if not item:
+            continue
+        result.append(item)
+        if not item.endswith("_t"):
+            result.append(f"{item}_t")
+    unique: list[str] = []
+    for item in result:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _normalized_type_key(type_name: str) -> str:
+    return " ".join(type_name.replace("const", "").replace("volatile", "").replace("*", " ").split()).strip().lower()
 
 
 def _elf_section_ranges(elf) -> list[tuple[int, int, str]]:
@@ -824,17 +993,19 @@ def _read_elf_sections(data: bytes, *, is_64_bit: bool, endian: str) -> list[dic
     for index in range(shnum):
         offset = shoff + index * shentsize
         if is_64_bit:
-            name, section_type, _flags, _addr, section_offset, size, link, _info, _align, entsize = struct.unpack_from(
+            name, section_type, flags, addr, section_offset, size, link, _info, _align, entsize = struct.unpack_from(
                 endian + "IIQQQQIIQQ", data, offset
             )
         else:
-            name, section_type, _flags, _addr, section_offset, size, link, _info, _align, entsize = struct.unpack_from(
+            name, section_type, flags, addr, section_offset, size, link, _info, _align, entsize = struct.unpack_from(
                 endian + "IIIIIIIIII", data, offset
             )
         sections.append(
             {
                 "name": name,
                 "type": section_type,
+                "flags": flags,
+                "addr": addr,
                 "offset": section_offset,
                 "size": size,
                 "link": link,
@@ -1021,6 +1192,12 @@ def _validate_ram_write(address: int, size: int) -> None:
 
 def is_ram_address(address: int) -> bool:
     return any(start <= address < stop for start, stop in RAM_WRITE_RANGES)
+
+
+def is_jlink_expandable_address(address: int, ranges: list[JLinkMemoryRange] | None = None) -> bool:
+    if ranges:
+        return any(item.contains(address) for item in ranges)
+    return any(start <= address < stop for start, stop in JLINK_POINTER_EXPAND_RANGES)
 
 
 def _encode_write_value(variable: DebugVariable, value_text: str) -> bytes:
