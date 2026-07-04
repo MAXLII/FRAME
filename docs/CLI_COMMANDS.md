@@ -205,23 +205,18 @@ trace stop
 ## J-Link
 
 ```text
-jlink connect <device> [speed_khz]
-jlink read <elf> [map|-] [device] [filter] [limit]
+frame jlink --elf <elf> --map <map> --device <device> [--speed 4000] [--filter keyword] [--limit count]
 ```
 
 `JLink.exe` 会自动从 PATH 和 SEGGER 默认安装目录中查找，不需要手动选择 exe。
-如果 ELF 带 DWARF 调试信息，结构体和小数组会自动展开，例如：
+如果只需要解析变量列表，不读取目标板内存，可以加 `--no-read`。
 
-```text
-s_usart_dbg_shell_ctx.shell_buffer[0]
-s_usart_dbg_shell_ctx.shell_index
-```
-
-大型数组会保留为整体项，避免一次刷新生成过多行。
+交互式终端中仍可使用 `jlink connect <device> [speed_khz]` 和 `jlink read <elf> [map|-] [device] [filter] [limit]`。
 
 示例：
 
 ```text
-jlink connect GD32G553RCT6
-jlink read D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.map GD32G553RCT6 s_task 50
+frame jlink --elf D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.elf --map D:\OneDrive\LWX\GD32\base\gd32g553c\build\demo.map --device GD32G553RCT6 --filter s_task --limit 50
 ```
+
+GUI、交互式终端和一次性 CLI 的完整使用方法见 [JLINK_USAGE.md](JLINK_USAGE.md)。
