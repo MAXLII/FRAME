@@ -456,6 +456,7 @@ def _load_dwarf_variables(path: Path) -> list[DebugVariable]:
                     name = _dwarf_die_name(die)
                     if not _is_variable_name(name):
                         continue
+                    display_name = _dwarf_scoped_variable_name(die, name)
                     address = _dwarf_location_address(die)
                     if address is None or not _looks_like_mcu_address(address):
                         continue
@@ -465,7 +466,7 @@ def _load_dwarf_variables(path: Path) -> list[DebugVariable]:
                     type_die = _dwarf_type_die(die)
                     expanded = _expand_dwarf_type(
                         type_die,
-                        base_name=name,
+                        base_name=display_name,
                         base_address=address,
                         section=section,
                         source=path.name,
@@ -479,7 +480,7 @@ def _load_dwarf_variables(path: Path) -> list[DebugVariable]:
                         size = _dwarf_type_size(type_die) or 1
                         variables.append(
                             DebugVariable(
-                                name=name,
+                                name=display_name,
                                 address=address,
                                 size=size,
                                 section=section,
@@ -605,6 +606,26 @@ def _dwarf_die_name(die) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _dwarf_scoped_variable_name(die, name: str) -> str:
+    scope = _dwarf_subprogram_scope_name(die)
+    return f"{scope}::{name}" if scope else name
+
+
+def _dwarf_subprogram_scope_name(die) -> str:
+    try:
+        parent = die.get_parent()
+    except Exception:
+        return ""
+    while parent is not None:
+        if getattr(parent, "tag", "") == "DW_TAG_subprogram":
+            return _dwarf_die_name(parent)
+        try:
+            parent = parent.get_parent()
+        except Exception:
+            return ""
+    return ""
 
 
 def _dwarf_location_address(die) -> int | None:

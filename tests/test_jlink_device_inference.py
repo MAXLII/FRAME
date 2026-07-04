@@ -11,6 +11,7 @@ from serial_debug_assistant.jlink_debug import (
     _map_pointer_type_candidates,
     _normalize_mcu_type_name,
     _parse_map_memory_ranges,
+    _dwarf_scoped_variable_name,
     _symbol_names_from_variables,
     _validate_ram_write,
     infer_jlink_device,
@@ -22,6 +23,12 @@ from serial_debug_assistant.ui.jlink_debug_tab import _attach_pointer_templates,
 
 
 class JLinkDeviceInferenceTest(unittest.TestCase):
+    def test_dwarf_scoped_variable_name_includes_function_scope(self) -> None:
+        function = _FakeDwarfDie("DW_TAG_subprogram", name="shell_init")
+        variable = _FakeDwarfDie("DW_TAG_variable", name="p", parent=function)
+
+        self.assertEqual(_dwarf_scoped_variable_name(variable, "p"), "shell_init::p")
+
     def test_infers_device_from_file_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             map_path = Path(temp_dir) / "gd32g553rct6_app.map"
@@ -194,6 +201,21 @@ Linker script and memory map
         )
 
         self.assertEqual(symbols[0x20001000], "task")
+
+
+class _FakeAttr:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+
+class _FakeDwarfDie:
+    def __init__(self, tag: str, *, name: str = "", parent: object | None = None) -> None:
+        self.tag = tag
+        self.attributes = {"DW_AT_name": _FakeAttr(name.encode("utf-8"))} if name else {}
+        self._parent = parent
+
+    def get_parent(self):
+        return self._parent
 
 
 if __name__ == "__main__":
