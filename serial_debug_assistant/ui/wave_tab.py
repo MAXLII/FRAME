@@ -74,6 +74,7 @@ class WaveformTab(ttk.Frame):
         self.window_var = tk.StringVar(value=self.i18n.translate_text("最近30秒"))
         self.marker_var = tk.StringVar()
         self.selected_search_var = tk.StringVar()
+        self.select_all_visible_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value=self.i18n.translate_text("当前处于停止状态"))
         self.view_var = tk.StringVar(value=self.i18n.translate_text("查看窗口: 最近30秒"))
         self.cursor_var = tk.StringVar(value=self.i18n.translate_text("把鼠标移动到图上即可查看该时刻的数据"))
@@ -288,9 +289,14 @@ class WaveformTab(ttk.Frame):
 
         header = ttk.Frame(left, style="Panel.TFrame")
         header.grid(row=2, column=0, sticky="ew", pady=(0, 4))
-        display_label = ttk.Label(header, text=self.i18n.translate_text("显示"), width=5)
-        display_label.grid(row=0, column=0, padx=(2, 8))
-        self._remember_text(display_label, "显示")
+        self.select_all_check = ttk.Checkbutton(
+            header,
+            text=self.i18n.translate_text("全选"),
+            variable=self.select_all_visible_var,
+            command=self._on_select_all_visible_toggle,
+        )
+        self.select_all_check.grid(row=0, column=0, padx=(2, 8))
+        self._remember_text(self.select_all_check, "全选")
         name_label = ttk.Label(header, text=self.i18n.translate_text("参数名"))
         name_label.grid(row=0, column=1, sticky="w")
         self._remember_text(name_label, "参数名")
@@ -383,9 +389,13 @@ class WaveformTab(ttk.Frame):
         self.run_button_text.set(self.i18n.translate_text("停止" if running else "开始"))
 
     def set_selected_parameters(self, names: list[str]) -> None:
+        previous_names = set(self.selected_names)
+        was_all_visible = bool(previous_names) and previous_names <= self.visible_names
         self.selected_names = list(names)
         current_names = set(names)
         self.visible_names &= current_names
+        if was_all_visible:
+            self.visible_names.update(current_names)
         for name in names:
             self.series_data.setdefault(name, [])
             if name not in self._row_widgets:
@@ -421,6 +431,7 @@ class WaveformTab(ttk.Frame):
                 self._row_vars.pop(stale_name, None)
 
         self._refresh_series_order()
+        self._update_select_all_visible_state()
         self._queue_list_refresh()
         self._queue_latest_refresh()
         self._queue_redraw()
@@ -1018,9 +1029,35 @@ class WaveformTab(ttk.Frame):
         self._refresh_series_order()
         for name in self.selected_names:
             self._refresh_row_widget(name)
+        self._update_select_all_visible_state()
 
     def _on_selected_search_changed(self, *_args) -> None:
         self._queue_list_refresh()
+
+    def _update_select_all_visible_state(self) -> None:
+        selected = set(self.selected_names)
+        all_visible = bool(selected) and selected <= self.visible_names
+        self.select_all_visible_var.set(all_visible)
+
+    def _on_select_all_visible_toggle(self) -> None:
+        selected = set(self.selected_names)
+        if not selected:
+            self.select_all_visible_var.set(False)
+            return
+        if self.select_all_visible_var.get():
+            self.visible_names.update(selected)
+            message = "已切换为显示全部波形"
+        else:
+            self.visible_names.difference_update(selected)
+            message = "已隐藏全部波形"
+        for name in self.selected_names:
+            self._refresh_row_widget(name)
+        self._update_select_all_visible_state()
+        self._last_hover_index = None
+        self.cursor_var.set(self.i18n.translate_text("把鼠标移动到图上即可查看该时刻的数据"))
+        self._queue_latest_refresh()
+        self._queue_redraw()
+        self.on_status(self.i18n.translate_text(message), False)
 
     def _queue_latest_refresh(self) -> None:
         if self._latest_refresh_job is not None:
@@ -1123,6 +1160,7 @@ class WaveformTab(ttk.Frame):
         else:
             self.visible_names.add(name)
         self._refresh_row_widget(name)
+        self._update_select_all_visible_state()
         self._last_hover_index = None
         self.cursor_var.set(self.i18n.translate_text("把鼠标移动到图上即可查看该时刻的数据"))
         self._queue_redraw()

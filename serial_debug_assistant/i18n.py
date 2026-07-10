@@ -465,6 +465,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "搜索:": {"zh": "搜索:", "en": "Search:"},
     "显示": {"zh": "显示", "en": "Show"},
+    "全选": {"zh": "全选", "en": "Select All"},
+    "已隐藏全部波形": {"zh": "已隐藏全部波形", "en": "Hidden all waveforms"},
     "参数名": {"zh": "参数名", "en": "Parameter"},
     "实时波形": {"zh": "实时波形", "en": "Real-time Waveform"},
     "最新值": {"zh": "最新值", "en": "Latest Values"},
