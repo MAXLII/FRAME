@@ -1849,6 +1849,9 @@ class SerialDebugAssistant(tk.Tk):
 
     def _handle_transport_error(self, transport_name: str, exc: str) -> None:
         self.logger.log("ERROR", f"{transport_name.lower()} error: {exc}")
+        if transport_name == "CAN":
+            self.set_status(f"CAN communication error (connection kept open): {exc}", error=True)
+            return
         self.close_connection()
         self.set_status(f"{transport_name} error: {exc}", error=True)
 

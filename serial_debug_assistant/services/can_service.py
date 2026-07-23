@@ -11,6 +11,10 @@ from serial_debug_assistant.models import SerialChunk
 CAN_FRAME_RE = re.compile(
     r"^\s*(?P<arbitration_id>[0-9A-Fa-f]{1,8})\s*#\s*(?:(?P<remote>[Rr])\s*(?P<dlc>\d{0,2})|(?P<data>[0-9A-Fa-f][0-9A-Fa-f\s,]*))\s*$"
 )
+CAN_SEND_TIMEOUT_SECONDS = 0.1
+CAN_READER_RETRY_INITIAL_SECONDS = 0.05
+CAN_READER_RETRY_MAX_SECONDS = 1.0
+CAN_ERROR_REPORT_INTERVAL_SECONDS = 1.0
 
 
 class CANService:
@@ -80,6 +84,8 @@ class CANService:
         self.rx_is_extended_id = is_extended_id
 
     def start_reader(self, *, error_callback) -> None:
+        if self.reader_thread is not None and self.reader_thread.is_alive():
+            return
         self.reader_thread = threading.Thread(
             target=self._reader_loop,
             kwargs={"error_callback": error_callback},
@@ -89,17 +95,28 @@ class CANService:
 
     def _reader_loop(self, *, error_callback) -> None:
         bus = self.bus
+        retry_delay = CAN_READER_RETRY_INITIAL_SECONDS
+        last_error_report_at = 0.0
         while not self.reader_stop.is_set() and bus is not None:
             try:
                 message = bus.recv(timeout=0.1)
             except Exception as exc:
                 if self.reader_stop.is_set():
                     break
-                error_callback(str(exc))
-                break
+                now = time.monotonic()
+                if now - last_error_report_at >= CAN_ERROR_REPORT_INTERVAL_SECONDS:
+                    try:
+                        error_callback(str(exc))
+                    except Exception:
+                        pass
+                    last_error_report_at = now
+                self.reader_stop.wait(retry_delay)
+                retry_delay = min(retry_delay * 2.0, CAN_READER_RETRY_MAX_SECONDS)
+                continue
 
             if message is None:
                 continue
+            retry_delay = CAN_READER_RETRY_INITIAL_SECONDS
             if bool(getattr(message, "is_remote_frame", False)):
                 continue
             if int(getattr(message, "arbitration_id", -1)) != self.rx_arbitration_id:
@@ -149,7 +166,7 @@ class CANService:
 
         for line in frame_lines:
             message = self._parse_frame_text(line, can.Message)
-            self.bus.send(message)
+            self._send_message(message)
             total_payload_bytes += len(message.data)
         return total_payload_bytes
 
@@ -175,9 +192,18 @@ class CANService:
                 is_extended_id=self.tx_is_extended_id,
                 data=chunk,
             )
-            self.bus.send(message)
+            self._send_message(message)
             sent_bytes += len(chunk)
         return sent_bytes
+
+    def _send_message(self, message) -> None:
+        bus = self.bus
+        if bus is None:
+            raise RuntimeError("CAN bus is not open.")
+        try:
+            bus.send(message, timeout=CAN_SEND_TIMEOUT_SECONDS)
+        except Exception as exc:
+            raise RuntimeError(f"CAN send failed: {exc}") from exc
 
     def _parse_frame_text(self, line: str, message_type):
         match = CAN_FRAME_RE.match(line)
