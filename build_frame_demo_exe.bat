@@ -60,7 +60,7 @@ if exist "%DIST_APP_DIR%" (
 )
 
 echo [INFO] Building frame_demo.exe...
-call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame_demo --distpath "dist" --workpath "build_demo" "main_demo.py"
+call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame_demo --distpath "dist" --workpath "build_demo" --add-data "assets\frame_icon.png;assets" --icon "assets\frame_icon.ico" "main_demo.py"
 if errorlevel 1 (
     echo [ERROR] Build failed
     if "%FRAME_INTERACTIVE%"=="1" pause

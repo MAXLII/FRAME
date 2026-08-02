@@ -60,7 +60,7 @@ if exist "%DIST_APP_DIR%" (
 )
 
 echo [INFO] Building frame.exe GUI...
-call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame --distpath "dist" --workpath "build" --collect-submodules can.interfaces "main_gui.py"
+call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --windowed --name frame --distpath "dist" --workpath "build" --collect-submodules can.interfaces --add-data "assets\frame_icon.png;assets" --icon "assets\frame_icon.ico" "main_gui.py"
 if errorlevel 1 (
     echo [ERROR] GUI build failed
     if "%FRAME_INTERACTIVE%"=="1" pause
@@ -68,7 +68,7 @@ if errorlevel 1 (
 )
 
 echo [INFO] Building frame-cli.exe terminal...
-call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --onefile --console --name frame-cli --distpath "%DIST_APP_DIR%" --workpath "build_cli" --collect-submodules can.interfaces "main.py"
+call "%VENV_PYTHON%" -m PyInstaller --noconfirm --clean --onefile --console --name frame-cli --distpath "%DIST_APP_DIR%" --workpath "build_cli" --collect-submodules can.interfaces --icon "assets\frame_icon.ico" "main.py"
 if errorlevel 1 (
     echo [ERROR] Terminal build failed
     if "%FRAME_INTERACTIVE%"=="1" pause
