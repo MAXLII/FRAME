@@ -287,6 +287,8 @@ class SerialDebugAssistant(tk.Tk):
         self._visible_notebook_tabs: list[tuple[object, str]] = []
         title = APP_TITLE if not demo_mode else f"{APP_TITLE} Demo"
         self.title(title)
+        self._window_icon: tk.PhotoImage | None = None
+        self._configure_window_icon()
         self._configure_window_geometry()
         self.configure(bg=APP_BG)
 
@@ -431,6 +433,16 @@ class SerialDebugAssistant(tk.Tk):
         self.after(POLL_INTERVAL_MS, self.process_incoming_data)
         self._schedule_rate_update()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _configure_window_icon(self) -> None:
+        icon_path = Path(__file__).resolve().parents[2] / "assets" / "frame_icon.png"
+        if not icon_path.is_file():
+            return
+        try:
+            self._window_icon = tk.PhotoImage(file=icon_path)
+            self.iconphoto(True, self._window_icon)
+        except tk.TclError:
+            self._window_icon = None
 
     def _configure_window_geometry(self) -> None:
         default_width, default_height = self._parse_geometry_size(APP_GEOMETRY, APP_MIN_WIDTH, APP_MIN_HEIGHT)
