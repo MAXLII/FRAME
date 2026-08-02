@@ -319,7 +319,7 @@ typedef struct
 - `name_len = 0, type = 0, data = 0x55555555` 表示批次开始
 - `name_len = 0, type = 0, data = 0xAAAAAAAA` 表示批次结束
 
-##### 固件升级 `0x01 / 0x08 ~ 0x0D`
+##### 固件升级 `0x01 / 0x08 ~ 0x0B`
 
 ```c
 typedef struct
@@ -346,7 +346,7 @@ typedef struct
     uint32_t offset;
     uint8_t module_id;
     uint16_t data_length;
-    uint8_t packet_data[256];
+    uint8_t packet_data[1024];
     uint16_t packet_crc;
 } cmd_010A_req_t;
 
@@ -365,19 +365,6 @@ typedef struct
     uint8_t success_flg;
 } cmd_010B_ack_t;
 
-typedef struct
-{
-    uint8_t source_module_id;
-    uint8_t target_module_id;
-    uint8_t stage;
-    uint8_t result;
-    uint32_t forwarded_bytes;
-    uint32_t total_bytes;
-    uint32_t packet_offset;
-    uint16_t packet_length;
-    uint16_t progress_permille;
-    uint16_t error_code;
-} llc_pfc_upgrade_progress_ack_t;
 ```
 
 ##### Black Box 范围查询 `0x01 / 0x0E ~ 0x11`
@@ -1055,12 +1042,11 @@ typedef struct
 
 - 采用阶段式升级状态机
 - 将文件信息、设备信息、进度与日志分区展示
-- 对 PFC 升级增加 LLC -> PFC 转发进度追踪
+- 固件模块 ID 用作默认目标地址，升级数据直接发送至目标模块
 
 #### 3.6.4 通信协议
 
 - `0x01 / 0x08 ~ 0x0B` 升级主流程
-- `0x01 / 0x0D` LLC -> PFC 转发进度查询
 - `0x01 / 0x17` 固件版本查询
 
 #### 3.6.5 操作使用说明
@@ -1258,7 +1244,7 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 | 参数读写页 | 参数列表、读写、波形勾选 | `0x01 / 0x01 ~ 0x05` |
 | 参数波形页 | 波形勾选、周期设置、实时上报、启停 | `0x01 / 0x05 ~ 0x07, 0x0C` |
 | Scope 页 | 软件录波对象控制与抓取 | `0x01 / 0x18 ~ 0x1F` |
-| 固件升级页 | 升级、版本查询、转发进度 | `0x01 / 0x08 ~ 0x0D, 0x17` |
+| 固件升级页 | 目标模块直接升级、版本查询 | `0x01 / 0x08 ~ 0x0B, 0x17` |
 | Black Box 页 | 范围查询、表头、行数据、完成通知 | `0x01 / 0x0E ~ 0x11` |
 | Factory Mode 页 | 时间、校准 | `0x01 / 0x12 ~ 0x16` |
 | Perf 任务时间页 | 任务、中断、代码片段耗时统计 | `0x01 / 0x20 ~ 0x2B, 0x2E` |
@@ -1322,7 +1308,6 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 - `cmd_010A_ack_t`
 - `cmd_010B_req_t`
 - `cmd_010B_ack_t`
-- `llc_pfc_upgrade_progress_ack_t`
 - `firmware_version_ack_t`
 - `footer_t`
 
@@ -1404,7 +1389,7 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 3. 轮询 ready
 4. 按包发送数据
 5. 下发结束命令
-6. 如目标为 PFC，则继续查询 LLC -> PFC 进度
+6. 等待目标模块应用参数服务恢复
 
 ### 6.6 工厂模式流程
 
@@ -1548,8 +1533,8 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 
 ### 8.5 升级相关
 
-- 升级期间不可断电、断串口
-- PFC 升级完成判定依赖 LLC -> PFC 转发结果
+- 通信中断后可向同一目标模块重新发起完整升级
+- 目标模块返回结束 ACK 后，上位机等待该模块的应用参数服务恢复
 
 ### 8.6 Black Box 相关
 
