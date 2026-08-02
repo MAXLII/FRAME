@@ -40,14 +40,12 @@ from serial_debug_assistant.factory_mode import (
     parse_timezone_input,
 )
 from serial_debug_assistant.firmware_update import (
-    CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
     CMD_WORD_UPDATE_END,
     CMD_WORD_UPDATE_FW,
     CMD_WORD_UPDATE_INFO,
     CMD_WORD_UPDATE_READY,
     UPDATE_TYPE_FORCE,
     UPDATE_TYPE_NORMAL,
-    build_llc_pfc_upgrade_progress_query_payload,
     CMD_WORD_FIRMWARE_VERSION_QUERY,
     build_firmware_version_query_payload,
     build_update_end_payload,
@@ -55,11 +53,11 @@ from serial_debug_assistant.firmware_update import (
     build_update_packet_payload,
     build_update_ready_payload,
     describe_reject_reason,
+    default_upgrade_target,
     format_unix_time,
     format_version,
     load_firmware_image,
     module_name,
-    parse_llc_pfc_upgrade_progress_ack,
     parse_firmware_version_ack,
 )
 from serial_debug_assistant.jlink_debug import (
@@ -478,7 +476,13 @@ class FrameTerminalShell:
             return
         if action == "start" and len(args) >= 2:
             update_type = _parse_update_type(args[1])
-            dst = int(args[2], 0) if len(args) >= 3 else self.options.dst
+            dst = (
+                int(args[2], 0)
+                if len(args) >= 3
+                else default_upgrade_target(self.loaded_firmware)
+                if self.loaded_firmware is not None
+                else self.options.dst
+            )
             d_dst = int(args[3], 0) if len(args) >= 4 else self.options.d_dst
             self._start_upgrade(update_type=update_type, dst=dst, d_dst=d_dst)
             return
@@ -614,10 +618,7 @@ class FrameTerminalShell:
             if ack.payload[0] != 1:
                 raise SerialCliError("0x0B returned success_flg=0")
 
-            if image.footer.module_id == 0x03:
-                self._poll_llc_pfc_forward_progress(dst=dst, d_dst=d_dst, total_bytes=len(image.data))
-            else:
-                self._poll_application_ready(dst=dst, d_dst=d_dst, total_bytes=len(image.data))
+            self._poll_application_ready(dst=dst, d_dst=d_dst, total_bytes=len(image.data))
         except Exception as exc:
             state = "stopped" if isinstance(exc, SerialCliError) and str(exc) == "upgrade stopped" else "failed"
             self._set_upgrade_status(state=state, detail=str(exc), stage=state)
@@ -656,36 +657,6 @@ class FrameTerminalShell:
             total_bytes=total_bytes,
             stage="app_timeout",
         )
-
-    def _poll_llc_pfc_forward_progress(self, *, dst: int, d_dst: int, total_bytes: int) -> None:
-        while not self.upgrade_stop_event.is_set():
-            frames = self._upgrade_request(
-                cmd_word=CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
-                payload=build_llc_pfc_upgrade_progress_query_payload(),
-                dst=dst,
-                d_dst=d_dst,
-                wait_seconds=3.0,
-            )
-            ack = self._find_ack(frames, CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY)
-            if ack is None:
-                self._set_upgrade_status(state="running", detail="waiting for LLC -> PFC progress", total_bytes=total_bytes, stage="0x0D")
-                time.sleep(1.0)
-                continue
-            progress = parse_llc_pfc_upgrade_progress_ack(ack.payload)
-            forwarded = int(progress["forwarded_bytes"])
-            total = int(progress["total_bytes"]) or total_bytes
-            detail = (
-                f"LLC -> PFC {progress['stage_name']} {progress['result_name']} "
-                f"{forwarded}/{total} error={progress['error_name']}"
-            )
-            self._set_upgrade_status(state="running", detail=detail, sent_bytes=forwarded, total_bytes=total, stage="0x0D", extra=progress)
-            if str(progress["result_name"]) == "success" or str(progress["stage_name"]) == "done":
-                self._set_upgrade_status(state="done", detail="upgrade completed; LLC finished forwarding PFC firmware", sent_bytes=total, total_bytes=total, stage="done", extra=progress)
-                return
-            if str(progress["result_name"]) == "failed" or str(progress["stage_name"]) == "failed":
-                raise SerialCliError(f"LLC -> PFC forwarding failed: {progress['error_name']}")
-            time.sleep(1.0)
-        self._raise_if_upgrade_stopped()
 
     def _upgrade_request(self, *, cmd_word: int, payload: bytes, dst: int, d_dst: int, wait_seconds: float) -> list[ProtocolFrame]:
         deadline = time.monotonic() + wait_seconds

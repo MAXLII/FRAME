@@ -71,25 +71,22 @@ from serial_debug_assistant.debug_logger import DebugLogger
 from serial_debug_assistant.firmware_update import (
     CMD_SET_UPDATE,
     CMD_WORD_FIRMWARE_VERSION_QUERY,
-    CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
     CMD_WORD_UPDATE_END,
     CMD_WORD_UPDATE_FW,
     CMD_WORD_UPDATE_INFO,
     CMD_WORD_UPDATE_READY,
     build_firmware_version_query_payload,
-    build_llc_pfc_upgrade_progress_query_payload,
     build_update_end_payload,
     build_update_info_payload,
     build_update_packet_payload,
     build_update_ready_payload,
-    describe_llc_pfc_upgrade_error,
     describe_reject_reason,
+    default_upgrade_target,
     format_unix_time,
     format_version,
     load_firmware_image,
     module_name,
     parse_firmware_version_ack,
-    parse_llc_pfc_upgrade_progress_ack,
 )
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.jlink_debug import DebugVariable, JLinkDebugError, JLinkVariableService, is_jlink_expandable_address
@@ -1873,7 +1870,6 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_firmware(image, summary=summary)
             self.upgrade_tab.clear_log()
             self.upgrade_tab.set_progress(0, len(image.data))
-            self.upgrade_tab.reset_forward_progress("演示模式: 等待点击开始升级。")
             self.upgrade_tab.append_log(f"Loaded demo firmware: {image.path}")
             self.upgrade_tab.append_log(f"Version: {summary['version']}")
             self.upgrade_tab.append_log(f"Build Time: {summary['compile_time']}")
@@ -1896,8 +1892,7 @@ class SerialDebugAssistant(tk.Tk):
             return
 
         self.loaded_firmware = image
-        if image.footer.module_id in {0x02, 0x03}:
-            self.upgrade_tab.download_addr_var.set("2")
+        self.upgrade_tab.download_addr_var.set(str(default_upgrade_target(image)))
         summary = {
             "version": format_version(image.footer.version),
             "compile_time": format_unix_time(image.footer.unix_time),
@@ -1908,18 +1903,11 @@ class SerialDebugAssistant(tk.Tk):
         }
         self.upgrade_tab.set_firmware(image, summary=summary)
         self.upgrade_tab.clear_log()
-        self.upgrade_tab.reset_forward_progress(
-            "PFC forwarding progress will appear here after the main upgrade is accepted by LLC."
-            if image.footer.module_id == 0x03
-            else "This firmware image does not require LLC -> PFC forward-progress tracking."
-        )
         self.upgrade_tab.append_log(f"Loaded firmware: {image.path}")
         self.upgrade_tab.append_log(f"Version: {summary['version']}")
         self.upgrade_tab.append_log(f"Build Time: {summary['compile_time']}")
         self.upgrade_tab.append_log(f"Module: {summary['module']}")
         self.upgrade_tab.append_log(f"Footer CRC32: {summary['footer_crc']}")
-        if image.footer.module_id == 0x03:
-            self.upgrade_tab.append_log("PFC firmware is sent to 0x02 by default. LLC receives it first and forwards it to PFC.")
         for warning in image.warnings:
             self.upgrade_tab.append_log(f"Warning: {warning}")
 
@@ -1990,7 +1978,6 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.clear_log()
             self.upgrade_tab.set_running(True)
             self.upgrade_tab.set_progress(0, len(self.loaded_firmware.data))
-            self.upgrade_tab.reset_forward_progress("演示模式: 等待主升级完成后再模拟转发。")
             self.upgrade_tab.append_log(
                 f"Start demo upgrade -> module={module_name(self.loaded_firmware.footer.module_id)} target=0x{self.update_session.target_addr:02X}"
             )
@@ -2025,16 +2012,13 @@ class SerialDebugAssistant(tk.Tk):
         self.upgrade_tab.clear_log()
         self.upgrade_tab.set_running(True)
         self.upgrade_tab.set_progress(0, len(self.loaded_firmware.data))
-        self.upgrade_tab.reset_forward_progress(
-            "Waiting for LLC -> PFC forward-progress polling to begin after 0x0B."
-            if self.loaded_firmware.footer.module_id == 0x03
-            else "This firmware image does not require LLC -> PFC forward-progress tracking."
-        )
         self.upgrade_tab.append_log(
             f"Start upgrade -> module={module_name(self.loaded_firmware.footer.module_id)} target=0x{target_addr:02X} d_target=0x{target_dynamic_addr:02X}"
         )
-        if self.loaded_firmware.footer.module_id == 0x03 and target_addr != 0x02:
-            self.upgrade_tab.append_log("Note: current PFC firmware should normally be sent to 0x02 so LLC can receive it first.")
+        if target_addr != self.loaded_firmware.footer.module_id:
+            self.upgrade_tab.append_log(
+                "Warning: the selected target address differs from the firmware module ID."
+            )
         self._send_upgrade_info()
 
     def stop_upgrade(self, message: str, *, user_initiated: bool) -> None:
@@ -2063,7 +2047,7 @@ class SerialDebugAssistant(tk.Tk):
         if session is None:
             return
         now = time.monotonic()
-        if session.stage in {"wait_info_ack", "wait_ready_ack", "wait_packet_ack", "wait_end_ack", "wait_forward_progress_ack"}:
+        if session.stage in {"wait_info_ack", "wait_ready_ack", "wait_packet_ack", "wait_end_ack"}:
             if now - session.last_tx_at >= 1.0:
                 if session.timeout_error_since is None:
                     session.timeout_error_since = now
@@ -2087,10 +2071,6 @@ class SerialDebugAssistant(tk.Tk):
                     self.upgrade_tab.append_log("0x0B timeout, resend end packet")
                     self._send_upgrade_end()
                     return
-                if session.stage == "wait_forward_progress_ack":
-                    self.upgrade_tab.append_log("0x0D timeout, retry LLC -> PFC forward-progress query")
-                    self._send_llc_pfc_upgrade_progress_query()
-                    return
         elif session.stage == "wait_app_ready":
             if session.app_ready_wait_started_at <= 0.0:
                 session.app_ready_wait_started_at = now
@@ -2104,10 +2084,6 @@ class SerialDebugAssistant(tk.Tk):
             if now - session.last_tx_at >= 1.5:
                 self.upgrade_tab.append_log("APP parameter service not ready yet, retry 0x01 query")
                 self._send_app_ready_query()
-                return
-        elif session.stage == "poll_forward_progress":
-            if now - session.last_tx_at >= session.llc_forward_query_interval_seconds:
-                self._send_llc_pfc_upgrade_progress_query()
                 return
         self._schedule_update_tick()
 
@@ -2193,27 +2169,6 @@ class SerialDebugAssistant(tk.Tk):
             cmd_set=CMD_SET_UPDATE,
             cmd_word=CMD_WORD_UPDATE_END,
             payload=build_update_end_payload(session.image),
-        )
-        self._schedule_update_tick()
-
-    def _send_llc_pfc_upgrade_progress_query(self) -> None:
-        session = self.update_session
-        if session is None:
-            return
-        session.stage = "wait_forward_progress_ack"
-        session.last_tx_at = time.monotonic()
-        self.upgrade_tab.set_status(
-            "Upgrade in progress",
-            "Query current LLC -> PFC forward progress (0x01 0x0D)",
-            error_code="-",
-        )
-        self.upgrade_tab.append_log("TX 0x0D -> query current LLC -> PFC upgrade forward progress")
-        self.send_protocol_frame(
-            dst=session.target_addr,
-            d_dst=session.target_dynamic_addr,
-            cmd_set=CMD_SET_UPDATE,
-            cmd_word=CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
-            payload=build_llc_pfc_upgrade_progress_query_payload(),
         )
         self._schedule_update_tick()
 
@@ -3204,33 +3159,8 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.set_progress(total, total)
             self.upgrade_tab.set_status("Upgrade in progress", "演示流程: 发送结束包 0x0B", error_code="-")
             self.upgrade_tab.append_log("TX 0x0B -> send image CRC")
-            self.upgrade_tab.set_forward_progress(
-                status="LLC -> PFC forward progress is running",
-                detail="演示转发中，模拟主控向下一级模块分发固件。",
-                forwarded_bytes=int(total * 0.35),
-                total_bytes=total,
-                progress_permille=350,
-            )
             self._schedule_demo_upgrade_step(320)
             return
-        if step == packet_end + 2:
-            self.upgrade_tab.set_forward_progress(
-                status="LLC -> PFC forward progress is running",
-                detail="演示转发中，目标模块正在校验和写入。",
-                forwarded_bytes=int(total * 0.82),
-                total_bytes=total,
-                progress_permille=820,
-            )
-            self.upgrade_tab.append_log("RX 0x0D ACK <- forward stage=verifying")
-            self._schedule_demo_upgrade_step(320)
-            return
-        self.upgrade_tab.set_forward_progress(
-            status="LLC -> PFC forward progress is idle",
-            detail="演示转发完成，目标模块已切换到应用程序。",
-            forwarded_bytes=total,
-            total_bytes=total,
-            progress_permille=1000,
-        )
         self._complete_upgrade("演示升级完成: 固件已写入并校验通过。")
 
     def _schedule_demo_black_box_rows(
@@ -3600,7 +3530,6 @@ class SerialDebugAssistant(tk.Tk):
             CMD_WORD_UPDATE_READY,
             CMD_WORD_UPDATE_FW,
             CMD_WORD_UPDATE_END,
-            CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY,
         }:
             return False
 
@@ -3687,19 +3616,8 @@ class SerialDebugAssistant(tk.Tk):
                 return True
             self.upgrade_tab.append_log(f"RX 0x0B ACK <- success_flg={frame.payload[0]}")
             if frame.payload[0] == 1:
-                if session.image.footer.module_id == 0x03:
-                    self.upgrade_tab.append_log("0x0B ACK accepted. Switch to LLC -> PFC forward-progress polling.")
-                    self.upgrade_tab.set_forward_progress(
-                        status="Waiting for LLC -> PFC forward progress",
-                        detail="The main download to LLC has finished. Polling 0x01/0x0D now.",
-                        forwarded_bytes=0,
-                        total_bytes=len(session.image.data),
-                        progress_permille=0,
-                    )
-                    self._send_llc_pfc_upgrade_progress_query()
-                else:
-                    self.upgrade_tab.append_log("0x0B ACK accepted. Waiting for the APP parameter service.")
-                    self._send_app_ready_query()
+                self.upgrade_tab.append_log("0x0B ACK accepted. Waiting for the target APP parameter service.")
+                self._send_app_ready_query()
             else:
                 self._fail_upgrade("Upgrade failed", "0x0B returned success_flg=0.", "0x0B_FAIL")
             return True
@@ -3711,60 +3629,6 @@ class SerialDebugAssistant(tk.Tk):
             self.upgrade_tab.append_log(f"RX 0x01 ACK <- APP parameter service ready, count={param_count}")
             self._complete_upgrade(f"Upgrade completed. APP parameter service ready, count={param_count}.")
             return False
-
-        if frame.cmd_word == CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY and session.stage in {"wait_forward_progress_ack", "poll_forward_progress"}:
-            try:
-                progress = parse_llc_pfc_upgrade_progress_ack(frame.payload)
-            except ValueError as exc:
-                self._fail_upgrade("Upgrade failed", str(exc), "0x0D_LEN")
-                return True
-
-            session.llc_forward_progress_sent_bytes = int(progress["forwarded_bytes"])
-            session.llc_forward_progress_total_bytes = int(progress["total_bytes"])
-            session.llc_forward_progress_permille = int(progress["progress_permille"])
-
-            source_module = module_name(int(progress["source_module_id"]))
-            target_module = module_name(int(progress["target_module_id"]))
-            detail = (
-                f"stage={progress['stage_name']} result={progress['result_name']} "
-                f"offset={progress['packet_offset']} len={progress['packet_length']} "
-                f"error={progress['error_name']}"
-            )
-            self.upgrade_tab.append_log(
-                f"RX 0x0D <- {source_module} -> {target_module} "
-                f"stage={progress['stage_name']} result={progress['result_name']} "
-                f"forwarded={progress['forwarded_bytes']}/{progress['total_bytes']} "
-                f"offset={progress['packet_offset']} len={progress['packet_length']} "
-                f"error={progress['error_name']}"
-            )
-            self.upgrade_tab.set_forward_progress(
-                status=f"LLC -> PFC: {progress['stage_name']}",
-                detail=detail,
-                forwarded_bytes=int(progress["forwarded_bytes"]),
-                total_bytes=int(progress["total_bytes"]),
-                progress_permille=int(progress["progress_permille"]),
-            )
-            result_name = str(progress["result_name"])
-            stage_name = str(progress["stage_name"])
-            error_name = describe_llc_pfc_upgrade_error(int(progress["error_code"]))
-            if result_name == "success" or stage_name == "done":
-                self._complete_upgrade("Upgrade completed. LLC finished forwarding the PFC firmware.")
-            elif result_name == "failed" or stage_name == "failed":
-                self._fail_upgrade(
-                    "Upgrade failed",
-                    f"LLC reported PFC forwarding failure: {error_name}",
-                    f"0x0D:{int(progress['error_code']):04X}",
-                )
-            else:
-                session.stage = "poll_forward_progress"
-                session.last_tx_at = time.monotonic()
-                self.upgrade_tab.set_status(
-                    "Upgrade in progress",
-                    "Waiting for the next LLC -> PFC forward-progress poll.",
-                    error_code="-",
-                )
-                self._schedule_update_tick()
-            return True
 
         return False
 

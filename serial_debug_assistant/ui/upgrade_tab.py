@@ -37,10 +37,6 @@ class UpgradeTab(ttk.Frame):
         self.progress_text_var = tk.StringVar(value="0 / 0 bytes")
         self.progress_percent_var = tk.StringVar(value="0%")
         self.connection_var = tk.StringVar(value=self.i18n.translate_text("Serial port disconnected"))
-        self.forward_status_var = tk.StringVar(value=self.i18n.translate_text("LLC -> PFC forward progress is idle"))
-        self.forward_detail_var = tk.StringVar(value=self.i18n.translate_text("Waiting for the main upgrade flow to start"))
-        self.forward_text_var = tk.StringVar(value="0 / 0 bytes")
-        self.forward_percent_var = tk.StringVar(value="0%")
 
         self._build()
 
@@ -133,22 +129,6 @@ class UpgradeTab(ttk.Frame):
         ttk.Label(progress_meta, textvariable=self.progress_text_var).grid(row=0, column=0, sticky="w")
         ttk.Label(progress_meta, textvariable=self.progress_percent_var).grid(row=0, column=1, sticky="e")
 
-        forward_frame = ttk.LabelFrame(left, text=self.i18n.translate_text("LLC -> PFC Forward Progress"), style="Section.TLabelframe", padding=12)
-        self._remember_text(forward_frame, "LLC -> PFC Forward Progress")
-        forward_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        forward_frame.columnconfigure(0, weight=1)
-        forward_frame.grid_propagate(False)
-        forward_frame.configure(height=150)
-        ttk.Label(forward_frame, textvariable=self.forward_status_var, style="Header.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(forward_frame, textvariable=self.forward_detail_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.forward_progress = ttk.Progressbar(forward_frame, mode="determinate", maximum=100)
-        self.forward_progress.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        forward_meta = ttk.Frame(forward_frame, style="Panel.TFrame")
-        forward_meta.grid(row=3, column=0, sticky="ew", pady=(6, 0))
-        forward_meta.columnconfigure(0, weight=1)
-        ttk.Label(forward_meta, textvariable=self.forward_text_var).grid(row=0, column=0, sticky="w")
-        ttk.Label(forward_meta, textvariable=self.forward_percent_var).grid(row=0, column=1, sticky="e")
-
         log_frame = ttk.LabelFrame(right, text=self.i18n.translate_text("Upgrade Log"), style="Section.TLabelframe", padding=12)
         self._remember_text(log_frame, "Upgrade Log")
         log_frame.grid(row=0, column=0, sticky="nsew")
@@ -225,26 +205,6 @@ class UpgradeTab(ttk.Frame):
         self.progress_text_var.set(f"{sent} / {total} bytes")
         self.progress_percent_var.set(f"{percent:.1f}%")
 
-    def reset_forward_progress(self, detail: str = "Waiting for the main upgrade flow to start") -> None:
-        self.forward_status_var.set(self.i18n.translate_text("LLC -> PFC forward progress is idle"))
-        self.forward_detail_var.set(self.i18n.translate_text(detail))
-        self.forward_progress["value"] = 0
-        self.forward_text_var.set("0 / 0 bytes")
-        self.forward_percent_var.set("0%")
-
-    def set_forward_progress(self, *, status: str, detail: str, forwarded_bytes: int, total_bytes: int, progress_permille: int = 0) -> None:
-        total = max(total_bytes, 0)
-        forwarded = min(max(forwarded_bytes, 0), total) if total else max(forwarded_bytes, 0)
-        if total > 0:
-            percent = forwarded / total * 100.0
-        else:
-            percent = max(min(progress_permille, 1000), 0) / 10.0
-        self.forward_status_var.set(self.i18n.translate_text(status))
-        self.forward_detail_var.set(self.i18n.translate_text(detail))
-        self.forward_progress["value"] = percent
-        self.forward_text_var.set(f"{forwarded} / {total} bytes")
-        self.forward_percent_var.set(f"{percent:.1f}%")
-
     def refresh_texts(self) -> None:
         for widget, source_text, option in self._translatable_widgets:
             widget.configure(**{option: self.i18n.translate_text(source_text)})
@@ -252,8 +212,6 @@ class UpgradeTab(ttk.Frame):
         self.status_var.set(self.i18n.translate_text(self.status_var.get()))
         self.detail_var.set(self.i18n.translate_text(self.detail_var.get()))
         self.connection_var.set(self.i18n.translate_text(self.connection_var.get()))
-        self.forward_status_var.set(self.i18n.translate_text(self.forward_status_var.get()))
-        self.forward_detail_var.set(self.i18n.translate_text(self.forward_detail_var.get()))
         self.error_var.set(self.i18n.translate_text(self.error_var.get()))
         self.set_running(self._running)
 

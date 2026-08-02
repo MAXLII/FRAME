@@ -13,7 +13,6 @@ CMD_WORD_UPDATE_INFO = 0x08
 CMD_WORD_UPDATE_READY = 0x09
 CMD_WORD_UPDATE_FW = 0x0A
 CMD_WORD_UPDATE_END = 0x0B
-CMD_WORD_LLC_PFC_UPGRADE_PROGRESS_QUERY = 0x0D
 CMD_WORD_FIRMWARE_VERSION_QUERY = 0x17
 
 UPDATE_TYPE_NORMAL = 1
@@ -21,35 +20,6 @@ UPDATE_TYPE_FORCE = 2
 UPDATE_PACKET_SIZE = 1024
 FOOTER_SIZE = 34
 FW_TYPE_IAP = 1
-
-LLC_PFC_UPGRADE_STAGE_NAMES = {
-    0: "idle",
-    1: "queued",
-    2: "enter_boot",
-    3: "erasing",
-    4: "forwarding",
-    5: "verifying",
-    6: "switching_app",
-    7: "done",
-    8: "failed",
-}
-
-LLC_PFC_UPGRADE_RESULT_NAMES = {
-    0: "in_progress",
-    1: "success",
-    2: "failed",
-}
-
-LLC_PFC_UPGRADE_ERROR_NAMES = {
-    0x0000: "none",
-    0x0001: "busy",
-    0x0002: "invalid_state",
-    0x0004: "offset_mismatch",
-    0x0008: "write_fail",
-    0x0010: "crc_fail",
-    0x0020: "timeout",
-    0x0040: "jump_fail",
-}
 
 MODULE_NAMES = {
     0x01: "HOST",
@@ -86,6 +56,11 @@ def format_unix_time(unix_time: int) -> str:
 
 def module_name(module_id: int) -> str:
     return f"{MODULE_NAMES.get(module_id, 'Unknown')} (0x{module_id:02X})"
+
+
+def default_upgrade_target(image: FirmwareImage) -> int:
+    """Return the address of the module that owns the firmware image."""
+    return image.footer.module_id
 
 
 def describe_reject_reason(raw: int) -> str:
@@ -168,10 +143,6 @@ def build_update_end_payload(image: FirmwareImage) -> bytes:
     return struct.pack("<H", image.payload_crc16)
 
 
-def build_llc_pfc_upgrade_progress_query_payload() -> bytes:
-    return b""
-
-
 def build_firmware_version_query_payload() -> bytes:
     return b""
 
@@ -184,59 +155,4 @@ def parse_firmware_version_ack(payload: bytes) -> dict[str, int | str]:
     return {
         "version": version,
         "version_text": format_version(version),
-    }
-
-
-def llc_pfc_upgrade_stage_name(stage: int) -> str:
-    return LLC_PFC_UPGRADE_STAGE_NAMES.get(stage, f"unknown_stage_{stage}")
-
-
-def llc_pfc_upgrade_result_name(result: int) -> str:
-    return LLC_PFC_UPGRADE_RESULT_NAMES.get(result, f"unknown_result_{result}")
-
-
-def describe_llc_pfc_upgrade_error(error_code: int) -> str:
-    if error_code == 0:
-        return "none"
-    errors = [
-        name
-        for bit, name in LLC_PFC_UPGRADE_ERROR_NAMES.items()
-        if bit != 0 and (error_code & bit)
-    ]
-    if errors:
-        return "|".join(errors)
-    return f"0x{error_code:04X}"
-
-
-def parse_llc_pfc_upgrade_progress_ack(payload: bytes) -> dict[str, int | str]:
-    if len(payload) < struct.calcsize("<BBBBIIIHHH"):
-        raise ValueError(f"Invalid LLC->PFC progress ACK length: {len(payload)}")
-
-    (
-        source_module_id,
-        target_module_id,
-        stage,
-        result,
-        forwarded_bytes,
-        total_bytes,
-        packet_offset,
-        packet_length,
-        progress_permille,
-        error_code,
-    ) = struct.unpack("<BBBBIIIHHH", payload[: struct.calcsize("<BBBBIIIHHH")])
-
-    return {
-        "source_module_id": source_module_id,
-        "target_module_id": target_module_id,
-        "stage": stage,
-        "result": result,
-        "forwarded_bytes": forwarded_bytes,
-        "total_bytes": total_bytes,
-        "packet_offset": packet_offset,
-        "packet_length": packet_length,
-        "progress_permille": progress_permille,
-        "error_code": error_code,
-        "stage_name": llc_pfc_upgrade_stage_name(stage),
-        "result_name": llc_pfc_upgrade_result_name(result),
-        "error_name": describe_llc_pfc_upgrade_error(error_code),
     }
