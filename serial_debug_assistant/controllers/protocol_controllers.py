@@ -37,6 +37,7 @@ class ProtocolControllerHub:
             FeatureProtocolController("sfra", app._handle_sfra_protocol_frame),
             FeatureProtocolController("perf", app._handle_perf_protocol_frame),
             FeatureProtocolController("trace", app._handle_trace_protocol_frame),
+            FeatureProtocolController("section_list", app._handle_section_list_protocol_frame),
             FeatureProtocolController("parameter_wave", app._handle_parameter_wave_protocol_frame),
         ]
 

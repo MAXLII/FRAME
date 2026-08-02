@@ -66,6 +66,10 @@ class FakeApp:
         self.calls.append("trace")
         return False
 
+    def _handle_section_list_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        self.calls.append("section_list")
+        return False
+
     def _handle_parameter_wave_protocol_frame(self, frame: ProtocolFrame) -> bool:
         self.calls.append("parameter_wave")
         return True
@@ -93,7 +97,7 @@ class ProtocolControllerHubTest(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(
             app.calls,
-            ["home", "upgrade", "factory", "black_box", "scope", "sfra", "perf", "trace", "parameter_wave"],
+            ["home", "upgrade", "factory", "black_box", "scope", "sfra", "perf", "trace", "section_list", "parameter_wave"],
         )
 
 

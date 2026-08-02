@@ -45,6 +45,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "Black Box": {"zh": "Black Box", "en": "Black Box"},
     "Factory Mode": {"zh": "工厂模式", "en": "Factory Mode"},
     "Scope": {"zh": "软件录波", "en": "Scope"},
+    "链表顺序": {"zh": "链表顺序", "en": "List Order"},
     "Yes": {"zh": "是", "en": "Yes"},
     "No": {"zh": "否", "en": "No"},
     "Scope Objects": {"zh": "录波对象", "en": "Scope Objects"},

@@ -168,6 +168,7 @@ from serial_debug_assistant.scope_protocol import (
     parse_scope_sample_ack_payload,
     parse_scope_var_ack_payload,
 )
+from serial_debug_assistant.section_list_controller import SectionListController
 from serial_debug_assistant.sfra_protocol import (
     CMD_SET_SFRA,
     CMD_WORD_SFRA_CFG_SET,
@@ -214,6 +215,7 @@ from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
 from serial_debug_assistant.ui.parameter_tab import ParameterReadWriteTab
 from serial_debug_assistant.ui.perf_tab import PerfTab
 from serial_debug_assistant.ui.scope_tab import ScopeTab
+from serial_debug_assistant.ui.section_list_tab import SectionListTab
 from serial_debug_assistant.ui.sfra_tab import SfraTab
 from serial_debug_assistant.ui.settings_persistence import load_ui_settings, save_ui_settings
 from serial_debug_assistant.ui.theme import APP_BG, configure_app_styles
@@ -410,6 +412,13 @@ class SerialDebugAssistant(tk.Tk):
 
         self._configure_styles()
         self._build_ui()
+        self.section_list_controller = SectionListController(
+            send=self.send_protocol_frame,
+            schedule=self.after,
+            on_directory=self.section_list_tab.set_directory,
+            on_nodes=self.section_list_tab.set_nodes,
+            on_status=self.section_list_tab.set_status,
+        )
         self._register_persistent_settings()
         self._load_persistent_settings()
         self._bind_persistent_settings()
@@ -552,6 +561,14 @@ class SerialDebugAssistant(tk.Tk):
             {
                 "target_addr": self.trace_tab.target_addr_var,
                 "dynamic_addr": self.trace_tab.dynamic_addr_var,
+            },
+        )
+        self._register_settings(
+            "section_list",
+            {
+                "target_addr": self.section_list_tab.target_addr_var,
+                "dynamic_addr": self.section_list_tab.dynamic_addr_var,
+                "map_path": self.section_list_tab.map_path_var,
             },
         )
         self._register_settings(
@@ -758,6 +775,11 @@ class SerialDebugAssistant(tk.Tk):
             on_status=lambda message, is_error=False: self.set_status(message, error=is_error),
             i18n=self.i18n,
         )
+        self.section_list_tab = SectionListTab(
+            self.notebook,
+            on_refresh_directory=self.request_section_lists,
+            on_fetch_list=self.request_selected_section_list,
+        )
         self.jlink_tab = JLinkDebugTab(
             self.notebook,
             on_load_symbols=self.load_jlink_variables,
@@ -784,6 +806,7 @@ class SerialDebugAssistant(tk.Tk):
         self._add_notebook_tab("sfra", self.sfra_tab, "SFRA")
         self._add_notebook_tab("perf", self.perf_tab, "Perf")
         self._add_notebook_tab("trace", self.trace_tab, "Trace")
+        self._add_notebook_tab("section_list", self.section_list_tab, "链表顺序")
         self._add_notebook_tab("jlink", self.jlink_tab, "J-Link")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
         if "parameter" not in self.hidden_tab_ids:
@@ -2406,6 +2429,9 @@ class SerialDebugAssistant(tk.Tk):
     def handle_protocol_frame(self, frame: ProtocolFrame) -> None:
         self.protocol_controllers.handle_frame(frame)
 
+    def _handle_section_list_protocol_frame(self, frame: ProtocolFrame) -> bool:
+        return self.section_list_controller.handle(frame)
+
     def _handle_home_protocol_frame(self, frame: ProtocolFrame) -> bool:
         if frame.cmd_set != 0x02:
             return False
@@ -3747,6 +3773,46 @@ class SerialDebugAssistant(tk.Tk):
         name = payload[14 : 14 + name_len].decode("utf-8", errors="replace")
         previous = self.parameters.get(name)
         return ParameterEntry(name=name, type_id=type_id, data_raw=data, min_raw=data_min, max_raw=data_max, status=previous.status if previous else 0, auto_report=previous.auto_report if previous else False, important=previous.important if previous else False, dirty=False)
+
+    def request_section_lists(self) -> None:
+        if self.demo_mode:
+            self.section_list_tab.set_status("演示模式不提供下位机链表", True)
+            return
+        if not self._protocol_transport_available():
+            self.section_list_tab.set_status("请先连接设备", True)
+            return
+        try:
+            target, dynamic_target = self.section_list_tab.get_target()
+        except ValueError as exc:
+            self.section_list_tab.set_status(str(exc), True)
+            return
+        self.logger.log(
+            "SECTION_LIST",
+            f"refresh dst=0x{target:02X} d_dst=0x{dynamic_target:02X}",
+        )
+        self.section_list_controller.refresh_directory(target, dynamic_target)
+
+    def request_selected_section_list(self) -> None:
+        if self.demo_mode:
+            self.section_list_tab.set_status("演示模式不提供下位机链表", True)
+            return
+        if not self._protocol_transport_available():
+            self.section_list_tab.set_status("请先连接设备", True)
+            return
+        try:
+            target, dynamic_target = self.section_list_tab.get_target()
+            list_id = self.section_list_tab.get_selected_list_id()
+        except ValueError as exc:
+            self.section_list_tab.set_status(str(exc), True)
+            return
+        if self.section_list_tab.map_path_var.get().strip():
+            if not self.section_list_tab.load_map():
+                return
+        self.logger.log(
+            "SECTION_LIST",
+            f"fetch list_id={list_id} dst=0x{target:02X} d_dst=0x{dynamic_target:02X}",
+        )
+        self.section_list_controller.fetch_list(list_id, target, dynamic_target)
 
     def request_parameter_list(self) -> None:
         if self.demo_mode and self.demo_runtime is not None:
