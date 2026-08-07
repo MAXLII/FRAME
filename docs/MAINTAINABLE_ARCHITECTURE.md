@@ -9,7 +9,7 @@ main.py
   -> SerialDebugAssistant
       -> 页面装配、全局状态、定时任务
       -> CommunicationManager
-          -> SerialService / CANService / Demo
+          -> SerialService / CANService / EthernetService / Demo
           -> ProtocolParser
           -> ProtocolSender
           -> ProtocolRouter
@@ -27,7 +27,7 @@ main.py
 
 `SerialDebugAssistant` 是应用装配根，负责创建窗口、页面、通信服务和控制器。
 
-`CommunicationManager` 负责把串口、CAN 和 Demo 统一成字节流通信入口，并负责协议发送、协议解析和帧分发。
+`CommunicationManager` 负责把串口、CAN、Ethernet TCP 和 Demo 统一成字节流通信入口，并负责协议发送、协议解析和帧分发。
 
 `ProtocolControllerHub` 负责应用级协议分发顺序。新协议功能应优先接入 controller，而不是继续扩展 `app.py` 中的总处理链。
 
@@ -35,7 +35,7 @@ main.py
 
 ```text
 设备
-  -> SerialService / CANService
+  -> SerialService / CANService / EthernetService
   -> rx_queue
   -> CommunicationManager.process_rx()
   -> ProtocolParser.feed()
@@ -58,7 +58,7 @@ main.py
   -> send_protocol_frame()
   -> CommunicationManager.send_protocol()
   -> ProtocolSender
-  -> SerialService / CANService
+  -> SerialService / CANService / EthernetService
   -> 设备
 ```
 
