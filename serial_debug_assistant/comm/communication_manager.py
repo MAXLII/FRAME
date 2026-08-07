@@ -11,6 +11,7 @@ from serial_debug_assistant.comm.protocol_router import ProtocolRouter
 from serial_debug_assistant.comm.protocol_sender import ProtocolSender
 from serial_debug_assistant.models import ProtocolFrame, SerialChunk
 from serial_debug_assistant.services.can_service import CANService
+from serial_debug_assistant.services.ethernet_service import EthernetService
 from serial_debug_assistant.services.serial_service import SerialService
 
 
@@ -30,9 +31,17 @@ class RxProcessResult:
 class CommunicationManager:
     """Owns the hardware -> parser -> router communication chain."""
 
-    def __init__(self, *, serial_service: SerialService, can_service: CANService, logger=None) -> None:
+    def __init__(
+        self,
+        *,
+        serial_service: SerialService,
+        can_service: CANService,
+        ethernet_service: EthernetService,
+        logger=None,
+    ) -> None:
         self.serial_service = serial_service
         self.can_service = can_service
+        self.ethernet_service = ethernet_service
         self.logger = logger
         self.parser = ProtocolParser()
         self.router = ProtocolRouter(logger=logger)
@@ -115,6 +124,15 @@ class CommunicationManager:
         self.parser.reset()
         self._log("COMM", f"open can interface={interface} channel={channel} bitrate={bitrate} tx=0x100 rx=0x101")
 
+    def open_ethernet(self, *, host: str, port: int, error_callback) -> None:
+        self.close()
+        self.ethernet_service.open(host=host, port=port)
+        self.ethernet_service.start_reader(error_callback=error_callback)
+        self.connected_transport = "ethernet"
+        self.endpoint = f"{host}:{port}"
+        self.parser.reset()
+        self._log("COMM", f"open ethernet endpoint={self.endpoint} protocol=tcp")
+
     def enable_demo(self) -> None:
         self.close()
         self.serial_service.enable_demo_connection()
@@ -134,6 +152,7 @@ class CommunicationManager:
     def close(self) -> None:
         transport = self.connected_transport
         self.can_service.close()
+        self.ethernet_service.close()
         self.serial_service.close()
         self.connected_transport = None
         self.endpoint = None
@@ -146,18 +165,22 @@ class CommunicationManager:
         return bool(service and service.is_open())
 
     def protocol_available(self) -> bool:
-        return self.connected_transport in {"serial", "can", "demo"}
+        return self.connected_transport in {"serial", "can", "ethernet", "demo"}
 
     def active_service(self):
         if self.connected_transport in {"serial", "demo"}:
             return self.serial_service
         if self.connected_transport == "can":
             return self.can_service
+        if self.connected_transport == "ethernet":
+            return self.ethernet_service
         return None
 
     def write_bytes(self, payload: bytes) -> int:
         if self.connected_transport == "can":
             return self.can_service.send_bytes(payload)
+        if self.connected_transport == "ethernet":
+            return self.ethernet_service.write(payload)
         if self.connected_transport in {"serial", "demo"}:
             return self.serial_service.write(payload)
         raise RuntimeError("No hardware transport is open.")
