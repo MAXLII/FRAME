@@ -17,3 +17,4 @@ Thumbs.db
 code
 .claude/
 config/frame_config.json
+publish_github_release.ps1
