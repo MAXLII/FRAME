@@ -204,6 +204,7 @@ from serial_debug_assistant.trace_protocol import (
     parse_trace_record_report_payload,
 )
 from serial_debug_assistant.services.can_service import CANService
+from serial_debug_assistant.services.ethernet_service import EthernetService
 from serial_debug_assistant.services.serial_service import SerialService
 from serial_debug_assistant.services.transport_helpers import CAN_BITRATES, CAN_INTERFACES
 from serial_debug_assistant.ui.black_box_tab import BlackBoxTab
@@ -299,9 +300,11 @@ class SerialDebugAssistant(tk.Tk):
         self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
         self.can_service = CANService()
+        self.ethernet_service = EthernetService()
         self.comm = CommunicationManager(
             serial_service=self.serial_service,
             can_service=self.can_service,
+            ethernet_service=self.ethernet_service,
             logger=self.logger,
         )
         self.jlink_service = JLinkVariableService()
@@ -312,6 +315,7 @@ class SerialDebugAssistant(tk.Tk):
         self._applying_transport_settings = False
         self._current_serial_settings: dict[str, object] = {}
         self._current_can_settings: dict[str, object] = {}
+        self._current_ethernet_settings: dict[str, object] = {}
         self.port_display_map: dict[str, str] = {}
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
@@ -394,6 +398,8 @@ class SerialDebugAssistant(tk.Tk):
         self.stop_bits_var = tk.StringVar(value=DEFAULT_STOP_BITS)
         self.can_interface_var = tk.StringVar(value=CAN_INTERFACES[0])
         self.can_bitrate_var = tk.StringVar(value="1000000")
+        self.ethernet_host_var = tk.StringVar(value="192.168.1.10")
+        self.ethernet_port_var = tk.StringVar(value="9000")
         self.status_var = tk.StringVar(value=self.i18n.translate_text("Ready"))
         self.rx_count_var = tk.StringVar(value=self.i18n.format_text("Receive: {count} bytes", count=0))
         self.tx_count_var = tk.StringVar(value=self.i18n.format_text("Send: {count} bytes", count=0))
@@ -484,6 +490,8 @@ class SerialDebugAssistant(tk.Tk):
                 "stop_bits": self.stop_bits_var,
                 "can_interface": self.can_interface_var,
                 "can_bitrate": self.can_bitrate_var,
+                "ethernet_host": self.ethernet_host_var,
+                "ethernet_port": self.ethernet_port_var,
                 "language": self.language_var,
             },
         )
@@ -859,7 +867,7 @@ class SerialDebugAssistant(tk.Tk):
         self.transport_combo = ttk.Combobox(
             parent,
             textvariable=self.transport_var,
-            values=("Serial", "CAN"),
+            values=("Serial", "CAN", "Ethernet"),
             state="readonly",
             width=10,
         )
@@ -900,6 +908,23 @@ class SerialDebugAssistant(tk.Tk):
             label_widget = ttk.Label(self.can_settings_frame, text=f"{label} :", style="Sidebar.TLabel")
             label_widget.grid(row=0, column=col, sticky="w", padx=(0, 6))
             builder(self.can_settings_frame, 0, col + 1)
+            col += 2
+
+        self.ethernet_settings_frame = ttk.Frame(settings_host, style="Sidebar.TFrame")
+        self.ethernet_settings_frame.grid(row=0, column=0, sticky="ew")
+        ethernet_controls = [
+            ("Host", self._build_ethernet_host_selector),
+            ("TCP Port", self._build_ethernet_port_selector),
+        ]
+        col = 0
+        for label, builder in ethernet_controls:
+            label_widget = ttk.Label(
+                self.ethernet_settings_frame,
+                text=f"{label} :",
+                style="Sidebar.TLabel",
+            )
+            label_widget.grid(row=0, column=col, sticky="w", padx=(0, 6))
+            builder(self.ethernet_settings_frame, 0, col + 1)
             col += 2
 
         self.open_button = ttk.Button(parent, text=self.i18n.translate_text("Open"), command=self.toggle_connection, style="Accent.TButton")
@@ -1050,6 +1075,18 @@ class SerialDebugAssistant(tk.Tk):
         self.can_bitrate_combo.bind("<<ComboboxSelected>>", self._on_can_setting_changed)
         self.can_bitrate_combo.bind("<Return>", self._on_can_setting_changed)
         self.can_bitrate_combo.bind("<FocusOut>", self._on_can_setting_changed)
+
+    def _build_ethernet_host_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        self.ethernet_host_entry = ttk.Entry(parent, textvariable=self.ethernet_host_var, width=20)
+        self.ethernet_host_entry.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.ethernet_host_entry.bind("<Return>", self._on_ethernet_setting_changed)
+        self.ethernet_host_entry.bind("<FocusOut>", self._on_ethernet_setting_changed)
+
+    def _build_ethernet_port_selector(self, parent: ttk.Frame, row: int, column: int) -> None:
+        self.ethernet_port_entry = ttk.Entry(parent, textvariable=self.ethernet_port_var, width=8)
+        self.ethernet_port_entry.grid(row=row, column=column, sticky="w", padx=(0, 12))
+        self.ethernet_port_entry.bind("<Return>", self._on_ethernet_setting_changed)
+        self.ethernet_port_entry.bind("<FocusOut>", self._on_ethernet_setting_changed)
 
     def _add_notebook_tab(self, tab_id: str, widget: object, title: str) -> None:
         if tab_id in self.hidden_tab_ids:
@@ -1420,6 +1457,9 @@ class SerialDebugAssistant(tk.Tk):
     def _on_can_setting_changed(self, _event=None) -> None:
         self._apply_connected_can_settings()
 
+    def _on_ethernet_setting_changed(self, _event=None) -> None:
+        self._apply_connected_ethernet_settings()
+
     def _serial_settings_snapshot(self) -> dict[str, object]:
         selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
         return {
@@ -1437,6 +1477,15 @@ class SerialDebugAssistant(tk.Tk):
             "channel": selected_port.strip(),
             "bitrate": int(self.can_bitrate_var.get()),
         }
+
+    def _ethernet_settings_snapshot(self) -> dict[str, object]:
+        host = self.ethernet_host_var.get().strip()
+        port = int(self.ethernet_port_var.get())
+        if not host:
+            raise ValueError("Ethernet host is required.")
+        if not 1 <= port <= 65535:
+            raise ValueError("Ethernet port must be between 1 and 65535.")
+        return {"host": host, "port": port}
 
     def _apply_connected_transport_change(self) -> None:
         if self._applying_transport_settings or self.demo_mode or not self._is_connected():
@@ -1459,6 +1508,8 @@ class SerialDebugAssistant(tk.Tk):
                 self._reopen_connection_for_settings("serial port changed")
         elif self.connected_transport == "can":
             self._apply_connected_can_settings()
+        elif self.connected_transport == "ethernet":
+            self._apply_connected_ethernet_settings()
 
     def _apply_connected_serial_settings(self, _event=None) -> None:
         if self._applying_transport_settings or self.demo_mode or not self._is_connected() or self.connected_transport != "serial":
@@ -1510,6 +1561,23 @@ class SerialDebugAssistant(tk.Tk):
             return
         self._reopen_connection_for_settings("CAN settings changed")
 
+    def _apply_connected_ethernet_settings(self, _event=None) -> None:
+        if (
+            self._applying_transport_settings
+            or self.demo_mode
+            or not self._is_connected()
+            or self.connected_transport != "ethernet"
+        ):
+            return
+        try:
+            settings = self._ethernet_settings_snapshot()
+        except ValueError as exc:
+            self.set_status(f"Ethernet settings invalid: {exc}", error=True)
+            return
+        if settings == self._current_ethernet_settings:
+            return
+        self._reopen_connection_for_settings("Ethernet settings changed")
+
     def _reopen_connection_for_settings(self, reason: str) -> None:
         if self._applying_transport_settings:
             return
@@ -1523,13 +1591,22 @@ class SerialDebugAssistant(tk.Tk):
 
     def _update_transport_ui(self) -> None:
         is_can = self.transport_var.get() == "CAN"
+        is_ethernet = self.transport_var.get() == "Ethernet"
         if is_can:
             self.serial_settings_frame.grid_remove()
+            self.ethernet_settings_frame.grid_remove()
             self.can_settings_frame.grid()
+            if hasattr(self, "auto_break_check"):
+                self.auto_break_check.state(["disabled"])
+        elif is_ethernet:
+            self.serial_settings_frame.grid_remove()
+            self.can_settings_frame.grid_remove()
+            self.ethernet_settings_frame.grid()
             if hasattr(self, "auto_break_check"):
                 self.auto_break_check.state(["disabled"])
         else:
             self.can_settings_frame.grid_remove()
+            self.ethernet_settings_frame.grid_remove()
             self.serial_settings_frame.grid()
             if hasattr(self, "auto_break_check"):
                 self.auto_break_check.state(["!disabled"])
@@ -1594,7 +1671,11 @@ class SerialDebugAssistant(tk.Tk):
     def _selected_transport(self) -> str:
         if self.demo_mode:
             return "demo"
-        return "can" if self.transport_var.get() == "CAN" else "serial"
+        if self.transport_var.get() == "CAN":
+            return "can"
+        if self.transport_var.get() == "Ethernet":
+            return "ethernet"
+        return "serial"
 
     def _active_transport(self) -> str | None:
         return self.comm.connected_transport
@@ -1641,6 +1722,11 @@ class SerialDebugAssistant(tk.Tk):
             self.set_status("演示模式已就绪，无需连接下位机")
             self.logger.log("PORTS", "demo mode -> ['DEMO - 演示模式']")
             return
+        if self.transport_var.get() == "Ethernet":
+            endpoint = f"{self.ethernet_host_var.get().strip()}:{self.ethernet_port_var.get().strip()}"
+            self.set_status(f"Ethernet endpoint ready: {endpoint}")
+            self.logger.log("ETHERNET", f"endpoint={endpoint}")
+            return
         if self.transport_var.get() == "CAN":
             channels = self.can_service.list_common_channels(self.can_interface_var.get())
             self.port_display_map = {channel: channel for channel in channels}
@@ -1676,11 +1762,11 @@ class SerialDebugAssistant(tk.Tk):
         if self.demo_mode:
             self._connect_demo_mode(initial=False)
             return
-        if not self.port_var.get():
+        selected_transport = self._selected_transport()
+        if selected_transport in {"serial", "can"} and not self.port_var.get():
             self.set_status(self.i18n.translate_text("Please select a serial port."), error=True)
             return
         selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
-        selected_transport = self._selected_transport()
         try:
             if selected_transport == "can":
                 self.comm.open_can(
@@ -1688,6 +1774,16 @@ class SerialDebugAssistant(tk.Tk):
                     channel=selected_port.strip(),
                     bitrate=int(self.can_bitrate_var.get()),
                     error_callback=lambda error: self.after(0, lambda error_message=error: self._handle_transport_error("CAN", error_message)),
+                )
+            elif selected_transport == "ethernet":
+                ethernet_settings = self._ethernet_settings_snapshot()
+                self.comm.open_ethernet(
+                    host=str(ethernet_settings["host"]),
+                    port=int(ethernet_settings["port"]),
+                    error_callback=lambda error: self.after(
+                        0,
+                        lambda error_message=error: self._handle_transport_error("Ethernet", error_message),
+                    ),
                 )
             else:
                 self.comm.open_serial(
@@ -1715,9 +1811,15 @@ class SerialDebugAssistant(tk.Tk):
         if selected_transport == "can":
             self._current_can_settings = self._can_settings_snapshot()
             self._current_serial_settings = {}
+            self._current_ethernet_settings = {}
+        elif selected_transport == "ethernet":
+            self._current_ethernet_settings = self._ethernet_settings_snapshot()
+            self._current_serial_settings = {}
+            self._current_can_settings = {}
         else:
             self._current_serial_settings = self._serial_settings_snapshot()
             self._current_can_settings = {}
+            self._current_ethernet_settings = {}
         self.wave_running = False
         self.wave_tab.set_running(False)
         self._reset_perf_protocol_state()
@@ -1725,11 +1827,14 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
         self.wave_batch_start_marker = None
-        self.set_status(self.i18n.format_text("Connected to {port}", port=selected_port))
-        self._set_protocol_features_available(True, selected_port)
+        endpoint = self.comm.endpoint or selected_port
+        self.set_status(self.i18n.format_text("Connected to {port}", port=endpoint))
+        self._set_protocol_features_available(True, endpoint)
         self.parameter_tab.set_message("串口已连接，已向广播地址发送停止波形上传命令")
         if selected_transport == "can":
             self.parameter_tab.set_message("CAN connected. Data is handled like serial bytes and TX frames are padded to 8 bytes with 0xFF.")
+        elif selected_transport == "ethernet":
+            self.parameter_tab.set_message("Ethernet TCP connected; protocol features are available.")
         else:
             self.parameter_tab.set_message("Serial connected, protocol features are available.")
         self._set_open_button_text("Close")
@@ -1738,6 +1843,8 @@ class SerialDebugAssistant(tk.Tk):
                 "CAN",
                 f"open interface={self.can_interface_var.get()} channel={selected_port} bitrate={self.can_bitrate_var.get()} tx_id=0x100 standard",
             )
+        elif selected_transport == "ethernet":
+            self.logger.log("ETHERNET", f"open endpoint={endpoint} protocol=tcp")
         else:
             self.logger.log("SERIAL", f"open port={selected_port} baud={self.baud_var.get()} data_bits={self.data_bits_var.get()} parity={self.parity_var.get()} stop_bits={self.stop_bits_var.get()}")
         self._send_perf_trace_stop_on_transport_event("connect")
@@ -1758,6 +1865,7 @@ class SerialDebugAssistant(tk.Tk):
         self.connected_transport = None
         self._current_serial_settings = {}
         self._current_can_settings = {}
+        self._current_ethernet_settings = {}
         self._reset_perf_protocol_state()
         self.trace_running = False
         self.trace_tab.set_running(False)
@@ -1767,8 +1875,11 @@ class SerialDebugAssistant(tk.Tk):
         self.parameter_tab.set_message("串口已断开")
         if transport == "can":
             self.parameter_tab.set_message("CAN disconnected.")
+        elif transport == "ethernet":
+            self.parameter_tab.set_message("Ethernet disconnected.")
         self._set_open_button_text("Open")
-        self.logger.log("CAN" if transport == "can" else "SERIAL", "close")
+        category = "CAN" if transport == "can" else "ETHERNET" if transport == "ethernet" else "SERIAL"
+        self.logger.log(category, "close")
 
     def _set_open_button_text(self, text: str) -> None:
         self.open_button.configure(text=self.i18n.translate_text(text))
