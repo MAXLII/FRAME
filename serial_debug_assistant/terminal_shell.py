@@ -137,6 +137,10 @@ from serial_debug_assistant.serial_cli import (
     parse_write_response,
     resolve_serial_port,
 )
+from serial_debug_assistant.parameter_protocol import (
+    CMD_WORD_PARAMETER_LIST_BATCH,
+    parse_parameter_list_batch_payload,
+)
 from serial_debug_assistant.sfra_protocol import (
     CMD_WORD_SFRA_CFG_SET,
     CMD_WORD_SFRA_INFO_QUERY,
@@ -391,6 +395,12 @@ class FrameTerminalShell:
                     entry = parse_parameter_list_item(frame.payload)
                     if entry is not None:
                         rows.append(parameter_to_dict(entry))
+                elif frame.cmd_word == CMD_WORD_PARAMETER_LIST_BATCH:
+                    try:
+                        batch = parse_parameter_list_batch_payload(frame.payload)
+                    except ValueError:
+                        continue
+                    rows.extend(parameter_to_dict(entry) for entry in batch.entries)
             print(format_output(rows, output_format="table"))
         elif action == "read" and len(args) >= 2:
             name = args[1]

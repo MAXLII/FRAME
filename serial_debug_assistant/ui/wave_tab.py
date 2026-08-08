@@ -125,6 +125,7 @@ class WaveformTab(ttk.Frame):
         self._live_save_started_at: str | None = None
         self._live_save_last_flush_at = 0.0
         self._live_save_batch_count = 0
+        self._time_axis_mode = "system"
 
         self._build()
         self._install_alt_guard_bindtags(self)
@@ -510,6 +511,24 @@ class WaveformTab(ttk.Frame):
         self.latest_values[name] = value_text
         self._queue_list_refresh()
         self._queue_latest_refresh()
+
+    def set_time_axis_mode(self, mode: str) -> None:
+        if mode not in {"system", "simulation"}:
+            raise ValueError(f"unsupported time axis mode: {mode}")
+        if self._time_axis_mode != mode:
+            self._time_axis_mode = mode
+            self._queue_redraw()
+
+    def _format_time_axis_value(self, value: float, *, milliseconds: bool = False) -> str:
+        if self._time_axis_mode == "system":
+            pattern = "%H:%M:%S.%f" if milliseconds else "%H:%M:%S"
+            text = datetime.fromtimestamp(value).strftime(pattern)
+            return text[:-3] if milliseconds else text
+
+        sign = "-" if value < 0.0 else ""
+        total_milliseconds = int(round(abs(value) * 1000.0))
+        seconds, millis = divmod(total_milliseconds, 1000)
+        return f"{sign}{seconds}:{millis:03d}"
 
     def append_batch(self, batch: dict[str, float], batch_time: float | None = None) -> None:
         timestamp = batch_time if batch_time is not None else datetime.now().timestamp()
@@ -1291,7 +1310,7 @@ class WaveformTab(ttk.Frame):
             x = plot_left + (plot_right - plot_left) * ratio
             self.canvas.create_line(x, plot_top, x, plot_bottom, fill=BORDER_MUTED, dash=(3, 3))
             tick_ts = x_min + (x_max - x_min) * ratio
-            self.canvas.create_text(x, plot_bottom + 18, text=datetime.fromtimestamp(tick_ts).strftime("%H:%M:%S"), fill=TEXT_MUTED)
+            self.canvas.create_text(x, plot_bottom + 18, text=self._format_time_axis_value(tick_ts), fill=TEXT_MUTED)
 
         if y_min <= 0.0 <= y_max:
             zero_y = plot_bottom - (0.0 - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
@@ -1481,9 +1500,9 @@ class WaveformTab(ttk.Frame):
                     dash=(6, 4),
                     width=2,
                 )
-                label = f"参考 {datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]}"
+                label = f"参考 {self._format_time_axis_value(value, milliseconds=True)}"
                 if is_preview:
-                    label = f"预览 {datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]}"
+                    label = f"预览 {self._format_time_axis_value(value, milliseconds=True)}"
                 self.canvas.create_text(x + 4, plot_top + 18, text=label, anchor="nw", fill=SUCCESS, font=("Consolas", 9))
             elif orientation == "horizontal":
                 if value < y_min or value > y_max:
@@ -1897,11 +1916,11 @@ class WaveformTab(ttk.Frame):
         self._pending_reference_line = None
         self._preview_reference_value = None
         if orientation == "vertical":
-            label = datetime.fromtimestamp(value).strftime("%H:%M:%S.%f")[:-3]
+            label = self._format_time_axis_value(value, milliseconds=True)
             self.on_status(f"已固定垂直参考线: {label}", False)
         elif orientation == "cross":
             x_value, y_value = value
-            x_label = datetime.fromtimestamp(x_value).strftime("%H:%M:%S.%f")[:-3]
+            x_label = self._format_time_axis_value(x_value, milliseconds=True)
             self.on_status(f"已固定十字参考线: {x_label}, {self._format_numeric(y_value)}", False)
         else:
             self.on_status(f"已固定水平参考线: {self._format_numeric(value)}", False)
@@ -1940,7 +1959,7 @@ class WaveformTab(ttk.Frame):
             cursor_x = min(max(self._last_hover_canvas_x, plot_left), plot_right)
         self.canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill=TEXT_MUTED, dash=(4, 4))
 
-        base_text = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S.%f")[:-3]
+        base_text = self._format_time_axis_value(timestamp, milliseconds=True)
         lines = [base_text]
         marker_map = self._marker_map()
         if timestamp in marker_map:

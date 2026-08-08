@@ -104,6 +104,12 @@ from serial_debug_assistant.models import (
     SfraPoint,
     SfraSweep,
 )
+from serial_debug_assistant.parameter_protocol import (
+    CMD_WORD_PARAMETER_LIST_BATCH,
+    CMD_WORD_PARAMETER_WAVE_BATCH,
+    parse_parameter_list_batch_payload,
+    parse_parameter_wave_batch_payload,
+)
 from serial_debug_assistant.perf_protocol import (
     CMD_SET_PERF,
     CMD_WORD_PERF_DICT_END,
@@ -328,6 +334,7 @@ class SerialDebugAssistant(tk.Tk):
         self.save_path: Path | None = None
         self.last_save_flush_at = 0.0
         self.expected_param_count = 0
+        self.parameter_batch_next_index = 0
         self.parameters: dict[str, ParameterEntry] = {}
         self.wave_running = False
         self.wave_report_period_ms = 300
@@ -335,6 +342,12 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_wave_batch: dict[str, float] = {}
         self.wave_batch_open = False
         self.wave_batch_start_marker: int | None = None
+        self.plecs_wave_batch_tick: int | None = None
+        self.plecs_wave_batch_total = 0
+        self.plecs_wave_batch_next_index = 0
+        self.plecs_wave_batch_values: dict[str, float] = {}
+        self.plecs_wave_last_tick: int | None = None
+        self.plecs_wave_tick_wrap_offset = 0
         self.wave_batch_counter = 0
         self.wave_debug_batches_remaining = 0
         self.wave_debug_frame_budget = 0
@@ -2462,13 +2475,47 @@ class SerialDebugAssistant(tk.Tk):
             return False
         if frame.cmd_word == 0x01 and frame.is_ack == 1 and len(frame.payload) >= 4:
             self.expected_param_count = int.from_bytes(frame.payload[:4], "little")
+            self.parameter_batch_next_index = 0
             self.parameters.clear()
             self.parameter_tab.clear_parameters()
             self.parameter_tab.begin_bulk_update()
             self._clear_wave_selection()
             self.parameter_tab.set_expected_count(0, self.expected_param_count)
             self.parameter_tab.set_message("开始接收参数列表")
+            if self.expected_param_count == 0:
+                self.parameter_tab.set_message("参数列表加载完成")
             self.logger.log("PARAM", f"count ack total={self.expected_param_count}")
+            return True
+        if frame.cmd_word == CMD_WORD_PARAMETER_LIST_BATCH:
+            try:
+                batch = parse_parameter_list_batch_payload(frame.payload)
+            except ValueError as exc:
+                self.parameter_tab.set_message("参数列表批次无效")
+                self.logger.log("WARN", f"parameter list batch rejected: {exc}")
+                return True
+
+            if batch.first_index != self.parameter_batch_next_index:
+                self.parameter_tab.set_message("参数列表批次不连续")
+                self.logger.log(
+                    "WARN",
+                    f"parameter list batch discontinuity expected={self.parameter_batch_next_index} "
+                    f"received={batch.first_index}",
+                )
+                return True
+
+            self.expected_param_count = batch.total_count
+            for entry in batch.entries:
+                self.parameters[entry.name] = entry
+            self.parameter_batch_next_index += len(batch.entries)
+            self.parameter_tab.set_expected_count(self.parameter_batch_next_index, batch.total_count)
+            self.logger.log(
+                "PARAM",
+                f"batch first={batch.first_index} count={len(batch.entries)} total={batch.total_count}",
+            )
+            if self.parameter_batch_next_index == batch.total_count:
+                self.parameter_tab.set_parameters(self.parameters)
+                self.parameter_tab.set_message("参数列表加载完成")
+                self.schedule_wave_selection_sync()
             return True
         if frame.cmd_word == 0x04 and len(frame.payload) >= 15:
             entry = self._parse_parameter_list_item(frame.payload)
@@ -2545,7 +2592,13 @@ class SerialDebugAssistant(tk.Tk):
         if frame.cmd_word == 0x07:
             if time.monotonic() < self.ignore_wave_frames_until:
                 return True
+            self.wave_tab.set_time_axis_mode("system")
             self._handle_wave_report_payload(frame.payload)
+            return True
+        if frame.cmd_word == CMD_WORD_PARAMETER_WAVE_BATCH:
+            if time.monotonic() < self.ignore_wave_frames_until:
+                return True
+            self._handle_plecs_wave_batch_payload(frame.payload)
             return True
         return False
 
@@ -3852,6 +3905,75 @@ class SerialDebugAssistant(tk.Tk):
                 if self.wave_debug_frame_budget > 0:
                     self.logger.log("WAVE", f"single sample name={name} value={numeric_value}")
 
+    def _reset_plecs_wave_state(self) -> None:
+        self.plecs_wave_batch_tick = None
+        self.plecs_wave_batch_total = 0
+        self.plecs_wave_batch_next_index = 0
+        self.plecs_wave_batch_values.clear()
+        self.plecs_wave_last_tick = None
+        self.plecs_wave_tick_wrap_offset = 0
+
+    def _handle_plecs_wave_batch_payload(self, payload: bytes) -> None:
+        try:
+            batch = parse_parameter_wave_batch_payload(payload)
+        except ValueError as exc:
+            self.logger.log("WARN", f"PLECS wave batch rejected: {exc}")
+            return
+
+        if batch.first_index == 0:
+            if self.plecs_wave_batch_next_index not in {0, self.plecs_wave_batch_total}:
+                self.logger.log(
+                    "WARN",
+                    f"PLECS wave sample incomplete tick={self.plecs_wave_batch_tick} "
+                    f"received={self.plecs_wave_batch_next_index}/{self.plecs_wave_batch_total}",
+                )
+            self.plecs_wave_batch_tick = batch.simulation_tick_100us
+            self.plecs_wave_batch_total = batch.total_count
+            self.plecs_wave_batch_next_index = 0
+            self.plecs_wave_batch_values.clear()
+
+        if (
+            batch.simulation_tick_100us != self.plecs_wave_batch_tick
+            or batch.total_count != self.plecs_wave_batch_total
+            or batch.first_index != self.plecs_wave_batch_next_index
+        ):
+            self.logger.log(
+                "WARN",
+                f"PLECS wave batch discontinuity tick={batch.simulation_tick_100us} "
+                f"first={batch.first_index} expected={self.plecs_wave_batch_next_index}",
+            )
+            return
+
+        for value in batch.values:
+            entry = self.parameters.get(value.name)
+            if entry is not None:
+                entry.data_raw = value.data_raw
+                self.wave_tab.update_latest_value(value.name, format_value(value.data_raw, value.type_id))
+            numeric_value = u32_to_value(value.data_raw, value.type_id)
+            if isinstance(numeric_value, (int, float)):
+                self.plecs_wave_batch_values[value.name] = float(numeric_value)
+        self.plecs_wave_batch_next_index += len(batch.values)
+
+        if self.plecs_wave_batch_next_index != self.plecs_wave_batch_total:
+            return
+
+        raw_tick = batch.simulation_tick_100us
+        if (
+            self.plecs_wave_last_tick is not None
+            and raw_tick < self.plecs_wave_last_tick
+            and self.plecs_wave_last_tick - raw_tick > 0x80000000
+        ):
+            self.plecs_wave_tick_wrap_offset += 1 << 32
+        self.plecs_wave_last_tick = raw_tick
+        simulation_time_s = (self.plecs_wave_tick_wrap_offset + raw_tick) * 0.0001
+        self.wave_tab.set_time_axis_mode("simulation")
+        self.wave_tab.append_batch(dict(self.plecs_wave_batch_values), batch_time=simulation_time_s)
+        self._log_wave_batch_summary("PLECS-simulation-time", dict(self.plecs_wave_batch_values))
+        self.plecs_wave_batch_tick = None
+        self.plecs_wave_batch_total = 0
+        self.plecs_wave_batch_next_index = 0
+        self.plecs_wave_batch_values.clear()
+
     def _parse_parameter_list_item(self, payload: bytes) -> ParameterEntry | None:
         name_len = payload[0]
         if len(payload) < 15 + name_len:
@@ -3963,6 +4085,7 @@ class SerialDebugAssistant(tk.Tk):
             self.parameter_list_request_job = None
 
         self.expected_param_count = 0
+        self.parameter_batch_next_index = 0
         self.parameters.clear()
         self.parameter_tab.clear_parameters()
         self.parameter_tab.begin_bulk_update()
@@ -5188,6 +5311,7 @@ class SerialDebugAssistant(tk.Tk):
             self.wave_batch_open = False
             self.wave_batch_start_marker = None
             self.wave_batch_counter = 0
+            self._reset_plecs_wave_state()
             self.wave_debug_batches_remaining = 8
             self.wave_debug_frame_budget = 120
             self.wave_tab.start_realtime_save()
@@ -5214,6 +5338,7 @@ class SerialDebugAssistant(tk.Tk):
         self.pending_wave_batch.clear()
         self.wave_batch_open = False
         self.wave_batch_start_marker = None
+        self._reset_plecs_wave_state()
         self.wave_tab.clear_plot()
         self.logger.log("WAVE", "clear waveform")
 

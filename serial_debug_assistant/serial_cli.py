@@ -23,6 +23,11 @@ from serial_debug_assistant.black_box_protocol import (
     parse_black_box_row_payload,
 )
 from serial_debug_assistant.models import ParameterEntry, ProtocolFrame
+from serial_debug_assistant.parameter_protocol import (
+    CMD_WORD_PARAMETER_LIST_BATCH,
+    parse_parameter_list_batch_payload,
+    parse_parameter_list_item,
+)
 from serial_debug_assistant.perf_protocol import (
     CMD_WORD_PERF_DICT_END,
     CMD_WORD_PERF_DICT_ITEM_REPORT,
@@ -304,6 +309,13 @@ def param_list(options: SerialOptions) -> list[dict[str, object]]:
             entry = parse_parameter_list_item(frame.payload)
             if entry is not None:
                 entries.append(entry)
+        elif frame.cmd_word == CMD_WORD_PARAMETER_LIST_BATCH:
+            try:
+                batch = parse_parameter_list_batch_payload(frame.payload)
+            except ValueError:
+                continue
+            expected_count = batch.total_count
+            entries.extend(batch.entries)
     return [parameter_to_dict(entry) for entry in entries[: expected_count or None]]
 
 
@@ -599,30 +611,6 @@ def black_box_read(options: SerialOptions, *, start_offset: int, length: int) ->
         elif frame.cmd_word == CMD_WORD_BLACK_BOX_COMPLETE:
             rows.append({"kind": "complete", **parse_black_box_complete_payload(frame.payload)})
     return rows
-
-
-def parse_parameter_list_item(payload: bytes) -> ParameterEntry | None:
-    if not payload:
-        return None
-    name_len = payload[0]
-    if len(payload) < 15 + name_len:
-        return None
-    type_id = payload[1]
-    data = int.from_bytes(payload[2:6], "little")
-    data_max = int.from_bytes(payload[6:10], "little")
-    data_min = int.from_bytes(payload[10:14], "little")
-    status = payload[14]
-    name = payload[15 : 15 + name_len].decode("utf-8", errors="replace")
-    return ParameterEntry(
-        name=name,
-        type_id=type_id,
-        data_raw=data,
-        min_raw=data_min,
-        max_raw=data_max,
-        status=status,
-        auto_report=bool(status & 0x01),
-        important=bool(status & 0x02),
-    )
 
 
 def parse_single_parameter(payload: bytes) -> ParameterEntry | None:
