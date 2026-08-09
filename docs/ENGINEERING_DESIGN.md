@@ -12,6 +12,7 @@
 
 - 当前上位机桌面软件工程
 - 与之配套的串口、CAN 和 Ethernet TCP 字节流通信协议
+- Ethernet UDP 设备发现协议
 - 当前已实现的分页功能
 - 后续在现有架构下新增的小功能和新分页
 
@@ -817,6 +818,14 @@ typedef struct
 } inv_cfg_t;
 ```
 
+### 2.10 Ethernet UDP 设备发现
+
+Ethernet 设备发现使用独立的 UDP 5000 ASCII 广播协议，不封装为 FRAME TCP 字节流帧。FRAME 为每个启用的非回环 IPv4 地址计算广播地址，在统一的 400 ms 时间窗口内发送固定请求 `FRAME_DISCOVER_V1`，并持续接收以 `FRAME_DEVICE_V1` 开头的设备单播响应。
+
+发现响应包含设备名称、声明 IPv4 地址、TCP 端口、MAC 地址、固件版本和 FRAME 协议版本。FRAME 严格校验前缀和必需字段，以 UDP 来源 IP 作为实际连接地址，按 MAC 地址合并重复响应，并记录收到响应的本地网卡。完整 ASCII 字段格式和 GD32E507 BSP 响应流程见 [Ethernet 设备发现协议](ETHERNET_DISCOVERY_PROTOCOL.md)。
+
+发现 UDP socket 与 `EthernetService` TCP socket 相互独立。发现完成后，用户选择设备将来源 IP 和响应中的 TCP 端口写入现有连接设置；重新搜索保留已有设备并更新在线、离线状态。参数、Scope 和调试通信继续通过原有 TCP 通道运行。
+
 ## 3. 分页功能说明
 
 以下各分页均按统一模板描述：
@@ -1240,6 +1249,7 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 | 页面 | 协议用途 | 指令范围 |
 | --- | --- | --- |
 | 主页 | 状态广播、逆变配置 | `cmd_set = 0x02`，`cmd_set = 0x03` |
+| Ethernet 连接栏 | 局域网设备发现、地址选择 | UDP 5000 发现协议 |
 | 串口调试页 | 原始串口透传 | 不绑定单一业务协议 |
 | 参数读写页 | 参数列表、读写、波形勾选 | `0x01 / 0x01 ~ 0x05` |
 | 参数波形页 | 波形勾选、周期设置、实时上报、启停 | `0x01 / 0x05 ~ 0x07, 0x0C` |
@@ -1264,6 +1274,7 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 | Factory Mode 页 | `ui/factory_mode_tab.py` | `ui/app.py` | `factory_mode.py` |
 | Perf 任务时间页 | `ui/perf_tab.py` | `ui/app.py` | `perf_protocol.py` |
 | Trace 代码执行跟踪页 | `ui/trace_tab.py` | `ui/app.py` | `trace_protocol.py` |
+| Ethernet 设备发现 | `ui/ethernet_discovery_dialog.py` | `ui/app.py` | `services/ethernet_discovery.py` |
 
 ## 5. 数据结构汇总
 
@@ -1346,6 +1357,12 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 - `trace_control_t`
 - `trace_control_ack_t`
 - `trace_record_report_t`
+
+### 5.10 Ethernet 发现相关结构
+
+- `IPv4NetworkInterface`
+- `EthernetDiscoveryDevice`
+- `EthernetDiscoveryScan`
 
 ## 6. 状态机与时序说明
 
@@ -1508,6 +1525,14 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 5. 在搜索框输入行号，高亮已有匹配记录
 6. 点击停止上报结束本轮 Trace
 
+### 7.10 Ethernet 设备发现
+
+1. 在连接栏选择 Ethernet，FRAME 自动开始一次设备搜索
+2. 在设备列表中查看名称、IP、TCP 端口、MAC 和版本信息
+3. 单击设备，把 IP 和 TCP 端口填入连接栏
+4. 双击设备或点击“连接所选设备”，建立 TCP 连接
+5. 未发现设备时，在连接栏手工填写 Host 和 TCP Port 后连接
+
 ## 8. 注意事项与维护规则
 
 ### 8.1 串口相关
@@ -1561,7 +1586,15 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 - 协议数据兼容按 `copy_len = min(data_len, sizeof(local_struct))` 取小解析
 - Trace 二进制协议只负责上位机页面接收和显示，不改变下位机既有 shell 调试机制
 
-### 8.10 J-Link 相关
+### 8.10 Ethernet 发现相关
+
+- UDP 广播只覆盖当前 IPv4 子网，VLAN 和防火墙可能阻止发现报文
+- 多网卡搜索使用统一的 400 ms 截止时间，不按网卡串行等待
+- 发现请求使用独立 UDP socket，不进入 TCP 参数、Scope 和调试通信通道
+- 设备选择只填写现有 Host 和 TCP Port，连接仍由 `EthernetService` 建立
+- 未发现设备时保留手工 Host 和 TCP Port 连接方式
+
+### 8.11 J-Link 相关
 
 - Load 只解析 ELF/AXF 和 MAP，生成变量、类型、结构体、数组和内存范围信息
 - 未展开结构体和数组不在 Load 阶段读取成员数据
@@ -1576,27 +1609,27 @@ Trace 代码执行跟踪页用于接收下位机运行过程中主动上报的�
 - 搜索只匹配顶层变量和可见行，不把未展开结构体内部成员作为搜索范围
 - 同名函数内静态变量用作用域区分，结构体展开后的成员仍按成员名显示
 
-### 8.11 小功能增加时如何补文档
+### 8.12 小功能增加时如何补文档
 
 - 若新增协议，先补第 2 章
 - 若新增某页小功能，补第 3 章对应分页小节
 - 若影响用户操作，再补第 7 章
 - 若新增限制或坑点，再补第 8 章
 
-### 8.12 新分页增加时如何补文档
+### 8.13 新分页增加时如何补文档
 
 - 在第 3 章新增分页章节
 - 在第 4 章补映射表
 - 在第 2 章补对应协议
 - 在第 7 章补操作说明
 
-### 8.13 协议修改时如何补文档
+### 8.14 协议修改时如何补文档
 
 - 改结构体必须同步更新结构体定义和字段含义
 - 改状态码必须同步更新相关章节和注意事项
 - 改时序必须同步更新第 6 章
 
-### 8.14 变更记录
+### 8.15 变更记录
 
 | 日期 | 模块 | 类型 | 说明 |
 | --- | --- | --- | --- |

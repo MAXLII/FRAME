@@ -13,6 +13,8 @@ main.py
           -> ProtocolParser
           -> ProtocolSender
           -> ProtocolRouter
+      -> EthernetDiscoveryService
+          -> IPv4 网卡枚举 / UDP 5000 广播 / 设备响应解析
       -> ProtocolControllerHub
           -> Home
           -> Upgrade
@@ -28,6 +30,8 @@ main.py
 `SerialDebugAssistant` 是应用装配根，负责创建窗口、页面、通信服务和控制器。
 
 `CommunicationManager` 负责把串口、CAN、Ethernet TCP 和 Demo 统一成字节流通信入口，并负责协议发送、协议解析和帧分发。
+
+`EthernetDiscoveryService` 使用独立的短生命周期 UDP socket 搜索局域网设备。发现结果只向连接栏提供 Host 和 TCP Port，不进入 `CommunicationManager` 的收发队列，也不改变已连接 TCP 通道的协议状态。
 
 `ProtocolControllerHub` 负责应用级协议分发顺序。新协议功能应优先接入 controller，而不是继续扩展 `app.py` 中的总处理链。
 

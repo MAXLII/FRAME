@@ -24,6 +24,7 @@
 | `pip` | `25.0.1` | Python 包安装工具。 | 环境管理工具 |
 | `pyinstaller` | `6.19.0` | 将 Python 工程打包成 Windows 可执行程序。 | 构建 `frame.exe` 所需 |
 | `pyinstaller-hooks-contrib` | `2026.4` | `PyInstaller` 的额外 hooks 集合。 | 打包依赖 |
+| `psutil` | `7.2.2` | 枚举启用的 IPv4 网卡、地址和掩码。 | Ethernet 设备发现运行依赖 |
 | `pypdf` | `6.10.1` | PDF 文档读取与文本提取库。 | 本次整理 PDF 协议文档时使用，不是主程序运行依赖 |
 | `pyserial` | `3.5` | 串口通信库。 | 当前上位机核心运行依赖 |
 | `PySide6` | `6.11.0` | Qt for Python 主库。 | 当前环境已安装，但现有 GUI 未使用 |
@@ -39,10 +40,12 @@
 ### 运行上位机实际需要
 
 - `pyserial 3.5`
+- `psutil 7.2.2`
 
 补充说明：
 
 - 当前工程入口是 `main.py`，GUI 使用 Python 标准库 `tkinter`，因此 `tkinter` 不会出现在 `pip list` 结果中。
+- Ethernet 设备发现使用 `psutil` 枚举多网卡 IPv4 地址和掩码，并由标准库 `socket` 发送 UDP 广播。
 - `tkinter` 来自 Python 标准库，只要安装的是标准 Windows 版 Python，一般会随 Python 一起提供。
 
 ### 可选安装但当前代码未直接使用

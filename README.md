@@ -21,6 +21,7 @@ FRAME 侧不重复维护 base 的接入步骤。完整的工程选择、下位�
 
 - 枚举并配置串口，支持文本与 HEX 收发、定时发送、时间戳、快捷发送和原始数据保存。
 - 支持 CAN 与 Ethernet TCP 传输，并将不同传输接入统一的协议控制层。
+- Ethernet 支持多网卡 UDP 广播设备发现，可显示设备身份、地址和版本并直接建立 TCP 连接。
 - 支持自定义 `cmd_set / cmd_word` 协议帧发送、CRC 校验、地址配置和 ACK 匹配。
 - 支持交互式终端与脚本化的一次性命令，便于联调和自动化验证。
 
@@ -216,6 +217,7 @@ build_frame_installer.bat
 ## 文档
 
 - [工程设计](docs/ENGINEERING_DESIGN.md)：通信协议、页面能力、数据结构和运行流程。
+- [Ethernet 设备发现协议](docs/ETHERNET_DISCOVERY_PROTOCOL.md)：UDP 5000 广播搜索、响应字段和 GD32E507 对接规则。
 - [CLI 命令](docs/CLI_COMMANDS.md)：一次性命令与交互式终端参考。
 - [J-Link 使用方法](docs/JLINK_USAGE.md)：符号加载、目标连接、变量读取与写入。
 - [可维护架构](docs/MAINTAINABLE_ARCHITECTURE.md)：模块边界与维护约定。
