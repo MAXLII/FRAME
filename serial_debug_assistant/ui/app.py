@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import queue
 import struct
 import re
 from pathlib import Path
@@ -210,12 +211,18 @@ from serial_debug_assistant.trace_protocol import (
     parse_trace_record_report_payload,
 )
 from serial_debug_assistant.services.can_service import CANService
+from serial_debug_assistant.services.ethernet_discovery import (
+    EthernetDiscoveryDevice,
+    EthernetDiscoveryScan,
+    EthernetDiscoveryService,
+)
 from serial_debug_assistant.services.ethernet_service import EthernetService
 from serial_debug_assistant.services.serial_service import SerialService
 from serial_debug_assistant.services.transport_helpers import CAN_BITRATES, CAN_INTERFACES
 from serial_debug_assistant.ui.black_box_tab import BlackBoxTab
 from serial_debug_assistant.ui.factory_mode_tab import FactoryModeTab
 from serial_debug_assistant.ui.file_dialogs import ask_open_file, ask_save_file
+from serial_debug_assistant.ui.ethernet_discovery_dialog import EthernetDiscoveryDialog
 from serial_debug_assistant.ui.home_tab import HomeTab
 from serial_debug_assistant.ui.jlink_debug_tab import JLinkDebugTab
 from serial_debug_assistant.ui.monitor_tab import SerialMonitorTab
@@ -306,6 +313,7 @@ class SerialDebugAssistant(tk.Tk):
         self.logger = DebugLogger(self.paths.app_log_file)
         self.serial_service = SerialService()
         self.can_service = CANService()
+        self.ethernet_discovery_service = EthernetDiscoveryService()
         self.ethernet_service = EthernetService()
         self.comm = CommunicationManager(
             serial_service=self.serial_service,
@@ -322,6 +330,9 @@ class SerialDebugAssistant(tk.Tk):
         self._current_serial_settings: dict[str, object] = {}
         self._current_can_settings: dict[str, object] = {}
         self._current_ethernet_settings: dict[str, object] = {}
+        self._ethernet_discovery_running = False
+        self._ethernet_discovery_results: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._ethernet_discovery_dialog: EthernetDiscoveryDialog | None = None
         self.port_display_map: dict[str, str] = {}
         self.total_rx_bytes = 0
         self.total_tx_bytes = 0
@@ -939,6 +950,13 @@ class SerialDebugAssistant(tk.Tk):
             label_widget.grid(row=0, column=col, sticky="w", padx=(0, 6))
             builder(self.ethernet_settings_frame, 0, col + 1)
             col += 2
+        self.ethernet_search_button = ttk.Button(
+            self.ethernet_settings_frame,
+            text=self.i18n.translate_text("Search Devices"),
+            command=self.start_ethernet_discovery,
+        )
+        self.ethernet_search_button.grid(row=0, column=col, sticky="w")
+        self._remember_text(self.ethernet_search_button, "Search Devices")
 
         self.open_button = ttk.Button(parent, text=self.i18n.translate_text("Open"), command=self.toggle_connection, style="Accent.TButton")
         self.open_button.grid(row=0, column=4, sticky="w", padx=(12, 0))
@@ -1456,6 +1474,8 @@ class SerialDebugAssistant(tk.Tk):
         self._update_transport_ui()
         self.refresh_ports()
         self._apply_connected_transport_change()
+        if self.transport_var.get() == "Ethernet":
+            self.start_ethernet_discovery()
 
     def _on_port_setting_changed(self, _event=None) -> None:
         self._apply_connected_port_change()
@@ -1472,6 +1492,101 @@ class SerialDebugAssistant(tk.Tk):
 
     def _on_ethernet_setting_changed(self, _event=None) -> None:
         self._apply_connected_ethernet_settings()
+
+    def start_ethernet_discovery(self) -> None:
+        if self.demo_mode:
+            self.set_status("Ethernet discovery is unavailable in demo mode.", error=True)
+            return
+        dialog = self._ethernet_discovery_dialog
+        if dialog is None or not dialog.winfo_exists():
+            dialog = EthernetDiscoveryDialog(
+                self,
+                translate=self.i18n.translate_text,
+                on_search=self.start_ethernet_discovery,
+                on_device_selected=self._select_discovered_ethernet_device,
+            )
+            self._ethernet_discovery_dialog = dialog
+        dialog.deiconify()
+        dialog.lift()
+        dialog.focus_set()
+        if self._ethernet_discovery_running:
+            return
+
+        self._ethernet_discovery_running = True
+        self.ethernet_search_button.state(["disabled"])
+        dialog.set_searching()
+        self.set_status("Searching Ethernet devices...")
+        self.logger.log("ETHERNET", "discovery start udp_port=5000 timeout_ms=400")
+
+        def discover() -> None:
+            try:
+                scan = self.ethernet_discovery_service.discover()
+            except Exception as exc:
+                self._ethernet_discovery_results.put(("error", str(exc)))
+            else:
+                self._ethernet_discovery_results.put(("success", scan))
+
+        threading.Thread(target=discover, name="ethernet-discovery", daemon=True).start()
+        self.after(25, self._poll_ethernet_discovery)
+
+    def _poll_ethernet_discovery(self) -> None:
+        try:
+            outcome, payload = self._ethernet_discovery_results.get_nowait()
+        except queue.Empty:
+            if self._ethernet_discovery_running:
+                self.after(25, self._poll_ethernet_discovery)
+            return
+
+        self._ethernet_discovery_running = False
+        self.ethernet_search_button.state(["!disabled"])
+        dialog = self._ethernet_discovery_dialog
+        if outcome == "error":
+            message = str(payload)
+            if dialog is not None and dialog.winfo_exists():
+                dialog.set_error(message)
+            self.set_status(f"Ethernet discovery failed: {message}", error=True)
+            self.logger.log("ERROR", f"ethernet discovery failed: {message}")
+            return
+
+        scan = payload
+        if not isinstance(scan, EthernetDiscoveryScan):
+            self.set_status("Ethernet discovery returned an invalid result.", error=True)
+            return
+        if dialog is not None and dialog.winfo_exists():
+            dialog.set_results(scan)
+        elapsed_ms = round(scan.duration_seconds * 1000)
+        self.set_status(f"Ethernet discovery found {len(scan.devices)} device(s) in {elapsed_ms} ms")
+        self.logger.log(
+            "ETHERNET",
+            f"discovery complete devices={len(scan.devices)} interfaces={len(scan.interfaces)} "
+            f"elapsed_ms={elapsed_ms} send_errors={len(scan.send_errors)}",
+        )
+        for error in scan.send_errors:
+            self.logger.log("WARN", f"ethernet discovery send failed: {error}")
+        for device in scan.devices:
+            self.logger.log(
+                "ETHERNET",
+                f"discovered name={device.name!r} endpoint={device.ip_address}:{device.tcp_port} "
+                f"advertised_ip={device.advertised_ip_address} "
+                f"mac={device.mac_address} firmware={device.firmware_version} "
+                f"frame_protocol={device.frame_protocol_version} interface={device.interface.name!r}",
+            )
+
+    def _select_discovered_ethernet_device(self, device: EthernetDiscoveryDevice, connect: bool) -> None:
+        self.transport_var.set("Ethernet")
+        self._update_transport_ui()
+        self.ethernet_host_var.set(device.ip_address)
+        self.ethernet_port_var.set(str(device.tcp_port))
+        self.set_status(f"Selected Ethernet device {device.name}: {device.ip_address}:{device.tcp_port}")
+        self.logger.log(
+            "ETHERNET",
+            f"select discovered device name={device.name!r} endpoint={device.ip_address}:{device.tcp_port} connect={connect}",
+        )
+        if not connect:
+            return
+        if self._is_connected():
+            self.close_connection()
+        self.open_connection()
 
     def _serial_settings_snapshot(self) -> dict[str, object]:
         selected_port = self.port_display_map.get(self.port_var.get(), self.port_var.get())
