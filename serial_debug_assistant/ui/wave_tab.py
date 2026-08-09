@@ -17,7 +17,8 @@ from serial_debug_assistant.ui.theme import ACCENT, ACCENT_SOFT, BORDER, BORDER_
 
 REDRAW_MS = 40
 LIST_REFRESH_MS = 120
-MIN_ZOOM_SPAN_SECONDS = 0.2
+MIN_ZOOM_SPAN_SECONDS = 0.01
+MAX_CUSTOM_WINDOW_SECONDS = 86400.0
 MIN_ZOOM_SPAN_VALUE = 1e-6
 MAX_POINTS_PER_PIXEL = 3
 SHIFT_MASK = 0x0001
@@ -35,6 +36,7 @@ WINDOW_OPTIONS = {
     "最近30秒": 30.0,
     "最近1分钟": 60.0,
     "最近10分钟": 600.0,
+    "自定义": None,
     "全部": None,
 }
 SERIES_COLORS = (
@@ -72,6 +74,7 @@ class WaveformTab(ttk.Frame):
 
         self.period_var = tk.StringVar(value="300")
         self.window_var = tk.StringVar(value=self.i18n.translate_text("最近30秒"))
+        self.custom_window_var = tk.StringVar(value="30.0")
         self.marker_var = tk.StringVar()
         self.selected_search_var = tk.StringVar()
         self.select_all_visible_var = tk.BooleanVar(value=False)
@@ -105,6 +108,10 @@ class WaveformTab(ttk.Frame):
         self._frozen_x_range: tuple[float, float] | None = None
         self._frozen_y_range: tuple[float, float] | None = None
         self._paused_view = False
+        self._custom_window_seconds = 30.0
+        self._selected_window_key = "最近30秒"
+        self._updating_window_var = False
+        self._unseen_sample_count = 0
         self._alt_pressed = False
         self._last_hover_index: int | None = None
         self._last_hover_canvas_x: float | None = None
@@ -113,6 +120,7 @@ class WaveformTab(ttk.Frame):
         self._drag_anchor: tuple[float, float] | None = None
         self._drag_start_x_range: tuple[float, float] | None = None
         self._drag_start_y_range: tuple[float, float] | None = None
+        self._drag_started_live = False
         self._zoom_rect_start: tuple[float, float] | None = None
         self._zoom_rect_end: tuple[float, float] | None = None
         self._cached_visible_series: dict[str, list[tuple[float, float | None]]] = {}
@@ -217,14 +225,24 @@ class WaveformTab(ttk.Frame):
         view_label = ttk.Label(row2, text=self.i18n.translate_text("查看窗口:"), style="Header.TLabel")
         view_label.grid(row=0, column=0, sticky="w")
         self._remember_text(view_label, "查看窗口:")
+        window_controls = ttk.Frame(row2, style="Panel.TFrame")
+        window_controls.grid(row=0, column=1, padx=(6, 12), sticky="w")
         self.window_combo = ttk.Combobox(
-            row2,
+            window_controls,
             textvariable=self.window_var,
             values=self._window_option_labels(),
             state="readonly",
             width=12,
         )
-        self.window_combo.grid(row=0, column=1, padx=(6, 12), sticky="w")
+        self.window_combo.grid(row=0, column=0, sticky="w")
+        self.custom_window_entry = ttk.Entry(window_controls, textvariable=self.custom_window_var, width=8)
+        self.custom_window_entry.grid(row=0, column=1, padx=(8, 4))
+        self.custom_window_entry.bind("<Return>", self._apply_custom_window)
+        self.custom_window_entry.bind("<FocusOut>", self._apply_custom_window)
+        self.custom_window_unit_label = ttk.Label(window_controls, text=self.i18n.translate_text("秒"))
+        self.custom_window_unit_label.grid(row=0, column=2)
+        self._remember_text(self.custom_window_unit_label, "秒")
+        self._update_custom_window_controls()
         self.export_button = ttk.Button(row2, text=self.i18n.translate_text("导出 Ctrl+E"), command=self.export_waveform_file)
         self.export_button.grid(row=0, column=2)
         self._remember_text(self.export_button, "导出 Ctrl+E")
@@ -539,9 +557,14 @@ class WaveformTab(ttk.Frame):
         if batch:
             self._has_unsaved_changes = True
             self._append_realtime_batch(batch, timestamp)
+            if self._paused_view:
+                self._unseen_sample_count += len(batch)
+                if self._x_range is not None:
+                    self.view_var.set(self._build_view_text(*self._x_range))
         self._queue_list_refresh()
         self._queue_latest_refresh()
-        self._queue_redraw()
+        if not self._paused_view or self._x_range is None:
+            self._queue_redraw()
 
     def clear_plot(self) -> None:
         self.stop_realtime_save(reason="clear waveform")
@@ -560,12 +583,14 @@ class WaveformTab(ttk.Frame):
         self._frozen_x_range = None
         self._frozen_y_range = None
         self._paused_view = False
+        self._unseen_sample_count = 0
         self._alt_pressed = False
         self._drag_last_x = None
         self._drag_mode = None
         self._drag_anchor = None
         self._drag_start_x_range = None
         self._drag_start_y_range = None
+        self._drag_started_live = False
         self._zoom_rect_start = None
         self._zoom_rect_end = None
         self._has_unsaved_changes = False
@@ -582,7 +607,7 @@ class WaveformTab(ttk.Frame):
         for widget, source_text, option in self._translatable_widgets:
             widget.configure(**{option: self.i18n.translate_text(source_text)})
         self.window_combo.configure(values=self._window_option_labels())
-        self.window_var.set(self.i18n.translate_text(self._window_option_key(self.window_var.get())))
+        self._set_window_key(self._window_option_key(self.window_var.get()))
         self.status_var.set(self.i18n.translate_text(self.status_var.get()))
         self.view_var.set(self.i18n.translate_text(self.view_var.get()))
         self.cursor_var.set(self.i18n.translate_text(self.cursor_var.get()))
@@ -600,42 +625,105 @@ class WaveformTab(ttk.Frame):
                 return key
         return "最近30秒"
 
+    def _set_window_key(self, key: str) -> None:
+        if key not in WINDOW_OPTIONS:
+            key = "最近30秒"
+        self._selected_window_key = key
+        self._updating_window_var = True
+        try:
+            self.window_var.set(self.i18n.translate_text(key))
+        finally:
+            self._updating_window_var = False
+        self._update_custom_window_controls()
+
+    def _update_custom_window_controls(self) -> None:
+        if not hasattr(self, "custom_window_entry"):
+            return
+        if self._window_option_key(self.window_var.get()) == "自定义":
+            self.custom_window_entry.state(["!disabled"])
+        else:
+            self.custom_window_entry.state(["disabled"])
+
+    def _set_custom_window_span(self, seconds: float, *, switch_option: bool = True) -> None:
+        self._custom_window_seconds = min(max(float(seconds), MIN_ZOOM_SPAN_SECONDS), MAX_CUSTOM_WINDOW_SECONDS)
+        self.custom_window_var.set(f"{self._custom_window_seconds:.3f}".rstrip("0").rstrip("."))
+        if switch_option:
+            self._set_window_key("自定义")
+
+    def _apply_custom_window(self, _event=None) -> str | None:
+        try:
+            seconds = float(self.custom_window_var.get().strip().replace(",", "."))
+        except ValueError:
+            seconds = 0.0
+        if not MIN_ZOOM_SPAN_SECONDS <= seconds <= MAX_CUSTOM_WINDOW_SECONDS:
+            self.custom_window_var.set(f"{self._custom_window_seconds:g}")
+            self.on_status(
+                self.i18n.format_text(
+                    "自定义窗口必须在 {minimum} 到 {maximum} 秒之间",
+                    minimum=f"{MIN_ZOOM_SPAN_SECONDS:g}",
+                    maximum=f"{MAX_CUSTOM_WINDOW_SECONDS:g}",
+                ),
+                True,
+            )
+            return "break"
+        self._set_custom_window_span(seconds)
+        self._activate_live_view()
+        self.on_status(self.i18n.format_text("自定义查看窗口已设置为 {seconds} 秒", seconds=f"{seconds:g}"), False)
+        self._queue_redraw()
+        return "break" if _event is not None else None
+
+    def _activate_live_view(self) -> None:
+        self._paused_view = False
+        self._manual_range = None
+        self._frozen_x_range = None
+        self._unseen_sample_count = 0
+        self.pause_button_text.set(self.i18n.translate_text("暂停显示"))
+
+    def _enter_history_view(
+        self,
+        x_range: tuple[float, float] | None = None,
+        y_range: tuple[float, float] | None = None,
+        *,
+        use_custom_window: bool = True,
+    ) -> None:
+        self._paused_view = True
+        self._unseen_sample_count = 0
+        if x_range is not None:
+            self._manual_range = x_range
+            self._frozen_x_range = x_range
+            if use_custom_window:
+                self._set_custom_window_span(max(x_range[1] - x_range[0], MIN_ZOOM_SPAN_SECONDS))
+        if y_range is not None:
+            self._manual_y_range = y_range
+            self._frozen_y_range = y_range
+        self.pause_button_text.set(self.i18n.translate_text("继续显示"))
+
     def _remember_text(self, widget: object, source_text: str, option: str = "text") -> None:
         self._translatable_widgets.append((widget, source_text, option))
 
     def toggle_pause_view(self) -> None:
-        self._paused_view = not self._paused_view
-        self.pause_button_text.set(self.i18n.translate_text("继续显示" if self._paused_view else "暂停显示"))
         if self._paused_view:
-            if self._x_range:
-                self._frozen_x_range = self._x_range
-                self._manual_range = self._x_range
-            if self._y_range:
-                self._frozen_y_range = self._y_range
-                self._manual_y_range = self._y_range
+            if self._window_option_key(self.window_var.get()) == "全部" and self._x_range is not None:
+                self._set_custom_window_span(max(self._x_range[1] - self._x_range[0], MIN_ZOOM_SPAN_SECONDS))
+            self._activate_live_view()
         else:
-            self._manual_range = None
-            self._manual_y_range = None
-            self._frozen_x_range = None
-            self._frozen_y_range = None
+            self._enter_history_view(self._x_range, self._y_range, use_custom_window=False)
         self._queue_redraw()
 
     def back_to_live(self) -> None:
-        self._paused_view = False
-        self._manual_range = None
-        self._manual_y_range = None
-        self._frozen_x_range = None
-        self._frozen_y_range = None
-        self.pause_button_text.set(self.i18n.translate_text("暂停显示"))
+        if self._x_range is not None:
+            self._set_custom_window_span(max(self._x_range[1] - self._x_range[0], MIN_ZOOM_SPAN_SECONDS))
+        self._activate_live_view()
         self._queue_redraw()
 
     def show_all(self) -> None:
         self._paused_view = True
+        self._unseen_sample_count = 0
         self._manual_range = None
         self._manual_y_range = None
         self._frozen_x_range = None
         self._frozen_y_range = None
-        self.window_var.set(self.i18n.translate_text("全部"))
+        self._set_window_key("全部")
         self.pause_button_text.set(self.i18n.translate_text("继续显示"))
         self.on_status(self.i18n.translate_text("已切换为显示全部波形"), False)
         self._queue_redraw()
@@ -973,6 +1061,8 @@ class WaveformTab(ttk.Frame):
         self._frozen_x_range = None
         self._frozen_y_range = None
         self._paused_view = False
+        self._unseen_sample_count = 0
+        self._drag_started_live = False
         self.pause_button_text.set("暂停显示")
         self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
 
@@ -1368,7 +1458,9 @@ class WaveformTab(ttk.Frame):
     def _resolve_x_range(self, data_x_min: float, data_x_max: float) -> tuple[float, float]:
         if abs(data_x_max - data_x_min) < 1e-6:
             return data_x_min - 0.5, data_x_max + 0.5
-        source_range = self._frozen_x_range if self._paused_view and self._frozen_x_range is not None else self._manual_range
+        source_range = self._frozen_x_range if self._paused_view else None
+        if source_range is None and self._paused_view:
+            source_range = self._manual_range
         if source_range is not None:
             start, end = source_range
             width = max(end - start, MIN_ZOOM_SPAN_SECONDS)
@@ -1386,7 +1478,8 @@ class WaveformTab(ttk.Frame):
             if self._paused_view:
                 self._frozen_x_range = resolved
             return resolved
-        duration = WINDOW_OPTIONS.get(self._window_option_key(self.window_var.get()), 30.0)
+        window_key = self._window_option_key(self.window_var.get())
+        duration = self._custom_window_seconds if window_key == "自定义" else WINDOW_OPTIONS.get(window_key, 30.0)
         if duration is None:
             return data_x_min, data_x_max
         end = data_x_max
@@ -1416,7 +1509,14 @@ class WaveformTab(ttk.Frame):
         return y_min, y_max
 
     def _build_view_text(self, x_min: float, x_max: float) -> str:
-        mode = self.i18n.translate_text("历史查看" if self._paused_view or self._manual_range is not None or self._manual_y_range is not None else "实时跟随")
+        mode = self.i18n.translate_text("历史查看" if self._paused_view else "实时跟随")
+        if self._paused_view and self._unseen_sample_count:
+            return self.i18n.format_text(
+                "查看窗口: {mode} {seconds:.1f}s，已接收 {count} 个新数据点",
+                mode=mode,
+                seconds=max(x_max - x_min, 0.0),
+                count=self._unseen_sample_count,
+            )
         return self.i18n.format_text("查看窗口: {mode} {seconds:.1f}s", mode=mode, seconds=max(x_max - x_min, 0.0))
 
     def _draw_view_hint(self, plot_left: float, plot_top: float) -> None:
@@ -1530,8 +1630,24 @@ class WaveformTab(ttk.Frame):
         self.canvas.create_rectangle(x0, y0, x1, y1, outline=ACCENT, dash=(4, 2), width=2)
 
     def _on_window_changed(self, *_args) -> None:
-        if self._manual_range is None and not self._paused_view:
-            self._queue_redraw()
+        if self._updating_window_var:
+            return
+        window_key = self._window_option_key(self.window_var.get())
+        self._update_custom_window_controls()
+        if window_key == self._selected_window_key:
+            return
+        self._selected_window_key = window_key
+        if window_key == "全部":
+            self._paused_view = True
+            self._unseen_sample_count = 0
+            self._manual_range = None
+            self._frozen_x_range = None
+            self.pause_button_text.set(self.i18n.translate_text("继续显示"))
+        else:
+            if window_key == "自定义" and self._x_range is not None:
+                self._set_custom_window_span(max(self._x_range[1] - self._x_range[0], MIN_ZOOM_SPAN_SECONDS), switch_option=False)
+            self._activate_live_view()
+        self._queue_redraw()
 
     def _shortcut_uses_alt(self, event) -> bool:
         return bool(getattr(event, "state", 0) & ALT_MASK)
@@ -1649,22 +1765,19 @@ class WaveformTab(ttk.Frame):
             return
         delta_sign = -1 if event.delta > 0 else 1
         if event.state & SHIFT_MASK:
-            self._enter_manual_view()
             x_min, x_max = self._x_range
             span = max(x_max - x_min, MIN_ZOOM_SPAN_SECONDS)
             offset = span * 0.12 * delta_sign
-            self._manual_range = (x_min + offset, x_max + offset)
-            self._frozen_x_range = self._manual_range
-            self._manual_y_range = self._y_range
-            self._frozen_y_range = self._y_range
+            shifted_range = (x_min + offset, x_max + offset)
+            self._enter_history_view(shifted_range, self._y_range)
             self._queue_redraw()
         elif event.state & CTRL_MASK:
-            self._enter_manual_view()
             y_min, y_max = self._y_range
             span = max(y_max - y_min, MIN_ZOOM_SPAN_VALUE)
             offset = span * 0.12 * delta_sign
             self._manual_y_range = (y_min + offset, y_max + offset)
-            self._frozen_y_range = self._manual_y_range
+            if self._paused_view:
+                self._frozen_y_range = self._manual_y_range
             self._queue_redraw()
 
     def _on_drag_start(self, event) -> None:
@@ -1679,6 +1792,7 @@ class WaveformTab(ttk.Frame):
         self._drag_anchor = (event.x, event.y)
         self._drag_start_x_range = self._x_range
         self._drag_start_y_range = self._y_range
+        self._drag_started_live = not self._paused_view
         if event.state & SHIFT_MASK:
             self._drag_mode = "xzoom"
             self._drag_last_x = event.x
@@ -1709,14 +1823,11 @@ class WaveformTab(ttk.Frame):
             delta_x = event.x - anchor_x
             scale = math.exp(-delta_x / 240.0)
             new_span = max(span * scale, MIN_ZOOM_SPAN_SECONDS)
-            self._enter_manual_view()
-            self._manual_range = (
+            preview_range = (
                 anchor_value - new_span * anchor_ratio,
                 anchor_value + new_span * (1.0 - anchor_ratio),
             )
-            self._frozen_x_range = self._manual_range
-            self._manual_y_range = self._drag_start_y_range
-            self._frozen_y_range = self._drag_start_y_range
+            self._enter_history_view(preview_range, self._drag_start_y_range, use_custom_window=False)
         elif self._drag_mode == "yzoom" and self._drag_anchor and self._drag_start_y_range:
             _, anchor_y = self._drag_anchor
             start_min, start_max = self._drag_start_y_range
@@ -1726,21 +1837,27 @@ class WaveformTab(ttk.Frame):
             delta_y = event.y - anchor_y
             scale = math.exp(delta_y / 240.0)
             new_span = max(span * scale, MIN_ZOOM_SPAN_VALUE)
-            self._enter_manual_view()
             new_max = anchor_value + new_span * anchor_ratio
             new_min = anchor_value - new_span * (1.0 - anchor_ratio)
             self._manual_y_range = (new_min, new_max)
-            self._frozen_y_range = self._manual_y_range
+            if self._paused_view:
+                self._frozen_y_range = self._manual_y_range
         self._queue_redraw()
 
     def _on_drag_end(self, _event) -> None:
         self._drag_last_x = None
-        if self._drag_mode == "rect" and self._zoom_rect_start is not None and self._zoom_rect_end is not None:
+        drag_mode = self._drag_mode
+        if drag_mode == "rect" and self._zoom_rect_start is not None and self._zoom_rect_end is not None:
             self._apply_rect_zoom()
+        elif drag_mode == "xzoom" and self._drag_started_live and self._manual_range is not None:
+            span = max(self._manual_range[1] - self._manual_range[0], MIN_ZOOM_SPAN_SECONDS)
+            self._set_custom_window_span(span)
+            self._activate_live_view()
         self._drag_mode = None
         self._drag_anchor = None
         self._drag_start_x_range = None
         self._drag_start_y_range = None
+        self._drag_started_live = False
         self._zoom_rect_start = None
         self._zoom_rect_end = None
         self._queue_redraw()
@@ -1763,29 +1880,31 @@ class WaveformTab(ttk.Frame):
         y0 = min(max(y0, plot_top), plot_bottom)
         y1 = min(max(y1, plot_top), plot_bottom)
 
-        self._enter_manual_view()
-
         x_min, x_max = self._x_range
         start_ratio = (min(x0, x1) - plot_left) / max(plot_right - plot_left, 1)
         end_ratio = (max(x0, x1) - plot_left) / max(plot_right - plot_left, 1)
         new_start = x_min + (x_max - x_min) * start_ratio
         new_end = x_min + (x_max - x_min) * end_ratio
+        new_x_range = self._x_range
         if new_end - new_start >= MIN_ZOOM_SPAN_SECONDS:
-            self._manual_range = (new_start, new_end)
-            self._frozen_x_range = self._manual_range
+            new_x_range = (new_start, new_end)
 
         y_min, y_max = self._y_range
         top_ratio = (min(y0, y1) - plot_top) / max(plot_bottom - plot_top, 1)
         bottom_ratio = (max(y0, y1) - plot_top) / max(plot_bottom - plot_top, 1)
         new_y_max = y_max - (y_max - y_min) * top_ratio
         new_y_min = y_max - (y_max - y_min) * bottom_ratio
+        new_y_range = self._y_range
         if new_y_max - new_y_min >= MIN_ZOOM_SPAN_VALUE:
-            self._manual_y_range = (new_y_min, new_y_max)
-            self._frozen_y_range = self._manual_y_range
+            new_y_range = (new_y_min, new_y_max)
 
-    def _enter_manual_view(self) -> None:
-        self._paused_view = True
-        self.pause_button_text.set("继续显示")
+        follows_latest = self._drag_started_live and max(x0, x1) >= plot_right - 12
+        self._manual_y_range = new_y_range
+        if follows_latest:
+            self._set_custom_window_span(max(new_x_range[1] - new_x_range[0], MIN_ZOOM_SPAN_SECONDS))
+            self._activate_live_view()
+        else:
+            self._enter_history_view(new_x_range, new_y_range)
 
     def _on_canvas_motion(self, event) -> None:
         if self._pending_reference_line is not None:

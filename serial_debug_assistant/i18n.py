@@ -493,6 +493,15 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "显示全部 F": {"zh": "显示全部 F", "en": "Show All F"},
     "清空": {"zh": "清空", "en": "Clear"},
     "查看窗口:": {"zh": "查看窗口:", "en": "View Window:"},
+    "秒": {"zh": "秒", "en": "s"},
+    "自定义窗口必须在 {minimum} 到 {maximum} 秒之间": {
+        "zh": "自定义窗口必须在 {minimum} 到 {maximum} 秒之间",
+        "en": "Custom window must be between {minimum} and {maximum} seconds",
+    },
+    "自定义查看窗口已设置为 {seconds} 秒": {
+        "zh": "自定义查看窗口已设置为 {seconds} 秒",
+        "en": "Custom view window set to {seconds} seconds",
+    },
     "导出 Ctrl+E": {"zh": "导出 Ctrl+E", "en": "Export Ctrl+E"},
     "导入 Ctrl+I": {"zh": "导入 Ctrl+I", "en": "Import Ctrl+I"},
     "添加标记 M": {"zh": "添加标记 M", "en": "Add Marker M"},
@@ -518,6 +527,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "最近30秒": {"zh": "最近30秒", "en": "Last 30s"},
     "最近1分钟": {"zh": "最近1分钟", "en": "Last 1 min"},
     "最近10分钟": {"zh": "最近10分钟", "en": "Last 10 min"},
+    "自定义": {"zh": "自定义", "en": "Custom"},
     "全部": {"zh": "全部", "en": "All"},
     "当前没有勾选显示的参数。": {"zh": "当前没有勾选显示的参数。", "en": "No parameters are enabled for display."},
     "还没有选择任何波形参数，请先在参数页勾选。": {
@@ -538,6 +548,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "历史查看": {"zh": "历史查看", "en": "History"},
     "实时跟随": {"zh": "实时跟随", "en": "Live"},
     "查看窗口: {mode} {seconds:.1f}s": {"zh": "查看窗口: {mode} {seconds:.1f}s", "en": "View: {mode} {seconds:.1f}s"},
+    "查看窗口: {mode} {seconds:.1f}s，已接收 {count} 个新数据点": {
+        "zh": "查看窗口: {mode} {seconds:.1f}s，已接收 {count} 个新数据点",
+        "en": "View: {mode} {seconds:.1f}s, {count} new samples received",
+    },
     "拖动框选区域缩放，Shift+拖动缩放横轴，Ctrl+拖动缩放纵轴，Shift+滚轮横向移动，Ctrl+滚轮纵向移动。": {
         "zh": "拖动框选区域缩放，Shift+拖动缩放横轴，Ctrl+拖动缩放纵轴，Shift+滚轮横向移动，Ctrl+滚轮纵向移动。",
         "en": "Drag to zoom a region. Shift+drag zooms X, Ctrl+drag zooms Y. Shift+wheel pans horizontally, Ctrl+wheel pans vertically.",
