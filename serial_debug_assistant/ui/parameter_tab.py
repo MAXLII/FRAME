@@ -62,7 +62,7 @@ class ParameterReadWriteTab(ttk.Frame):
         self._invalid_name: str | None = None
         self._tree_style = "Param.Treeview"
         self._tree_selected_bg = ACCENT_SOFT
-        self._tree_selected_fg = "#ffffff"
+        self._tree_selected_fg = TEXT
         self._pending_tree_entries: deque[str] = deque()
         self._pending_tree_names: set[str] = set()
         self._tree_flush_job: str | None = None
@@ -117,7 +117,7 @@ class ParameterReadWriteTab(ttk.Frame):
         style.map(
             self._tree_style,
             background=[("selected", self._tree_selected_bg)],
-            foreground=[("selected", TEXT)],
+            foreground=[("selected", self._tree_selected_fg)],
         )
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse", height=20, style=self._tree_style)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -496,10 +496,8 @@ class ParameterReadWriteTab(ttk.Frame):
         selected_fg = self._tree_selected_fg
         if selected and selected == self._invalid_name:
             selected_bg = WARNING_SOFT
-            selected_fg = WARNING
         elif selected and selected == self._busy_name:
             selected_bg = DANGER_SOFT
-            selected_fg = DANGER
         elif selected and self._is_wave_enabled(selected):
             selected_bg = ACCENT
             selected_fg = "#ffffff"
