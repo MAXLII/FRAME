@@ -1,5 +1,23 @@
 # 可维护架构说明
 
+## 0. 分层后端架构
+
+上位机后端按功能模块、数据池、框架和平台划分职责，但不机械复制嵌入式工程目录：
+
+```text
+功能模块    protocol / *_protocol / controllers
+               ⇅ 业务只读接口、数据源写入接口
+数据池      data_pool/RuntimeStatePool（一份私有运行状态）
+框架        framework/ProtocolRuntime（收包、拆帧、路由、发帧）
+平台        platform/TransportRegistry -> services（Serial/CAN/Ethernet/Demo）
+```
+
+- `RuntimeStatePool` 独占后端共享连接状态。业务侧只能取得不可变快照，传输数据源通过 exchange 接口发布或清除状态。
+- `ProtocolRuntime` 只面对字节队列、字节写入口和完整协议帧，不知道串口、CAN 或 TCP 的具体 API。
+- `TransportRegistry` 是框架到平台的统一边界，将各服务不同的写接口适配成同一个字节传输契约。
+- `ProtocolControllerPorts` 是功能控制器到应用装配根的窄接口。兼容适配器仍接受现有 Tk 应用对象，但控制器核心不再读取任意 UI 成员。
+- `CommunicationManager` 保留原有公共 API，作为旧 UI 与新后端之间的兼容门面；本次重构不修改 `serial_debug_assistant/ui/` 下的页面代码和视觉行为。
+
 ## 1. 当前应用分层
 
 当前上位机代码按以下职责分层：
@@ -9,10 +27,11 @@ main.py
   -> SerialDebugAssistant
       -> 页面装配、全局状态、定时任务
       -> CommunicationManager
-          -> SerialService / CANService / EthernetService / Demo
-          -> ProtocolParser
-          -> ProtocolSender
-          -> ProtocolRouter
+          -> RuntimeStatePool
+          -> ProtocolRuntime
+              -> ProtocolParser / ProtocolSender / ProtocolRouter
+          -> TransportRegistry
+              -> SerialService / CANService / EthernetService / Demo
       -> EthernetDiscoveryService
           -> IPv4 网卡枚举 / UDP 5000 广播 / 设备响应解析
       -> ProtocolControllerHub
@@ -29,11 +48,11 @@ main.py
 
 `SerialDebugAssistant` 是应用装配根，负责创建窗口、页面、通信服务和控制器。
 
-`CommunicationManager` 负责把串口、CAN、Ethernet TCP 和 Demo 统一成字节流通信入口，并负责协议发送、协议解析和帧分发。
+`CommunicationManager` 是稳定的兼容门面。共享连接状态由 `RuntimeStatePool` 持有，协议发送、解析和分发由 `ProtocolRuntime` 调度，串口、CAN、Ethernet TCP 和 Demo 的选择与写入差异由 `TransportRegistry` 隔离。
 
 `EthernetDiscoveryService` 使用独立的短生命周期 UDP socket 搜索局域网设备。发现结果只向连接栏提供 Host 和 TCP Port，不进入 `CommunicationManager` 的收发队列，也不改变已连接 TCP 通道的协议状态。
 
-`ProtocolControllerHub` 负责应用级协议分发顺序。新协议功能应优先接入 controller，而不是继续扩展 `app.py` 中的总处理链。
+`ProtocolControllerHub` 负责应用级协议分发顺序。它依赖 `ProtocolControllerPorts` 提供的处理器、当前传输查询和日志能力，而不把 Tk 应用对象当作无限制的服务定位器。新协议功能应优先接入 controller，而不是继续扩展 `app.py` 中的总处理链。
 
 ## 2. 接收数据流
 
@@ -42,6 +61,7 @@ main.py
   -> SerialService / CANService / EthernetService
   -> rx_queue
   -> CommunicationManager.process_rx()
+  -> ProtocolRuntime
   -> ProtocolParser.feed()
   -> ProtocolFrame
   -> ProtocolControllerHub.handle_frame()
@@ -61,7 +81,9 @@ main.py
   -> 业务 payload 构造
   -> send_protocol_frame()
   -> CommunicationManager.send_protocol()
+  -> ProtocolRuntime
   -> ProtocolSender
+  -> TransportRegistry
   -> SerialService / CANService / EthernetService
   -> 设备
 ```

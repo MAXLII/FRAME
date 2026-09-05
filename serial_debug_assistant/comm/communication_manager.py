@@ -1,35 +1,20 @@
 from __future__ import annotations
 
-import queue
-from dataclasses import dataclass, field
-from typing import Callable
-
 import serial
 
 from serial_debug_assistant.comm.protocol_parser import ProtocolParser
 from serial_debug_assistant.comm.protocol_router import ProtocolRouter
 from serial_debug_assistant.comm.protocol_sender import ProtocolSender
-from serial_debug_assistant.models import ProtocolFrame, SerialChunk
+from serial_debug_assistant.data_pool import RuntimeStatePool
+from serial_debug_assistant.framework import ProtocolRuntime, RxProcessResult
+from serial_debug_assistant.platform import TransportBinding, TransportRegistry
 from serial_debug_assistant.services.can_service import CANService
 from serial_debug_assistant.services.ethernet_service import EthernetService
 from serial_debug_assistant.services.serial_service import SerialService
 
 
-RawChunkHandler = Callable[[SerialChunk], None]
-FrameLogger = Callable[[ProtocolFrame], None]
-
-
-@dataclass(slots=True)
-class RxProcessResult:
-    updated: bool = False
-    processed_chunks: int = 0
-    processed_bytes: int = 0
-    has_more: bool = False
-    raw_chunks: list[SerialChunk] = field(default_factory=list)
-
-
 class CommunicationManager:
-    """Owns the hardware -> parser -> router communication chain."""
+    """Compatibility facade over data-pool, framework, and platform layers."""
 
     def __init__(
         self,
@@ -43,16 +28,31 @@ class CommunicationManager:
         self.can_service = can_service
         self.ethernet_service = ethernet_service
         self.logger = logger
-        self.parser = ProtocolParser()
-        self.router = ProtocolRouter(logger=logger)
-        self.sender = ProtocolSender(self.write_bytes, logger=logger)
-        self.connected_transport: str | None = None
-        self.endpoint: str | None = None
-        self._frame_logger: FrameLogger | None = None
-        self._rx_idle_polls = 0
+        self._state_pool = RuntimeStatePool()
+        self._state = self._state_pool.business
+        self._state_exchange = self._state_pool.exchange
+        self._transports = TransportRegistry()
+        self._transports.register(TransportBinding("serial", serial_service, serial_service.write))
+        self._transports.register(TransportBinding("demo", serial_service, serial_service.write))
+        self._transports.register(TransportBinding("can", can_service, can_service.send_bytes))
+        self._transports.register(TransportBinding("ethernet", ethernet_service, ethernet_service.write))
+        self._protocol = ProtocolRuntime(self.write_bytes, logger=logger)
 
-    def set_frame_logger(self, frame_logger: FrameLogger | None) -> None:
-        self._frame_logger = frame_logger
+        # Preserve the established backend facade consumed by the unchanged UI.
+        self.parser: ProtocolParser = self._protocol.parser
+        self.router: ProtocolRouter = self._protocol.router
+        self.sender: ProtocolSender = self._protocol.sender
+
+    @property
+    def connected_transport(self) -> str | None:
+        return self._state.connection().transport
+
+    @property
+    def endpoint(self) -> str | None:
+        return self._state.connection().endpoint
+
+    def set_frame_logger(self, frame_logger) -> None:
+        self._protocol.set_frame_logger(frame_logger)
 
     def open_serial(
         self,
@@ -79,9 +79,8 @@ class CommunicationManager:
             break_ms_supplier=break_ms_supplier,
             error_callback=error_callback,
         )
-        self.connected_transport = "serial"
-        self.endpoint = port
-        self.parser.reset()
+        self._state_exchange.publish_connection(transport="serial", endpoint=port)
+        self._protocol.reset()
         self._log("COMM", f"open serial endpoint={port} baud={baudrate}")
 
     def configure_serial(
@@ -119,44 +118,38 @@ class CommunicationManager:
         self.can_service.configure_tx_arbitration(0x100, is_extended_id=False)
         self.can_service.configure_rx_filter(0x101, is_extended_id=False)
         self.can_service.start_reader(error_callback=error_callback)
-        self.connected_transport = "can"
-        self.endpoint = channel
-        self.parser.reset()
+        self._state_exchange.publish_connection(transport="can", endpoint=channel)
+        self._protocol.reset()
         self._log("COMM", f"open can interface={interface} channel={channel} bitrate={bitrate} tx=0x100 rx=0x101")
 
     def open_ethernet(self, *, host: str, port: int, error_callback) -> None:
         self.close()
         self.ethernet_service.open(host=host, port=port)
         self.ethernet_service.start_reader(error_callback=error_callback)
-        self.connected_transport = "ethernet"
-        self.endpoint = f"{host}:{port}"
-        self.parser.reset()
+        endpoint = f"{host}:{port}"
+        self._state_exchange.publish_connection(transport="ethernet", endpoint=endpoint)
+        self._protocol.reset()
         self._log("COMM", f"open ethernet endpoint={self.endpoint} protocol=tcp")
 
     def enable_demo(self) -> None:
         self.close()
         self.serial_service.enable_demo_connection()
-        self.connected_transport = "demo"
-        self.endpoint = "DEMO"
-        self.parser.reset()
+        self._state_exchange.publish_connection(transport="demo", endpoint="DEMO")
+        self._protocol.reset()
         self._log("COMM", "open demo")
 
     def disable_demo(self) -> None:
         self.serial_service.disable_demo_connection()
         if self.connected_transport == "demo":
-            self.connected_transport = None
-            self.endpoint = None
-        self.parser.reset()
+            self._state_exchange.clear_connection()
+        self._protocol.reset()
         self._log("COMM", "close demo")
 
     def close(self) -> None:
         transport = self.connected_transport
-        self.can_service.close()
-        self.ethernet_service.close()
-        self.serial_service.close()
-        self.connected_transport = None
-        self.endpoint = None
-        self.parser.reset()
+        self._transports.close_all()
+        self._state_exchange.clear_connection()
+        self._protocol.reset()
         if transport is not None:
             self._log("COMM", f"close {transport}")
 
@@ -165,25 +158,15 @@ class CommunicationManager:
         return bool(service and service.is_open())
 
     def protocol_available(self) -> bool:
-        return self.connected_transport in {"serial", "can", "ethernet", "demo"}
+        binding = self._transports.get(self.connected_transport)
+        return bool(binding and binding.protocol_enabled)
 
     def active_service(self):
-        if self.connected_transport in {"serial", "demo"}:
-            return self.serial_service
-        if self.connected_transport == "can":
-            return self.can_service
-        if self.connected_transport == "ethernet":
-            return self.ethernet_service
-        return None
+        binding = self._transports.get(self.connected_transport)
+        return None if binding is None else binding.service
 
     def write_bytes(self, payload: bytes) -> int:
-        if self.connected_transport == "can":
-            return self.can_service.send_bytes(payload)
-        if self.connected_transport == "ethernet":
-            return self.ethernet_service.write(payload)
-        if self.connected_transport in {"serial", "demo"}:
-            return self.serial_service.write(payload)
-        raise RuntimeError("No hardware transport is open.")
+        return self._transports.require(self.connected_transport).write(payload)
 
     def send_protocol(
         self,
@@ -218,84 +201,16 @@ class CommunicationManager:
         *,
         max_chunks: int,
         max_bytes: int,
-        raw_chunk_handler: RawChunkHandler | None = None,
+        raw_chunk_handler=None,
     ) -> RxProcessResult:
-        service = self.active_service()
-        result = RxProcessResult()
-        if service is None:
-            return result
-
-        while result.processed_chunks < max_chunks and result.processed_bytes < max_bytes:
-            try:
-                chunk = service.rx_queue.get_nowait()
-            except queue.Empty:
-                break
-
-            result.updated = True
-            result.raw_chunks.append(chunk)
-            if raw_chunk_handler is not None:
-                raw_chunk_handler(chunk)
-
-            if chunk.synthetic and chunk.data == b"\n":
-                continue
-
-            result.processed_chunks += 1
-            result.processed_bytes += len(chunk.data)
-            if self.protocol_available():
-                self._feed_protocol_bytes(chunk.data)
-
-        if result.processed_chunks:
-            self._rx_idle_polls = 0
-        elif service.rx_queue.empty():
-            self._rx_idle_polls += 1
-
-        result.has_more = not service.rx_queue.empty()
-        return result
-
-    def _feed_protocol_bytes(self, data: bytes) -> None:
-        buffer_before = self.parser.buffer_len
-        dropped_before = self.parser.dropped_incomplete_frames
-        try:
-            frames = self.parser.feed(data)
-        except Exception as exc:
-            self._log("ERROR", f"protocol parser error: {exc}")
-            self.parser.reset()
-            return
-
-        buffer_after = self.parser.buffer_len
-        dropped_after = self.parser.dropped_incomplete_frames
-        if self.connected_transport == "can":
-            if frames:
-                self._log(
-                    "CANPARSE",
-                    f"chunk_len={len(data)} parsed={len(frames)} "
-                    f"buffer_before={buffer_before} buffer_after={buffer_after} "
-                    f"chunk={data.hex(' ').upper()}",
-                )
-            elif dropped_after != dropped_before:
-                self._log(
-                    "CANPARSE",
-                    f"dropped_incomplete={dropped_after - dropped_before} total_dropped={dropped_after} "
-                    f"reason={self.parser.last_drop_reason} state={self.parser.last_drop_state} "
-                    f"payload={self.parser.last_drop_received_payload_len}/{self.parser.last_drop_expected_payload_len} "
-                    f"dropped_head={self.parser.last_drop_preview.hex(' ').upper()} "
-                    f"buffer_before={buffer_before} buffer_after={buffer_after} chunk={data.hex(' ').upper()}",
-                )
-            elif buffer_after or 0xE8 in data or b"\r\n" in data:
-                self._log(
-                    "CANPARSE",
-                    f"chunk_len={len(data)} parsed=0 "
-                    f"buffer_before={buffer_before} buffer_after={buffer_after} "
-                    f"chunk={data.hex(' ').upper()} buffer_head={self.parser.buffer_preview().hex(' ').upper()}",
-                )
-
-        for frame in frames:
-            self._dispatch_frame(frame)
-
-    def _dispatch_frame(self, frame: ProtocolFrame) -> None:
-        if self._frame_logger is not None:
-            self._frame_logger(frame)
-        self.router.dispatch(frame)
+        return self._protocol.process_rx(
+            service=self.active_service(),
+            transport=self.connected_transport,
+            protocol_available=self.protocol_available(),
+            max_chunks=max_chunks,
+            max_bytes=max_bytes,
+            raw_chunk_handler=raw_chunk_handler,
+        )
 
     def _log(self, category: str, message: str) -> None:
         if self.logger is not None:
