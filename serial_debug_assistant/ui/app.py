@@ -4181,7 +4181,7 @@ class SerialDebugAssistant(tk.Tk):
                 self.demo_param_list_job = None
             self.expected_param_count = 0
             all_parameters = self.demo_runtime.list_parameters()
-            ordered_items = sorted(all_parameters.items(), key=lambda item: item[0].lower())
+            ordered_items = list(all_parameters.items())
             self.parameters.clear()
             self.parameter_tab.clear_parameters()
             self.parameter_tab.begin_bulk_update()
@@ -5346,7 +5346,7 @@ class SerialDebugAssistant(tk.Tk):
                 self.after_cancel(pending_job)
             except tk.TclError:
                 pass
-        names = tuple(sorted((name for name, entry in self.parameters.items() if entry.auto_report and not entry.is_command), key=str.lower))
+        names = tuple(name for name, entry in self.parameters.items() if entry.auto_report and not entry.is_command)
         if names == self._last_wave_selection_names:
             return
         self._last_wave_selection_names = names

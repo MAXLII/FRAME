@@ -8,6 +8,7 @@ from tkinter import ttk
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.models import ParameterEntry
 from serial_debug_assistant.protocol import TYPE_NAMES, format_value
+from serial_debug_assistant.ui.parameter_search import matches_parameter_search
 from serial_debug_assistant.ui.theme import ACCENT, ACCENT_SOFT, DANGER, DANGER_SOFT, SUCCESS, SUCCESS_SOFT, TEXT, WARNING, WARNING_SOFT
 
 
@@ -165,7 +166,7 @@ class ParameterReadWriteTab(ttk.Frame):
         self.message_var.set(self.i18n.translate_text(message))
 
     def set_parameters(self, parameters: dict[str, ParameterEntry]) -> None:
-        self.parameters = dict(sorted(parameters.items(), key=lambda item: item[0].lower()))
+        self.parameters = dict(parameters)
         self._refresh_rows()
 
     def begin_bulk_update(self) -> None:
@@ -273,15 +274,14 @@ class ParameterReadWriteTab(ttk.Frame):
         return (entry.name, TYPE_NAMES.get(entry.type_id, str(entry.type_id)), data_text, hex_text, min_text, max_text)
 
     def _matches_filter(self, name: str) -> bool:
-        keyword = self.search_var.get().strip().lower()
-        return not keyword or keyword in name.lower()
+        return matches_parameter_search(name, self.search_var.get())
 
     def _refresh_rows(self, preserve_selection: str | None = None) -> None:
         selected_name = preserve_selection or self.get_selected_name()
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        for name, entry in sorted(self.parameters.items(), key=lambda item: item[0].lower()):
+        for name, entry in self.parameters.items():
             if not self._matches_filter(name):
                 continue
             self.tree.insert(
