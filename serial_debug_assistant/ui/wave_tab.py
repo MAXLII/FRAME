@@ -12,6 +12,8 @@ from typing import TextIO
 
 from serial_debug_assistant.i18n import I18nManager
 from serial_debug_assistant.ui.file_dialogs import ask_open_file, ask_save_file
+from serial_debug_assistant.ui.parameter_search import matches_parameter_search
+from serial_debug_assistant.ui.wave_windows import WaveformWindowsMixin
 from serial_debug_assistant.ui.theme import ACCENT, ACCENT_SOFT, BORDER, BORDER_MUTED, CYAN, FONT_MONO, SUCCESS, SURFACE, SURFACE_ALT, TEXT, TEXT_MUTED
 
 
@@ -23,7 +25,7 @@ MIN_ZOOM_SPAN_VALUE = 1e-6
 MAX_POINTS_PER_PIXEL = 3
 SHIFT_MASK = 0x0001
 CTRL_MASK = 0x0004
-ALT_MASK = 0x0008
+ALT_MASK = 0x0008 | 0x20000  # Tk Mod1 and Windows Alt event masks.
 ALT_GUARD_BINDTAG = "WaveformAltGuard"
 WAVE_FILE_EXTENSION = ".sda_wave"
 WAVE_FILE_FORMAT = "serial_debug_assistant.waveform"
@@ -51,7 +53,7 @@ SERIES_COLORS = (
 )
 
 
-class WaveformTab(ttk.Frame):
+class WaveformTab(WaveformWindowsMixin, ttk.Frame):
     def __init__(
         self,
         master,
@@ -135,6 +137,7 @@ class WaveformTab(ttk.Frame):
         self._live_save_batch_count = 0
         self._time_axis_mode = "system"
 
+        self._init_plot_windows()
         self._build()
         self._install_alt_guard_bindtags(self)
         self.bind_class(ALT_GUARD_BINDTAG, "<KeyPress-Alt_L>", self._on_alt_press, add=True)
@@ -186,56 +189,59 @@ class WaveformTab(ttk.Frame):
         self.columnconfigure(0, weight=1)
 
         top = ttk.Frame(self, style="Panel.TFrame")
-        top.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        top.columnconfigure(9, weight=1)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        for column in range(3):
+            top.columnconfigure(column, weight=1)
 
-        row1 = ttk.Frame(top, style="Panel.TFrame")
-        row1.grid(row=0, column=0, sticky="ew")
-        row1.columnconfigure(9, weight=1)
-        period_label = ttk.Label(row1, text=self.i18n.translate_text("上报周期(ms):"), style="Header.TLabel")
-        period_label.grid(row=0, column=0, sticky="w")
+        heading = ttk.Frame(top, style="Panel.TFrame")
+        heading.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        heading.columnconfigure(2, weight=1)
+        title = ttk.Label(heading, text=self.i18n.translate_text("参数波形"), font=("Microsoft YaHei UI", 16, "bold"))
+        title.grid(row=0, column=0, sticky="w")
+        self._remember_text(title, "参数波形")
+        ttk.Label(heading, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=1, padx=20)
+        ttk.Label(heading, textvariable=self.view_var, style="Muted.TLabel").grid(row=0, column=2, sticky="e")
+        self.add_window_button = ttk.Button(heading, text=self.i18n.translate_text("新增窗口"), command=self.add_plot_window)
+        self.add_window_button.grid(row=0, column=3, padx=(12, 0))
+        self._remember_text(self.add_window_button, "新增窗口")
+
+        def group(label: str, column: int) -> ttk.LabelFrame:
+            frame = ttk.LabelFrame(top, text=self.i18n.translate_text(label), style="Section.TLabelframe", padding=10)
+            frame.grid(row=1, column=column, sticky="nsew", padx=(0, 10 if column < 2 else 0))
+            self._remember_text(frame, label)
+            return frame
+
+        def button(parent, text, command, row, column, **options):
+            widget = ttk.Button(parent, text=self.i18n.translate_text(text), command=command, **options)
+            widget.grid(row=row, column=column, sticky="ew", padx=3, pady=3)
+            self._remember_text(widget, text)
+            return widget
+
+        capture = group("采集控制", 0)
+        ttk.Button(capture, textvariable=self.run_button_text, command=self.on_toggle_run, style="Accent.TButton").grid(
+            row=0, column=0, sticky="ew", padx=3, pady=3)
+        self.pause_view_button = ttk.Button(capture, textvariable=self.pause_button_text, command=self.toggle_pause_view)
+        self.pause_view_button.grid(row=0, column=1, sticky="ew", padx=3, pady=3)
+        self.back_to_live_button = button(capture, "回到实时 L", self.back_to_live, 0, 2)
+        period = ttk.Frame(capture, style="Panel.TFrame")
+        period.grid(row=1, column=0, columnspan=2, sticky="w", padx=3, pady=3)
+        period_label = ttk.Label(period, text=self.i18n.translate_text("上报周期(ms):"))
+        period_label.pack(side="left")
         self._remember_text(period_label, "上报周期(ms):")
-        ttk.Entry(row1, textvariable=self.period_var, width=10).grid(row=0, column=1, padx=(6, 8))
-        self.apply_period_button = ttk.Button(row1, text=self.i18n.translate_text("应用周期 R"), command=self.on_apply_period)
-        self.apply_period_button.grid(row=0, column=2)
-        self._remember_text(self.apply_period_button, "应用周期 R")
-        ttk.Button(row1, textvariable=self.run_button_text, command=self.on_toggle_run, style="Accent.TButton").grid(
-            row=0,
-            column=3,
-            padx=(8, 8),
-        )
-        self.pause_view_button = ttk.Button(row1, text=self.i18n.translate_text("暂停/继续 P"), command=self.toggle_pause_view)
-        self.pause_view_button.grid(row=0, column=4)
-        self._remember_text(self.pause_view_button, "暂停/继续 P")
-        self.back_to_live_button = ttk.Button(row1, text=self.i18n.translate_text("回到实时 L"), command=self.back_to_live)
-        self.back_to_live_button.grid(row=0, column=5, padx=(8, 0))
-        self._remember_text(self.back_to_live_button, "回到实时 L")
-        self.show_all_button = ttk.Button(row1, text=self.i18n.translate_text("显示全部 F"), command=self.show_all)
-        self.show_all_button.grid(row=0, column=6, padx=(8, 0))
-        self._remember_text(self.show_all_button, "显示全部 F")
-        self.clear_button = ttk.Button(row1, text=self.i18n.translate_text("清空"), command=self.on_clear)
-        self.clear_button.grid(row=0, column=7, padx=(8, 0))
-        self._remember_text(self.clear_button, "清空")
-        ttk.Label(row1, textvariable=self.status_var, style="Header.TLabel").grid(row=0, column=8, sticky="w", padx=(16, 12))
-        ttk.Label(row1, textvariable=self.view_var).grid(row=0, column=9, sticky="e")
+        ttk.Entry(period, textvariable=self.period_var, width=7).pack(side="left", padx=(6, 0))
+        self.apply_period_button = button(capture, "应用周期 R", self.on_apply_period, 1, 2)
+        for column in range(3):
+            capture.columnconfigure(column, weight=1)
 
-        row2 = ttk.Frame(top, style="Panel.TFrame")
-        row2.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        row2.columnconfigure(10, weight=1)
-        view_label = ttk.Label(row2, text=self.i18n.translate_text("查看窗口:"), style="Header.TLabel")
-        view_label.grid(row=0, column=0, sticky="w")
-        self._remember_text(view_label, "查看窗口:")
-        window_controls = ttk.Frame(row2, style="Panel.TFrame")
-        window_controls.grid(row=0, column=1, padx=(6, 12), sticky="w")
+        view = group("时间窗口", 1)
+        view.columnconfigure(0, weight=1)
+        window_controls = ttk.Frame(view, style="Panel.TFrame")
+        window_controls.grid(row=0, column=0, sticky="w", padx=3, pady=3)
         self.window_combo = ttk.Combobox(
-            window_controls,
-            textvariable=self.window_var,
-            values=self._window_option_labels(),
-            state="readonly",
-            width=12,
-        )
+            window_controls, textvariable=self.window_var, values=self._window_option_labels(),
+            state="readonly", width=12)
         self.window_combo.grid(row=0, column=0, sticky="w")
-        self.custom_window_entry = ttk.Entry(window_controls, textvariable=self.custom_window_var, width=8)
+        self.custom_window_entry = ttk.Entry(window_controls, textvariable=self.custom_window_var, width=7)
         self.custom_window_entry.grid(row=0, column=1, padx=(8, 4))
         self.custom_window_entry.bind("<Return>", self._apply_custom_window)
         self.custom_window_entry.bind("<FocusOut>", self._apply_custom_window)
@@ -243,41 +249,38 @@ class WaveformTab(ttk.Frame):
         self.custom_window_unit_label.grid(row=0, column=2)
         self._remember_text(self.custom_window_unit_label, "秒")
         self._update_custom_window_controls()
-        self.export_button = ttk.Button(row2, text=self.i18n.translate_text("导出 Ctrl+E"), command=self.export_waveform_file)
-        self.export_button.grid(row=0, column=2)
-        self._remember_text(self.export_button, "导出 Ctrl+E")
-        self.import_button = ttk.Button(row2, text=self.i18n.translate_text("导入 Ctrl+I"), command=self.import_waveform_file)
-        self.import_button.grid(row=0, column=3, padx=(8, 0))
-        self._remember_text(self.import_button, "导入 Ctrl+I")
-        ttk.Entry(row2, textvariable=self.marker_var, width=18).grid(row=0, column=4, padx=(12, 6), sticky="w")
-        self.marker_button = ttk.Button(row2, text=self.i18n.translate_text("添加标记 M"), command=self.add_marker)
-        self.marker_button.grid(row=0, column=5)
-        self._remember_text(self.marker_button, "添加标记 M")
-        self.hline_button = ttk.Button(row2, text=self.i18n.translate_text("水平参考线 H"), command=self.start_horizontal_reference_line)
-        self.hline_button.grid(row=0, column=6, padx=(12, 0))
-        self._remember_text(self.hline_button, "水平参考线 H")
-        self.vline_button = ttk.Button(row2, text=self.i18n.translate_text("垂直参考线 V"), command=self.start_vertical_reference_line)
-        self.vline_button.grid(row=0, column=7, padx=(8, 0))
-        self._remember_text(self.vline_button, "垂直参考线 V")
-        self.cross_button = ttk.Button(row2, text=self.i18n.translate_text("十字参考线 C"), command=self.start_cross_reference_line)
-        self.cross_button.grid(row=0, column=8, padx=(8, 0))
-        self._remember_text(self.cross_button, "十字参考线 C")
-        self.clear_ref_button = ttk.Button(row2, text=self.i18n.translate_text("清除参考线"), command=self.clear_reference_lines)
-        self.clear_ref_button.grid(row=0, column=9, padx=(8, 0))
-        self._remember_text(self.clear_ref_button, "清除参考线")
-        tip_label = ttk.Label(
-            row2,
-            text=self.i18n.translate_text("提示: Alt 显示当前点值"),
-            style="Status.TLabel",
-        )
-        tip_label.grid(row=0, column=10, sticky="e")
-        self._remember_text(tip_label, "提示: Alt 显示当前点值")
+        self.show_all_button = button(view, "显示全部 F", self.show_all, 0, 1)
+        hint = ttk.Label(view, text=self.i18n.translate_text("鼠标定位参考线 · 暂停仅冻结显示"), style="Muted.TLabel")
+        hint.grid(row=1, column=0, columnspan=2, sticky="w", padx=3, pady=7)
+        self._remember_text(hint, "鼠标定位参考线 · 暂停仅冻结显示")
+
+        tools = group("标记与文件", 2)
+        tools.columnconfigure(0, weight=1)
+        ttk.Entry(tools, textvariable=self.marker_var, width=12).grid(row=0, column=0, sticky="ew", padx=3, pady=3)
+        self.marker_button = button(tools, "添加标记 M", self.add_marker, 0, 1)
+        style = ttk.Style(self)
+        style.configure("Wave.TMenubutton", background=SURFACE_ALT, foreground=TEXT, padding=(10, 6), bordercolor=BORDER, relief="flat")
+        style.map("Wave.TMenubutton", background=[("active", ACCENT_SOFT)])
+        self.reference_button = ttk.Menubutton(tools, text=self.i18n.translate_text("参考线"), style="Wave.TMenubutton")
+        self.reference_button.grid(row=0, column=2, sticky="ew", padx=3, pady=3)
+        self._remember_text(self.reference_button, "参考线")
+        self.reference_menu = tk.Menu(self.reference_button, tearoff=False)
+        self._reference_menu_labels = ("水平参考线 H", "垂直参考线 V", "十字参考线 C", "清除参考线")
+        for label, command in zip(self._reference_menu_labels, (
+            self.start_horizontal_reference_line, self.start_vertical_reference_line,
+            self.start_cross_reference_line, self.clear_reference_lines,
+        )):
+            self.reference_menu.add_command(label=self.i18n.translate_text(label), command=command)
+        self.reference_button.configure(menu=self.reference_menu)
+        self.export_button = button(tools, "导出 Ctrl+E", self.export_waveform_file, 1, 0)
+        self.import_button = button(tools, "导入 Ctrl+I", self.import_waveform_file, 1, 1)
+        self.clear_button = button(tools, "清空", self.on_clear, 1, 2)
 
         content_paned = tk.PanedWindow(
             self,
             orient="horizontal",
-            sashrelief="raised",
-            sashwidth=6,
+            sashrelief="flat",
+            sashwidth=8,
             bd=0,
             relief="flat",
             bg=BORDER_MUTED,
@@ -289,14 +292,14 @@ class WaveformTab(ttk.Frame):
         left.rowconfigure(3, weight=1)
         left.columnconfigure(0, weight=1)
 
-        intro_label = ttk.Label(left, text=self.i18n.translate_text("在“参数读写”页勾选波形显示后，这里会自动列出已选择的参数。"))
+        intro_label = ttk.Label(left, text=self.i18n.translate_text("拖动参数到波形窗口"), style="Muted.TLabel")
         intro_label.grid(
             row=0,
             column=0,
             sticky="w",
             pady=(0, 8),
         )
-        self._remember_text(intro_label, "在“参数读写”页勾选波形显示后，这里会自动列出已选择的参数。")
+        self._remember_text(intro_label, "拖动参数到波形窗口")
 
         search_row = ttk.Frame(left, style="Panel.TFrame")
         search_row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -336,14 +339,14 @@ class WaveformTab(ttk.Frame):
         center.rowconfigure(0, weight=1)
         center.columnconfigure(0, weight=1)
 
-        content_paned.add(left, minsize=220, stretch="never")
+        content_paned.add(left, minsize=200, width=250, stretch="never")
         content_paned.add(center, minsize=480, stretch="always")
 
         right_paned = tk.PanedWindow(
             center,
             orient="horizontal",
-            sashrelief="raised",
-            sashwidth=6,
+            sashrelief="flat",
+            sashwidth=8,
             bd=0,
             relief="flat",
             bg=BORDER_MUTED,
@@ -352,21 +355,32 @@ class WaveformTab(ttk.Frame):
 
         plot_frame = ttk.LabelFrame(right_paned, text=self.i18n.translate_text("实时波形"), style="Section.TLabelframe", padding=10)
         self._remember_text(plot_frame, "实时波形")
-        plot_frame.rowconfigure(0, weight=1)
-        plot_frame.rowconfigure(1, weight=0)
+        plot_frame.rowconfigure(0, weight=0)
+        plot_frame.rowconfigure(1, weight=1)
         plot_frame.columnconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(plot_frame, bg=SURFACE_ALT, highlightthickness=0, relief="flat")
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        self.canvas.bind("<Configure>", lambda _event: self._queue_redraw())
-        self.canvas.bind("<Motion>", self._on_canvas_motion)
-        self.canvas.bind("<Leave>", self._on_canvas_leave)
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
-        self.canvas.bind("<B1-Motion>", self._on_drag_move)
-        self.canvas.bind("<ButtonRelease-1>", self._on_drag_end)
+        self._build_plot_windows(plot_frame)
 
-        latest_frame = ttk.LabelFrame(right_paned, text=self.i18n.translate_text("最新值"), style="Section.TLabelframe", padding=8)
+        values_paned = tk.PanedWindow(right_paned, orient="vertical", sashwidth=8, bd=0, bg=BORDER_MUTED)
+        reference_frame = ttk.LabelFrame(values_paned, text=self.i18n.translate_text("参考线数值"), style="Section.TLabelframe", padding=10)
+        self.reference_panel = reference_frame
+        self._remember_text(reference_frame, "参考线数值")
+        reference_frame.columnconfigure(0, weight=1)
+        reference_frame.rowconfigure(1, weight=1)
+        self.reference_time_var = tk.StringVar(value=self.i18n.translate_text("等待数据"))
+        ttk.Label(reference_frame, textvariable=self.reference_time_var, font=(FONT_MONO, 11)).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self.reference_tree = ttk.Treeview(reference_frame, columns=("name", "value"), show="headings", selectmode="none", height=7)
+        self.reference_tree.heading("name", text=self.i18n.translate_text("参数名称"))
+        self.reference_tree.heading("value", text=self.i18n.translate_text("数据"))
+        self.reference_tree.column("name", width=190, minwidth=120)
+        self.reference_tree.column("value", width=100, minwidth=90, anchor="e", stretch=False)
+        self.reference_tree.grid(row=1, column=0, sticky="nsew")
+        reference_scroll = ttk.Scrollbar(reference_frame, orient="vertical", command=self.reference_tree.yview)
+        reference_scroll.grid(row=1, column=1, sticky="ns")
+        self.reference_tree.configure(yscrollcommand=reference_scroll.set)
+
+        latest_frame = ttk.LabelFrame(values_paned, text=self.i18n.translate_text("最新值"), style="Section.TLabelframe", padding=10)
+        self.latest_panel = latest_frame
         self._remember_text(latest_frame, "最新值")
         latest_frame.rowconfigure(0, weight=1)
         latest_frame.columnconfigure(0, weight=1)
@@ -390,15 +404,20 @@ class WaveformTab(ttk.Frame):
         latest_scroll.grid(row=0, column=1, sticky="ns")
         self.latest_canvas.configure(yscrollcommand=latest_scroll.set)
 
-        ttk.Label(plot_frame, textvariable=self.cursor_var, style="Status.TLabel", anchor="w", justify="left").grid(
-            row=1,
+        plot_hint = ttk.Label(plot_frame, text=self.i18n.translate_text("拖动框选缩放 · Shift 调整横轴 · Ctrl 调整纵轴"), style="Muted.TLabel", anchor="w")
+        self._remember_text(plot_hint, "拖动框选缩放 · Shift 调整横轴 · Ctrl 调整纵轴")
+        plot_hint.grid(
+            row=2,
             column=0,
             sticky="ew",
             pady=(8, 0),
         )
 
         right_paned.add(plot_frame, minsize=420, stretch="always")
-        right_paned.add(latest_frame, minsize=180, stretch="never")
+        values_paned.add(reference_frame, minsize=160, height=280, stretch="always")
+        values_paned.add(latest_frame, minsize=140, stretch="always")
+        right_paned.add(values_paned, minsize=280, width=330, stretch="never")
+        self.add_plot_window()
 
     def set_period(self, period_ms: int) -> None:
         self.period_var.set(str(period_ms))
@@ -431,7 +450,7 @@ class WaveformTab(ttk.Frame):
                     command=lambda item=name: self._on_row_toggle(item),
                 )
                 checkbox.grid(row=0, column=0, padx=(4, 8))
-                label = tk.Label(row, text=name, anchor="w", bg=SURFACE_ALT, fg=TEXT)
+                label = tk.Label(row, text=name, anchor="w", justify="left", wraplength=max(120, self.series_canvas.winfo_width() - 48), bg=SURFACE_ALT, fg=TEXT)
                 label.grid(row=0, column=1, sticky="w", padx=(0, 6))
                 row.columnconfigure(1, weight=1)
                 row.pack(fill="x", padx=2, pady=1)
@@ -439,6 +458,8 @@ class WaveformTab(ttk.Frame):
                     widget.bind("<MouseWheel>", self._on_series_canvas_mousewheel)
                 self._row_vars[name] = row_var
                 self._row_widgets[name] = (row, checkbox, label)
+                self._bind_parameter_drag(row, name)
+                self._bind_parameter_drag(label, name)
 
         for stale_name in list(self.series_data):
             if stale_name not in current_names:
@@ -449,6 +470,7 @@ class WaveformTab(ttk.Frame):
                 row.destroy()
                 self._row_vars.pop(stale_name, None)
 
+        self._sync_plot_assignments()
         self._refresh_series_order()
         self._update_select_all_visible_state()
         self._queue_list_refresh()
@@ -567,6 +589,7 @@ class WaveformTab(ttk.Frame):
             self._queue_redraw()
 
     def clear_plot(self) -> None:
+        self._reset_plot_views()
         self.stop_realtime_save(reason="clear waveform")
         for data in self.series_data.values():
             data.clear()
@@ -606,6 +629,10 @@ class WaveformTab(ttk.Frame):
     def refresh_texts(self) -> None:
         for widget, source_text, option in self._translatable_widgets:
             widget.configure(**{option: self.i18n.translate_text(source_text)})
+        for index, label in enumerate(self._reference_menu_labels):
+            self.reference_menu.entryconfigure(index, label=self.i18n.translate_text(label))
+        self.reference_tree.heading("name", text=self.i18n.translate_text("参数名称"))
+        self.reference_tree.heading("value", text=self.i18n.translate_text("数据"))
         self.window_combo.configure(values=self._window_option_labels())
         self._set_window_key(self._window_option_key(self.window_var.get()))
         self.status_var.set(self.i18n.translate_text(self.status_var.get()))
@@ -708,6 +735,7 @@ class WaveformTab(ttk.Frame):
             self._activate_live_view()
         else:
             self._enter_history_view(self._x_range, self._y_range, use_custom_window=False)
+            self._freeze_plot_y_ranges()
         self._queue_redraw()
 
     def back_to_live(self) -> None:
@@ -717,6 +745,7 @@ class WaveformTab(ttk.Frame):
         self._queue_redraw()
 
     def show_all(self) -> None:
+        self._reset_plot_y_ranges()
         self._paused_view = True
         self._unseen_sample_count = 0
         self._manual_range = None
@@ -762,10 +791,7 @@ class WaveformTab(ttk.Frame):
         self._queue_redraw()
 
     def clear_reference_lines(self) -> None:
-        had_lines = bool(self.reference_lines) or self._pending_reference_line is not None
-        self.reference_lines.clear()
-        self._pending_reference_line = None
-        self._preview_reference_value = None
+        had_lines = self._clear_plot_reference_lines()
         if had_lines and any(self.series_data.values()):
             self._has_unsaved_changes = True
         if had_lines:
@@ -883,7 +909,7 @@ class WaveformTab(ttk.Frame):
             "markers": [{"timestamp": timestamp, "label": label} for timestamp, label in self.markers],
             "reference_lines": [
                 {"orientation": orientation, "value": value}
-                for orientation, value in self.reference_lines
+                for orientation, value in self._plot_reference_lines()
             ],
             "series_data": {
                 name: [
@@ -1045,6 +1071,7 @@ class WaveformTab(ttk.Frame):
                     restored.append((timestamp, None))
             imported_series[name] = restored
 
+        self._reset_plot_views()
         self.selected_names = []
         self.visible_names = {str(name) for name in payload.get("visible_names", []) if str(name) in selected_names}
         self.series_data = {}
@@ -1125,8 +1152,7 @@ class WaveformTab(ttk.Frame):
                     row.pack(fill="x", padx=2, pady=1)
 
     def _matches_selected_filter(self, name: str) -> bool:
-        keyword = self.selected_search_var.get().strip().lower()
-        return not keyword or keyword in name.lower()
+        return matches_parameter_search(name, self.selected_search_var.get())
 
     def _queue_list_refresh(self) -> None:
         if self._list_refresh_job is not None:
@@ -1175,7 +1201,7 @@ class WaveformTab(ttk.Frame):
 
     def _run_latest_refresh(self) -> None:
         self._latest_refresh_job = None
-        visible_names = [name for name in self.selected_names if name in self.visible_names]
+        visible_names = [name for name in self.selected_names if name in self.visible_names and name in self._plot_assignments]
         if not visible_names:
             for stale_name, widgets in list(self._latest_widgets.items()):
                 widgets[0].destroy()
@@ -1196,7 +1222,7 @@ class WaveformTab(ttk.Frame):
             self._latest_empty_label = None
 
         for idx, name in enumerate(visible_names):
-            color = SERIES_COLORS[idx % len(SERIES_COLORS)]
+            color = self._series_color(name)
             value_text = self.latest_values.get(name, "-")
             widgets = self._latest_widgets.get(name)
             if widgets is None:
@@ -1210,7 +1236,7 @@ class WaveformTab(ttk.Frame):
                     justify="left",
                     bg=SURFACE_ALT,
                     fg=TEXT,
-                    wraplength=130,
+                    wraplength=270,
                 )
                 name_label.grid(row=0, column=1, sticky="w")
                 value_label = tk.Label(
@@ -1222,7 +1248,7 @@ class WaveformTab(ttk.Frame):
                     fg=TEXT,
                     font=(FONT_MONO, 10),
                 )
-                value_label.grid(row=0, column=2, sticky="e", padx=(8, 0))
+                value_label.grid(row=1, column=1, sticky="w", pady=(1, 0))
                 row.columnconfigure(1, weight=1)
                 for widget in (row, swatch, name_label, value_label):
                     widget.bind("<MouseWheel>", self._on_latest_canvas_mousewheel)
@@ -1230,7 +1256,7 @@ class WaveformTab(ttk.Frame):
                 widgets = self._latest_widgets[name]
             row, swatch, name_label, value_label = widgets
             row.pack_forget()
-            row.pack(fill="x", padx=6, pady=2)
+            row.pack(fill="x", padx=10, pady=4)
             swatch.delete("all")
             swatch.create_line(1, 6, 11, 6, fill=color, width=3)
             name_label.configure(text=name)
@@ -1272,6 +1298,7 @@ class WaveformTab(ttk.Frame):
         self._update_select_all_visible_state()
         self._last_hover_index = None
         self.cursor_var.set(self.i18n.translate_text("把鼠标移动到图上即可查看该时刻的数据"))
+        self._queue_latest_refresh()
         self._queue_redraw()
         action = self.i18n.translate_text("显示" if name in self.visible_names else "隐藏")
         self.on_status(f"{action}{self.i18n.translate_text('波形')}: {name}", False)
@@ -1281,6 +1308,8 @@ class WaveformTab(ttk.Frame):
 
     def _on_series_canvas_configure(self, event) -> None:
         self.series_canvas.itemconfigure(self.series_window, width=event.width)
+        for _row, _checkbox, label in self._row_widgets.values():
+            label.configure(wraplength=max(120, event.width - 48))
 
     def _on_series_canvas_mousewheel(self, event) -> None:
         self.series_canvas.yview_scroll(int(-event.delta / 120), "units")
@@ -1290,6 +1319,8 @@ class WaveformTab(ttk.Frame):
 
     def _on_latest_canvas_configure(self, event) -> None:
         self.latest_canvas.itemconfigure(self.latest_window, width=event.width)
+        for _row, _swatch, label, _value in self._latest_widgets.values():
+            label.configure(wraplength=max(120, event.width - 44))
 
     def _on_latest_canvas_mousewheel(self, event) -> None:
         self.latest_canvas.yview_scroll(int(-event.delta / 120), "units")
@@ -1303,7 +1334,7 @@ class WaveformTab(ttk.Frame):
         self._redraw_job = None
         self.redraw()
 
-    def redraw(self) -> None:
+    def _redraw_plot(self) -> None:
         self.canvas.delete("all")
         self._plot_bounds = None
         self._x_range = None
@@ -1316,37 +1347,36 @@ class WaveformTab(ttk.Frame):
         pad_left = 72
         pad_right = 24
         pad_top = 20
-        pad_bottom = 52
+        pad_bottom = 14
         plot_left = pad_left
         plot_top = pad_top
         plot_right = width - pad_right
         plot_bottom = height - pad_bottom
         self.canvas.create_rectangle(plot_left, plot_top, plot_right, plot_bottom, outline=BORDER_MUTED)
+        self._plot_bounds = (plot_left, plot_top, plot_right, plot_bottom)
+        self._x_range = self._shared_x_range
+        self._draw_shared_cursor()
 
         if not self.selected_names:
+            self._draw_hover_panel([], [], plot_left, plot_top, plot_right, plot_bottom)
             self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("还没有选择任何波形参数，请先在参数页勾选。"), fill=TEXT_MUTED, font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 无数据"))
             return
 
-        visible_names = [name for name in self.selected_names if name in self.visible_names]
+        visible_names = self._visible_plot_names()
         if not visible_names:
-            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("当前没有勾选任何可显示的波形，请先在左侧勾选。"), fill=TEXT_MUTED, font=("Segoe UI", 12))
+            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("拖动参数到此窗口"), fill=TEXT_MUTED, font=("Segoe UI", 12))
+            self._draw_hover_panel([], [], plot_left, plot_top, plot_right, plot_bottom)
             self.view_var.set(self.i18n.translate_text("查看窗口: 已全部隐藏"))
             return
 
-        time_bounds: list[tuple[float, float]] = []
-        for name in visible_names:
-            timestamps = self._timestamps_for(name)
-            if timestamps:
-                time_bounds.append((timestamps[0], timestamps[-1]))
-        if not time_bounds:
+        if self._shared_x_range is None:
+            self._draw_hover_panel([], [], plot_left, plot_top, plot_right, plot_bottom)
             self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("已选择参数，但暂时还没有收到波形数据。"), fill=TEXT_MUTED, font=("Segoe UI", 12))
             self.view_var.set(self.i18n.translate_text("查看窗口: 等待数据"))
             return
 
-        data_x_min = min(start for start, _end in time_bounds)
-        data_x_max = max(end for _start, end in time_bounds)
-        x_min, x_max = self._resolve_x_range(data_x_min, data_x_max)
+        x_min, x_max = self._shared_x_range
 
         plot_width = max(int(plot_right - plot_left), 1)
         per_series_windows: dict[str, tuple[int, int, list[tuple[float, float | None]]]] = {}
@@ -1364,21 +1394,8 @@ class WaveformTab(ttk.Frame):
                 if value is not None and math.isfinite(value)
             )
         if not visible_samples:
-            x_min, x_max = data_x_min, data_x_max
-            per_series_windows = {}
-            for name in visible_names:
-                series = self.series_data.get(name, [])
-                if not series:
-                    continue
-                sampled = self._downsample_series(series, 0, len(series), plot_width=plot_width)
-                per_series_windows[name] = (0, len(series), sampled)
-                visible_samples.extend(
-                    (timestamp, value)
-                    for timestamp, value in sampled
-                    if value is not None and math.isfinite(value)
-                )
-        if not visible_samples:
-            self.canvas.create_text(width / 2, height / 2, text="Selected parameters have no numeric waveform data.", fill=TEXT_MUTED, font=("Segoe UI", 12))
+            self.canvas.create_text(width / 2, height / 2, text=self.i18n.translate_text("当前时间范围内无数据"), fill=TEXT_MUTED, font=("Segoe UI", 12))
+            self._draw_hover_panel([], [], plot_left, plot_top, plot_right, plot_bottom)
             self.view_var.set("View window: waiting for data")
             return
 
@@ -1399,8 +1416,6 @@ class WaveformTab(ttk.Frame):
             ratio = tick / 4
             x = plot_left + (plot_right - plot_left) * ratio
             self.canvas.create_line(x, plot_top, x, plot_bottom, fill=BORDER_MUTED, dash=(3, 3))
-            tick_ts = x_min + (x_max - x_min) * ratio
-            self.canvas.create_text(x, plot_bottom + 18, text=self._format_time_axis_value(tick_ts), fill=TEXT_MUTED)
 
         if y_min <= 0.0 <= y_max:
             zero_y = plot_bottom - (0.0 - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
@@ -1412,7 +1427,7 @@ class WaveformTab(ttk.Frame):
 
         latest_points: list[tuple[str, str, float]] = []
         for idx, name in enumerate(visible_names):
-            color = SERIES_COLORS[idx % len(SERIES_COLORS)]
+            color = self._series_color(name)
             series = self.series_data.get(name, [])
             start, end, draw_series = per_series_windows.get(name, (0, 0, []))
             if end - start <= max(plot_width * MAX_POINTS_PER_PIXEL, 300):
@@ -1448,10 +1463,11 @@ class WaveformTab(ttk.Frame):
                 self.canvas.create_oval(last_x - 3, last_y - 3, last_x + 3, last_y + 3, fill=color, outline="")
                 latest_points.append((name, color, last_y))
 
-        self._draw_view_hint(plot_left, plot_top)
-
         if self._zoom_rect_start and self._zoom_rect_end:
             self._draw_zoom_rectangle()
+        # Recompute against the current window even when the pointer is stationary.
+        self._last_hover_canvas_x = plot_left + (plot_right - plot_left) * self._shared_cursor_ratio
+        self._last_hover_index = self._find_hover_index(self._last_hover_canvas_x)
         if self._last_hover_index is not None:
             self._draw_hover_overlay(self._last_hover_index)
 
@@ -1573,7 +1589,8 @@ class WaveformTab(ttk.Frame):
         y_min: float,
         y_max: float,
     ) -> None:
-        lines = list(self.reference_lines)
+        lines = self._plot_reference_lines()
+        fixed_count = len(lines)
         preview_lines: list[tuple[str, float]] = []
         if self._pending_reference_line and self._preview_reference_value is not None:
             if self._pending_reference_line == "cross":
@@ -1586,7 +1603,7 @@ class WaveformTab(ttk.Frame):
         lines.extend(preview_lines)
 
         for index, (orientation, value) in enumerate(lines):
-            is_preview = index >= len(self.reference_lines)
+            is_preview = index >= fixed_count
             if orientation == "vertical":
                 if value < x_min or value > x_max:
                     continue
@@ -1724,6 +1741,9 @@ class WaveformTab(ttk.Frame):
         return "break"
 
     def _on_cancel_reference_shortcut(self, _event) -> str | None:
+        if self._parameter_drag is not None:
+            self._cancel_parameter_drag()
+            return "break"
         if self._shortcut_uses_alt(_event):
             return "break"
         if self.cancel_pending_reference_line():
@@ -1907,6 +1927,10 @@ class WaveformTab(ttk.Frame):
             self._enter_history_view(new_x_range, new_y_range)
 
     def _on_canvas_motion(self, event) -> None:
+        # Recover missed key events when focus changes or the pointer re-enters.
+        alt_pressed = self._shortcut_uses_alt(event)
+        alt_changed = alt_pressed != self._alt_pressed
+        self._alt_pressed = alt_pressed
         if self._pending_reference_line is not None:
             self._update_reference_preview(event.x, event.y)
             return
@@ -1914,7 +1938,7 @@ class WaveformTab(ttk.Frame):
             self._zoom_rect_end = (event.x, event.y)
             self._queue_redraw()
             return
-        self._update_hover_from_canvas_position(event.x, event.y, force=self._alt_pressed)
+        self._update_hover_from_canvas_position(event.x, event.y, force=alt_pressed or alt_changed)
 
     def _on_canvas_leave(self, _event) -> None:
         if self._pending_reference_line is not None:
@@ -1923,10 +1947,7 @@ class WaveformTab(ttk.Frame):
             return
         if self._zoom_rect_start is not None:
             return
-        self._last_hover_index = None
-        self._last_hover_canvas_x = None
-        self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
-        self.redraw()
+        # Keep the reference and its values visible when the pointer leaves.
 
     def _refresh_hover_from_pointer(self, *, force: bool = False) -> None:
         if not self._plot_bounds:
@@ -1943,21 +1964,17 @@ class WaveformTab(ttk.Frame):
         plot_left, plot_top, plot_right, plot_bottom = self._plot_bounds
         inside_plot = plot_left <= canvas_x <= plot_right and plot_top <= canvas_y <= plot_bottom
         if not inside_plot:
-            if self._last_hover_index is not None or self._last_hover_canvas_x is not None:
-                self._last_hover_index = None
-                self._last_hover_canvas_x = None
-                self.cursor_var.set("把鼠标移动到图上即可查看该时刻的数据")
-                self.redraw()
             return
         hover_x = min(max(float(canvas_x), plot_left), plot_right)
+        ratio = (hover_x - plot_left) / max(plot_right - plot_left, 1)
+        ratio_changed = ratio != self.__dict__.get("_shared_cursor_ratio", 1.0)
+        self._shared_cursor_ratio = ratio
         index = self._find_hover_index(hover_x)
-        if index is None:
-            return
-        changed = index != self._last_hover_index or hover_x != self._last_hover_canvas_x
+        changed = ratio_changed or index != self._last_hover_index or hover_x != self._last_hover_canvas_x
         self._last_hover_index = index
         self._last_hover_canvas_x = hover_x
         if changed or force:
-            self.redraw()
+            self._queue_redraw()
 
     def _find_hover_index(self, canvas_x: float) -> int | None:
         reference_name, reference = self._reference_series_with_name()
@@ -2074,9 +2091,9 @@ class WaveformTab(ttk.Frame):
         timestamp = reference[index][0]
         x = plot_left + (timestamp - x_min) / max(x_max - x_min, 1e-9) * (plot_right - plot_left)
         cursor_x = x
-        if self._alt_pressed and self._last_hover_canvas_x is not None:
+        if self._last_hover_canvas_x is not None:
             cursor_x = min(max(self._last_hover_canvas_x, plot_left), plot_right)
-        self.canvas.create_line(cursor_x, plot_top, cursor_x, plot_bottom, fill=TEXT_MUTED, dash=(4, 4))
+            timestamp = x_min + (cursor_x - plot_left) / max(plot_right - plot_left, 1) * (x_max - x_min)
 
         base_text = self._format_time_axis_value(timestamp, milliseconds=True)
         lines = [base_text]
@@ -2084,25 +2101,22 @@ class WaveformTab(ttk.Frame):
         if timestamp in marker_map:
             lines.append(f"标记 = {marker_map[timestamp]}")
         point_labels: list[tuple[str, str, str, float]] = []
-        visible_names = [name for name in self.selected_names if name in self.visible_names]
+        visible_names = self._visible_plot_names()
         for idx, name in enumerate(visible_names):
-            series = self._cached_visible_series.get(name, [])
-            sample = self._nearest_sample(series, timestamp, self._cached_visible_timestamps.get(name))
-            if sample is None:
+            series = self.series_data.get(name, [])
+            sample = self._nearest_sample(series, timestamp, self._timestamps_for(name))
+            if sample is None or not x_min <= sample[0] <= x_max:
                 continue
             _, value = sample
             if value is None or not math.isfinite(value):
                 continue
-            color = SERIES_COLORS[idx % len(SERIES_COLORS)]
+            color = self._series_color(name)
             y = plot_bottom - (value - y_min) / max(y_max - y_min, 1e-9) * (plot_bottom - plot_top)
             self.canvas.create_oval(cursor_x - 3, y - 3, cursor_x + 3, y + 3, fill=color, outline="")
             point_labels.append((name, self._format_numeric(value), color, y))
-            if self._alt_pressed:
-                lines.append(f"{name} = {self._format_numeric(value)}")
+            lines.append(f"{name} = {self._format_numeric(value)}")
 
         self.cursor_var.set(" | ".join(lines))
-        if self._alt_pressed:
-            self._draw_hover_panel(point_labels, lines, plot_left, plot_top, plot_right, plot_bottom)
 
     def _draw_hover_panel(
         self,
@@ -2113,29 +2127,19 @@ class WaveformTab(ttk.Frame):
         plot_right: float,
         plot_bottom: float,
     ) -> None:
-        line_height = 18
-        padding = 10
-        visible_rows = lines[:]
-        max_rows = max(3, int((plot_bottom - plot_top - 20) // line_height) - 1)
-        hidden_count = max(0, len(visible_rows) - max_rows)
-        if hidden_count:
-            visible_rows = visible_rows[:max_rows]
-            visible_rows.append(f"... 还有 {hidden_count} 项")
-
-        box_width = 190
-        box_height = padding * 2 + len(visible_rows) * line_height
-        x = max(plot_left + 12, plot_right - box_width - 12)
-        y = plot_top + 12
-        self.canvas.create_rectangle(x, y, x + box_width, y + box_height, fill=SURFACE, outline=BORDER, width=1)
-        for i, line in enumerate(visible_rows):
-            fill = TEXT
-            if "=" in line and i > 0:
-                name = line.split("=", 1)[0].strip()
-                for label_name, _value_text, color, _row_y in point_labels:
-                    if label_name == name:
-                        fill = color
-                        break
-            self.canvas.create_text(x + padding, y + padding + i * line_height, text=line, anchor="nw", fill=fill, font=("Consolas", 9))
+        if self._current_plot is not self._active_plot:
+            return
+        self.reference_time_var.set(lines[0] if lines else self.i18n.translate_text("等待数据"))
+        current_names = {name for name, _value, _color, _y in point_labels}
+        for name in self.reference_tree.get_children():
+            if name not in current_names:
+                self.reference_tree.delete(name)
+        for index, (name, value, _color, _y) in enumerate(point_labels):
+            if self.reference_tree.exists(name):
+                self.reference_tree.item(name, values=(name, value))
+                self.reference_tree.move(name, "", index)
+            else:
+                self.reference_tree.insert("", "end", iid=name, values=(name, value))
 
     def _draw_alt_value_labels(
         self,

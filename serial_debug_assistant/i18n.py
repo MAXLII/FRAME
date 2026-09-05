@@ -11,6 +11,22 @@ LANGUAGE_DISPLAY = {
 
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
+    "当前时间范围内无数据": {"zh": "当前时间范围内无数据", "en": "No data in the current time range"},
+    "参考线数值 · 窗口 {number}": {"zh": "参考线数值 · 窗口 {number}", "en": "Reference values · Window {number}"},
+    "最新值 · 窗口 {number}": {"zh": "最新值 · 窗口 {number}", "en": "Latest values · Window {number}"},
+    "新增窗口": {"zh": "新增窗口", "en": "Add window"},
+    "波形窗口 {number}": {"zh": "波形窗口 {number}", "en": "Waveform {number}"},
+    "拖动参数到波形窗口": {"zh": "拖动参数到波形窗口", "en": "Drag parameters into a plot"},
+    "拖动参数到此窗口": {"zh": "拖动参数到此窗口", "en": "Drop parameters here"},
+    "点击“新增窗口”开始显示波形": {"zh": "点击“新增窗口”开始显示波形", "en": "Click Add window to display waveforms"},
+    "采集控制": {"zh": "采集控制", "en": "Acquisition"},
+    "时间窗口": {"zh": "时间窗口", "en": "Time window"},
+    "标记与文件": {"zh": "标记与文件", "en": "Markers & files"},
+    "参考线": {"zh": "参考线", "en": "Reference lines"},
+    "参考线数值": {"zh": "参考线数值", "en": "Reference values"},
+    "勾选参数以显示曲线": {"zh": "勾选参数以显示曲线", "en": "Select parameters to plot"},
+    "鼠标定位参考线 · 暂停仅冻结显示": {"zh": "鼠标定位参考线 · 暂停仅冻结显示", "en": "Hover to inspect; pause freezes the view"},
+    "拖动框选缩放 · Shift 调整横轴 · Ctrl 调整纵轴": {"zh": "拖动框选缩放 · Shift 调整横轴 · Ctrl 调整纵轴", "en": "Drag to zoom · Shift: horizontal axis · Ctrl: vertical axis"},
     "Ready": {"zh": "就绪", "en": "Ready"},
     "Disconnected": {"zh": "已断开", "en": "Disconnected"},
     "Open": {"zh": "打开", "en": "Open"},

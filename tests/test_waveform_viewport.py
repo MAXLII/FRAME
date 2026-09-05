@@ -56,6 +56,32 @@ def test_custom_window_follows_latest_timestamp() -> None:
     assert tab._resolve_x_range(0.0, 103.0) == pytest.approx((97.5, 103.0))
 
 
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize(
+    "previous_alt, event_state, expected_alt",
+    [(False, 0x20000, True), (False, 0x0008, True), (True, 0, False)],
+)
+def test_hover_recovers_missed_alt_events(paused, previous_alt, event_state, expected_alt) -> None:
+    tab = _viewport_tab()
+    tab._paused_view = paused
+    tab._alt_pressed = previous_alt
+    tab._pending_reference_line = None
+    tab._zoom_rect_start = None
+    tab._plot_bounds = (0.0, 0.0, 100.0, 100.0)
+    tab._x_range = (0.0, 10.0)
+    tab._last_hover_index = 0
+    tab._last_hover_canvas_x = 50.0
+    tab._find_hover_index = lambda _x: 0
+    redraws = []
+    tab._queue_redraw = lambda: redraws.append(tab._alt_pressed)
+
+    tab._on_canvas_motion(SimpleNamespace(x=50, y=50, state=event_state))
+
+    assert tab._alt_pressed is expected_alt
+    assert redraws == [expected_alt]
+    assert tab._paused_view is paused
+
+
 def test_custom_window_minimum_is_ten_milliseconds() -> None:
     tab = _viewport_tab()
 
