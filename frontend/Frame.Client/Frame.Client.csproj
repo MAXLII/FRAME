@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="../Frame.Interop/Frame.Interop.csproj" /></ItemGroup>
+</Project>

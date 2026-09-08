@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Version>
+    <FileVersion>$(Version).0</FileVersion>
+    <AssemblyVersion>$(Version).0</AssemblyVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+</Project>

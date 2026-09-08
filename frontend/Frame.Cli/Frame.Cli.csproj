@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>frame</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Frame.Client/Frame.Client.csproj" />
+    <PackageReference Include="System.CommandLine" Version="2.0.11" />
+  </ItemGroup>
+</Project>

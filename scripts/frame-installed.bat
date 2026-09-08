@@ -1,4 +1,4 @@
 @echo off
 setlocal
-"%~dp0frame-cli.exe" %*
+call "%~dp0..\frame.bat" %*
 exit /b %ERRORLEVEL%

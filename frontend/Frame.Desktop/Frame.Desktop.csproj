@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Frame.Desktop</AssemblyName>
+    <ApplicationIcon>../../assets/frame_icon.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Frame.Client/Frame.Client.csproj" />
+    <PackageReference Include="ScottPlot.WPF" Version="5.1.59" />
+  </ItemGroup>
+</Project>

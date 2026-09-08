@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>Frame.TcpTests</AssemblyName></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../frontend/Frame.Client/Frame.Client.csproj" /></ItemGroup>
+</Project>

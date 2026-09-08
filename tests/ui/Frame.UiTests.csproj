@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><UseWPF>true</UseWPF><TargetFramework>net10.0-windows10.0.19041.0</TargetFramework><AssemblyName>Frame.UiTests</AssemblyName></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../frontend/Frame.Desktop/Frame.Desktop.csproj" /></ItemGroup>
+</Project>
