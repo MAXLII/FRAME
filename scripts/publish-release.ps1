@@ -19,7 +19,7 @@ try {
     if(-not(Test-Path -LiteralPath $NotesFile)){throw 'Release notes file missing'}
     $installer=Join-Path $frameRoot "dist/installer/FRAME-Setup-$version.exe"
     $checksum="$installer.sha256";$manifest="$installer.manifest.json"
-    if((Get-Item $installer).VersionInfo.ProductVersion -ne $version){throw 'Installer version mismatch'}
+    if((Get-Item $installer).VersionInfo.ProductVersion.Trim() -ne $version){throw 'Installer version mismatch'}
     $package=Get-Content $manifest -Encoding UTF8 -Raw | ConvertFrom-Json
     if($package.commit -ne $head -or $package.version -ne $version){throw 'Rebuild the installer from the release commit'}
     $hash=(Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
