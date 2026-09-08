@@ -7,6 +7,8 @@ __pycache__/
 logs/
 exports/
 build/
+**/bin/
+**/obj/
 dist/
 *.spec
 
@@ -17,5 +19,6 @@ Thumbs.db
 code
 .claude/
 config/frame_config.json
+config/native-ui.json
 publish_github_release.ps1
 AGENTS.md
