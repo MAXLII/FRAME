@@ -1,151 +1,87 @@
-; Inno Setup script for packaging the FRAME application.
-
 #define MyAppName "FRAME"
-#define MyAppExeName "frame.exe"
-#define MyAppCliExeName "frame-cli.exe"
 #ifndef MyAppVersion
-#define MyAppVersion "1.7.3"
+  #error MyAppVersion is required
 #endif
-#ifndef MyAppPublisher
-  #define MyAppPublisher "LWX"
+#ifndef PackageDir
+  #error PackageDir is required
 #endif
-
 [Setup]
 AppId={{6E1E04A9-84D7-46FD-9379-9EFD1D5BE8E2}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-DefaultDirName={localappdata}\Programs\{#MyAppName}
-DefaultGroupName={#MyAppName}
+AppVerName=FRAME {#MyAppVersion}
+AppPublisher=LWX
+DefaultDirName={localappdata}\Programs\FRAME
+DefaultGroupName=FRAME
 UsePreviousAppDir=yes
-UsePreviousGroup=yes
 DisableProgramGroupPage=yes
-DisableDirPage=auto
 OutputDir=..\dist\installer
 OutputBaseFilename=FRAME-Setup-{#MyAppVersion}
-Compression=lzma
+Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0.19041
 SetupIconFile=..\assets\frame_icon.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayIcon={app}\Frame.Desktop.exe
 CloseApplications=yes
-CloseApplicationsFilter={#MyAppExeName},{#MyAppCliExeName}
+CloseApplicationsFilter=Frame.Desktop.exe,frame.exe,frame-cli.exe
 RestartApplications=no
-SetupLogging=yes
 ChangesEnvironment=yes
-
+Uninstallable=not IsValidationInstall
+SetupLogging=yes
 [Languages]
 Name: "default"; MessagesFile: "compiler:Default.isl"
-
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional tasks:"; Flags: unchecked
-
+Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [InstallDelete]
-Type: files; Name: "{app}\{#MyAppExeName}"
-Type: files; Name: "{app}\{#MyAppCliExeName}"
-Type: files; Name: "{app}\frame.bat"
-Type: files; Name: "{app}\app_brand.txt"
+Type: files; Name: "{app}\frame-cli.exe"
 Type: filesandordirs; Name: "{app}\_internal"
-
 [Files]
-Source: "..\dist\frame\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\scripts\frame-installed.bat"; DestDir: "{app}"; DestName: "frame.bat"; Flags: ignoreversion
-
+Source: "{#PackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\{#MyAppName} Terminal"; Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyAppCliExeName}"""; WorkingDir: "{app}"
-Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-
+Name: "{group}\FRAME"; Filename: "{app}\Frame.Desktop.exe"; Check: not IsValidationInstall
+Name: "{group}\FRAME Terminal"; Filename: "{cmd}"; Parameters: "/k ""{app}\frame.exe"" shell"; Check: not IsValidationInstall
+Name: "{autodesktop}\FRAME"; Filename: "{app}\Frame.Desktop.exe"; Tasks: desktopicon; Check: not IsValidationInstall
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
-
+Filename: "{app}\Frame.Desktop.exe"; Description: "Launch FRAME"; Flags: nowait postinstall skipifsilent; Check: not IsValidationInstall
 [Code]
-const
-  EnvironmentKey = 'Environment';
-
-function PathContainsSegment(PathValue: string; Segment: string): Boolean;
+function IsValidationInstall: Boolean;
 begin
-  Result := Pos(';' + Uppercase(Segment) + ';', ';' + Uppercase(PathValue) + ';') > 0;
+  Result := ExpandConstant('{param:FRAMEVALIDATE|0}') = '1';
 end;
-
-function RemovePathSegment(PathValue: string; Segment: string): string;
-var
-  Remaining: string;
-  Part: string;
-  SeparatorPos: Integer;
+function RemovePathSegment(Value, Segment: string): string;
+var Part: string; P: Integer;
 begin
   Result := '';
-  Remaining := PathValue;
-  while Remaining <> '' do
-  begin
-    SeparatorPos := Pos(';', Remaining);
-    if SeparatorPos > 0 then
-    begin
-      Part := Copy(Remaining, 1, SeparatorPos - 1);
-      Delete(Remaining, 1, SeparatorPos);
-    end
-    else
-    begin
-      Part := Remaining;
-      Remaining := '';
-    end;
-
-    if (Part <> '') and (Uppercase(Part) <> Uppercase(Segment)) then
-    begin
-      if Result = '' then
-        Result := Part
-      else
-        Result := Result + ';' + Part;
+  while Value <> '' do begin
+    P := Pos(';', Value);
+    if P = 0 then begin Part := Value; Value := ''; end
+    else begin Part := Copy(Value, 1, P - 1); Delete(Value, 1, P); end;
+    if (Part <> '') and (CompareText(Part, Segment) <> 0) then begin
+      if Result <> '' then Result := Result + ';';
+      Result := Result + Part;
     end;
   end;
 end;
-
-procedure AddInstallDirToUserPath;
-var
-  PathValue: string;
-  AppDir: string;
-begin
-  AppDir := ExpandConstant('{app}');
-  if not RegQueryStringValue(HKCU, EnvironmentKey, 'Path', PathValue) then
-    PathValue := '';
-  if not PathContainsSegment(PathValue, AppDir) then
-  begin
-    if PathValue = '' then
-      PathValue := AppDir
-    else
-      PathValue := PathValue + ';' + AppDir;
-    RegWriteStringValue(HKCU, EnvironmentKey, 'Path', PathValue);
-  end;
-end;
-
-procedure RemoveInstallDirFromUserPath;
-var
-  PathValue: string;
-  NewPathValue: string;
-  AppDir: string;
-begin
-  AppDir := ExpandConstant('{app}');
-  if RegQueryStringValue(HKCU, EnvironmentKey, 'Path', PathValue) then
-  begin
-    NewPathValue := RemovePathSegment(PathValue, AppDir);
-    if NewPathValue <> PathValue then
-      RegWriteStringValue(HKCU, EnvironmentKey, 'Path', NewPathValue);
-  end;
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
+var Value, AppDir: string;
 begin
-  if CurStep = ssPostInstall then
-    AddInstallDirToUserPath;
+  if (CurStep = ssPostInstall) and not IsValidationInstall then begin
+    AppDir := ExpandConstant('{app}');
+    RegQueryStringValue(HKCU, 'Environment', 'Path', Value);
+    if Pos(';' + Uppercase(AppDir) + ';', ';' + Uppercase(Value) + ';') = 0 then begin
+      if Value <> '' then Value := Value + ';';
+      RegWriteStringValue(HKCU, 'Environment', 'Path', Value + AppDir);
+    end;
+  end;
 end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var Value: string;
 begin
-  if CurUninstallStep = usPostUninstall then
-    RemoveInstallDirFromUserPath;
+  if CurUninstallStep = usUninstall then
+    if RegQueryStringValue(HKCU, 'Environment', 'Path', Value) then
+      RegWriteStringValue(HKCU, 'Environment', 'Path', RemovePathSegment(Value, ExpandConstant('{app}')));
 end;
