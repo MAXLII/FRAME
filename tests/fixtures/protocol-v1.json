@@ -1,0 +1,145 @@
+[
+  {
+    "name": "parameter_item",
+    "word": 4,
+    "payload": "0c042a000000e80300000000000001544553545f434f554e544552",
+    "frame": "e801020001000104001b000c042a000000e80300000000000001544553545f434f554e544552ac350d0a",
+    "expected": {
+      "name": "TEST_COUNTER",
+      "type_id": 4,
+      "data_raw": 42,
+      "min_raw": 0,
+      "max_raw": 1000,
+      "status": 1,
+      "auto_report": true,
+      "important": false,
+      "dirty": false
+    },
+    "expected_native": {
+      "max": 1000,
+      "flags": 1,
+      "raw": 42,
+      "min": 0,
+      "type": 4,
+      "name": "TEST_COUNTER"
+    }
+  },
+  {
+    "name": "parameter_batch",
+    "word": 63,
+    "payload": "010000000000000001000c042a000000e80300000000000001544553545f434f554e544552",
+    "frame": "e80102000100013f002500010000000000000001000c042a000000e80300000000000001544553545f434f554e5445527a750d0a",
+    "expected": {},
+    "expected_native": {
+      "total": 1,
+      "first": 0
+    }
+  },
+  {
+    "name": "wave_batch",
+    "word": 64,
+    "payload": "7b000000010000000000000001000c042a000000544553545f434f554e544552",
+    "frame": "e8010200010001400020007b000000010000000000000001000c042a000000544553545f434f554e544552bf150d0a",
+    "expected": {},
+    "expected_native": {
+      "total": 1,
+      "first": 0,
+      "tick_100us": 123
+    }
+  },
+  {
+    "name": "scope_info",
+    "word": 25,
+    "payload": "000002010200000002000000000000000000000000000000000000006400000007000000",
+    "frame": "e801020001000119012400000002010200000002000000000000000000000000000000000000006400000007000000dce60d0a",
+    "expected": {},
+    "expected_native": {
+      "ready": 1,
+      "channels": 2,
+      "count": 2,
+      "period_us": 100,
+      "tag": 7
+    }
+  },
+  {
+    "name": "scope_sample",
+    "word": 31,
+    "payload": "000000020000000007000000000000000000c03f000020c0",
+    "frame": "e80102000100011f011800000000020000000007000000000000000000c03f000020c09eb10d0a",
+    "expected": {},
+    "expected_native": {
+      "values": [
+        1.5,
+        -2.5
+      ],
+      "index": 0,
+      "tag": 7
+    }
+  },
+  {
+    "name": "sfra_point",
+    "word": 54,
+    "payload": "0000010000000100030000000000c8420000003f000034c2",
+    "frame": "e8010200010001360018000000010000000100030000000000c8420000003f000034c201d40d0a",
+    "expected": {},
+    "expected_native": {
+      "phase": -45.0,
+      "count": 1,
+      "frequency": 100.0,
+      "magnitude": 0.5,
+      "tag": 3
+    }
+  },
+  {
+    "name": "perf_info",
+    "word": 32,
+    "payload": "010002000000803fe8030000e803000000000000",
+    "frame": "e801020001000120011400010002000000803fe8030000e803000000000000ce770d0a",
+    "expected": {},
+    "expected_native": {
+      "window_ms": 1000,
+      "count": 2,
+      "version": 1,
+      "unit_us": 1.0
+    }
+  },
+  {
+    "name": "trace",
+    "word": 45,
+    "payload": "faffffff7b00",
+    "frame": "e80102000100012d000600faffffff7b00aaa00d0a",
+    "expected": {
+      "tick": 4294967290,
+      "line": 123
+    },
+    "expected_native": {
+      "tick": 4294967290,
+      "line": 123
+    }
+  },
+  {
+    "name": "section_directory",
+    "word": 56,
+    "payload": "010000000100050002000000047461736b",
+    "frame": "e801020001000138011100010000000100050002000000047461736b19210d0a",
+    "expected": {},
+    "expected_native": {
+      "list_id": 5,
+      "name": "task",
+      "node_count": 2
+    }
+  },
+  {
+    "name": "section_node",
+    "word": 57,
+    "payload": "01000500000000000200000034120008",
+    "frame": "e8010200010001390110000100050000000000020000003412000830210d0a",
+    "expected": {},
+    "expected_native": {
+      "count": 2,
+      "address": 134222388,
+      "list_id": 5,
+      "index": 0
+    }
+  }
+]
