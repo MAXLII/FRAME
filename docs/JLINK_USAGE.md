@@ -1,5 +1,7 @@
 # J-Link 使用方法
 
+> 本文保留旧版 1.x 的完整行为作为迁移对照，不代表 2.x 已实现全部命令。当前 CLI/Shell 用法见 [CLI_REFERENCE.md](CLI_REFERENCE.md)，迁移状态见 [DIAGNOSTIC_PAGE_PARITY.md](DIAGNOSTIC_PAGE_PARITY.md) 与对应 Release 说明。
+
 本文档说明 FRAME 中 J-Link 变量读取、结构体展开、RAM 写入和命令行读取的使用方法。
 
 ## 1. 使用前准备
