@@ -73,6 +73,7 @@ public partial class MainWindow : Window
         public ulong CaptureJob;
         public bool Stopping;
         public bool WaveViewRefresh, WaveShowAll;
+        public ulong WaveGeneration;
         public JsonArray Records { get; set; } = new();
     }
 
@@ -165,6 +166,19 @@ public partial class MainWindow : Window
                 System.Windows.Automation.AutomationProperties.SetName(clearMeasurement,"清除测量");System.Windows.Automation.AutomationProperties.SetAutomationId(clearMeasurement,"wave_clear_measurement");
                 clearMeasurement.Click+=(_,_)=>{p.WavePlots.ClearTimeMeasurement();Feedback.Text="测量已清除";};bar.Children.Add(clearMeasurement);
                 p.WavePlots.MeasurementChanged+=text=>{measure.ToolTip=string.IsNullOrEmpty(text)?"依次点击两个时间位置测量 Δt":text;Feedback.Text=text;};
+                var clear=new Button{Content="清除波形",ToolTip="清除当前波形数据，保留连接、采集和曲线分配"};
+                clear.Click+=async(_,_)=>{
+                    clear.IsEnabled=false;
+                    try {
+                        if(p.Dataset!=0){
+                            var result=await client.ExecuteAsync(new(){["group"]="data",["action"]="clear",["dataset"]=p.Dataset});
+                            if(result["ok"]?.GetValue<bool>()!=true)throw new InvalidOperationException(result["error"]?.ToString());
+                            p.WaveGeneration=result["data"]!["generation"]!.GetValue<ulong>();
+                        }
+                        ResetWaveDisplay(p);Feedback.Text="波形已清除";
+                    }catch(Exception error){Feedback.Text=error.Message;}
+                    finally{clear.IsEnabled=true;}
+                };bar.Children.Add(clear);
                 AlignWaveToolbar(bar);
                 clearMeasurement.MinWidth=34;clearMeasurement.Width=34;clearMeasurement.Padding=new Thickness(0);
             }
@@ -376,7 +390,9 @@ public partial class MainWindow : Window
                 if (data["group"]?.GetValue<string>() != p.Key) throw new ArgumentException("数据类型与当前页面不符");
                 if(jobs.Values.Any(j=>j.Page==p))throw new ArgumentException("请先停止当前页面的任务，再打开历史文件");
                 if(p.Series!=null&&data["records"] is JsonArray savedRecords)p.Series.SetSelectedParameters(savedRecords.OfType<JsonObject>().Where(r=>r["name"]!=null).Select(r=>r["name"]!.ToString()).Distinct().ToArray());
-                p.Dataset=0;p.Pause.IsChecked=false;ShowData(p, data); Feedback.Text = "已打开 " + dialog.FileName; return;
+                p.Dataset=0;p.Pause.IsChecked=false;
+                if(p.Key=="wave"){p.WaveGeneration=data?["generation"]?.GetValue<ulong>()??0;ResetWaveDisplay(p);}
+                ShowData(p, data); Feedback.Text = "已打开 " + dialog.FileName; return;
             }
             JsonObject request = new() { ["group"] = p.Key, ["action"] = action, ["timeout"] = 60000 };
             if(p.Key is "wave" or "trace" && action=="capture")request.Remove("timeout");
@@ -426,7 +442,7 @@ public partial class MainWindow : Window
                 p.ResumeDataset=p.Dataset;
                 if(p.Dataset!=0)request["resume_dataset"]=p.Dataset;
                 p.Follow.IsChecked=true;p.WaveShowAll=false;p.WaveViewRefresh=false;
-                if(p.Dataset==0)p.WavePlots!.ResetView();
+                if(p.Dataset==0){p.WaveGeneration=0;p.WavePlots!.ResetView();}
             }
             var job = client.Submit(request); jobs.Add(job.Id, (job, p));
             if(p.Key is "scope" or "sfra"){
@@ -455,6 +471,12 @@ public partial class MainWindow : Window
         p.Table.ItemsSource = table.DefaultView;
     }
 
+    private void ResetWaveDisplay(PageState p)
+    {
+        p.Records=new();p.Series?.SetHoverTime(null);p.Series?.Update(p.Records);
+        p.WavePlots?.ClearTimeMeasurement();p.WavePlots?.ResetView();p.WaveShowAll=false;p.WaveViewRefresh=true;
+        p.Pause.IsChecked=false;p.Follow.IsChecked=true;WaveCursor.Text="";Draw(p);
+    }
     private void ShowData(PageState p, JsonNode? data)
     {
         if (data is null) return;
@@ -463,7 +485,13 @@ public partial class MainWindow : Window
         if(p.Parameters!=null){p.Parameters.Apply(data);return;}
         if (data is JsonObject obj && obj["records"] is JsonArray records)
         {
+            if(p.Key=="wave"&&obj["dataset_id"] is JsonNode sourceId&&sourceId.GetValue<ulong>()!=p.Dataset)return;
             if(p.ScopeView!=null)p.ScopeView.TriggerMetadata=obj["metadata"] as JsonObject;
+            if(p.Key=="wave"&&obj["generation"] is JsonNode generation){
+                ulong current=generation.GetValue<ulong>();
+                if(current<p.WaveGeneration)return;
+                if(current!=p.WaveGeneration){p.WaveGeneration=current;ResetWaveDisplay(p);return;}
+            }
             p.Records = records;if(p.Key!="wave")SetTable(p,records);
             if(p.Key=="serial")RenderSerial(p);
             p.Series?.Update(records,obj["latest_records"] as JsonArray);
@@ -638,6 +666,10 @@ public partial class MainWindow : Window
                 int waveCount=waveSet["count"]!.GetValue<int>();
                 var reported=await client.ExecuteAsync(new(){["group"]="data",["action"]="read",["dataset"]=waveSet["id"]!.DeepClone(),["offset"]=Math.Max(0,waveCount-1000),["limit"]=1000});
                 if(reported["data"]?["records"] is JsonArray records)page.Parameters.ApplyReported(records);
+            }
+            if(page.Key=="wave"&&state["datasets"]!.AsArray().FirstOrDefault(d=>d!["id"]!.GetValue<ulong>()==page.Dataset) is JsonNode waveState){
+                ulong generation=waveState["generation"]?.GetValue<ulong>()??0;
+                if(generation>page.WaveGeneration){page.WaveGeneration=generation;ResetWaveDisplay(page);}
             }
             if ((page.Pause.IsChecked!=true||page.WaveViewRefresh) && page.Dataset != 0 && state["datasets"]!.AsArray().FirstOrDefault(d => d!["id"]!.GetValue<ulong>() == page.Dataset) is JsonNode set)
             {

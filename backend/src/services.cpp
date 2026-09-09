@@ -100,6 +100,11 @@ json runtime::execute(operation &op) {
     }
     auto &d = datasets[id];
     auto &rows = d["records"];
+    if (action == "clear") {
+      clear_wave(id, "manual");
+      if (streams.contains(id)) wave_integrity = {};
+      return {{"dataset_id", id}, {"generation", d["generation"]}, {"cleared", true}};
+    }
     if (action == "view") {
       if (d.value("group", "") != "wave")
         throw failure(2, "Waveform dataset required");
@@ -141,9 +146,9 @@ json runtime::execute(operation &op) {
       json latest = json::array();
       for (const auto &[name, record] : latest_records) latest.push_back(*record);
       return {{"records", visible}, {"latest_records", latest}, {"total", rows.size()},
-              {"dataset_id", id}, {"left", left}, {"right", right}};
+              {"dataset_id", id}, {"generation", d.value("generation", 0ull)}, {"left", left}, {"right", right}};
     }
-    auto revision = d.value("dropped", 0ull) + rows.size();
+    auto revision = d.value("revision_base", 0ull) + d.value("dropped", 0ull) + rows.size();
     if (q.contains("revision") && q["revision"] != revision)
       throw failure(
           6,
@@ -519,6 +524,8 @@ json runtime::execute(operation &op) {
       datasets[op.id]["period_ms"] = q.value("period", 10u);
       datasets[op.id]["segment"] = resume ? datasets[resume].value("segment", 0u) + 1 : 0;
       if (resume) {
+        for (const auto *field : {"generation", "revision_base", "simulation_tick", "simulation_epoch"})
+          if (datasets[resume].contains(field)) datasets[op.id][field] = datasets[resume][field];
         datasets[op.id]["records"] = std::move(datasets[resume]["records"]);
         datasets[op.id]["dropped"] = datasets[resume].value("dropped", 0);
         datasets.erase(resume);

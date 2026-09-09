@@ -65,6 +65,31 @@ int main(int argc, char **argv) {
     require(argc == 3, "fixture directory and fake Commander required");
     auto fixture = std::filesystem::path(argv[1]);
     {
+      auto batch=[](std::uint32_t tick){
+        frame::bytes b;frame::put(b,tick,4);frame::put(b,1,4);frame::put(b,0,4);frame::put(b,1,2);
+        b.insert(b.end(),{1,5,42,0,0,0,'X'});return response(0x40,b,false);
+      };
+      auto sample=response(7,{1,5,42,0,0,0,'X'},false);
+      auto step=[&](std::string report){return json{{"rx",{report+response(6,{20,0,0,0})}}};};
+      replay_file replay(json::array({json{{"rx",{response(6,{10,0,0,0})}}},json{{"rx",{response(0x0c,{})}}},
+        step(batch(10000)),step(batch(20000)),step(batch(0)),step(batch(100)),
+        step(batch(0xfffffff0u)),step(batch(16)),step(sample),step(sample),step(batch(100)),
+        json{{"rx",{response(0x0c,{})}}}}));
+      backend b;auto capture=submit(b,{{"group","wave"},{"action","capture"},{"replay",replay.path.string()},{"duration",0}});
+      for(unsigned i=0;i<100;++i){auto state=call(b,{{"group","status"}});if(!state["data"]["datasets"].empty())break;std::this_thread::sleep_for(5ms);}
+      auto upload=[&](){require(call(b,{{"group","wave"},{"action","period"},{"period",20}})["ok"],"upload replay");return call(b,{{"group","data"},{"action","read"},{"dataset",capture}})["data"];};
+      upload();auto old=upload();require(old["total"]==2,"retain simulation samples");
+      auto restarted=upload();require(restarted["total"]==1&&restarted["generation"]==1&&restarted["records"][0]["time"]==0,"simulation restart clears old samples before appending");
+      require(call(b,{{"group","data"},{"action","read"},{"dataset",capture},{"revision",old["revision"]}})["code"]==6,"restart invalidates old paging revisions");
+      require(upload()["total"]==2,"new simulation keeps accumulating");upload();auto wrapped=upload();
+      require(wrapped["generation"]==1&&wrapped["records"].back()["time"].get<double>()>429496,"counter wrap does not restart simulation");
+      upload();auto mcu=upload();require(mcu["generation"]==1&&mcu["total"]==6,"MCU reports never auto-clear history");
+      auto cleared=call(b,{{"group","data"},{"action","clear"},{"dataset",capture}});require(cleared["ok"]&&cleared["data"]["generation"]==2,"clear active wave dataset");
+      auto empty=call(b,{{"group","data"},{"action","read"},{"dataset",capture}})["data"];require(empty["total"]==0&&empty["state"]=="running","manual clear keeps acquisition running");
+      require(upload()["total"]==1,"acquisition continues after clear");
+      require(call(b,{{"group","wave"},{"action","stop"}})["ok"],"stop after clear");require(wait(b,capture)["ok"],"capture finishes after clear");
+    }
+    {
       auto ack=[](unsigned count,unsigned seq){frame::bytes b{1,0};frame::put(b,count,2);frame::put(b,seq,4);frame::put(b,7,4);b.push_back(0);return b;};
       auto entry=[](unsigned index,unsigned id,unsigned type,const std::string &name){frame::bytes b;frame::put(b,1,4);frame::put(b,index,2);frame::put(b,2,2);frame::put(b,id,2);b.push_back(static_cast<std::uint8_t>(type));b.push_back(static_cast<std::uint8_t>(name.size()));b.insert(b.end(),name.begin(),name.end());return b;};
       auto end=[](unsigned count,unsigned seq,bool dictionary){frame::bytes b;frame::put(b,seq,4);frame::put(b,count,2);b.insert(b.end(),{0,0});if(dictionary)frame::put(b,7,4);return b;};

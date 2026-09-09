@@ -85,6 +85,7 @@ public:
   json execute(operation &op);
   json jlink(operation &op);
   void append_stream(const std::string &group, json record);
+  void clear_wave(std::uint64_t id, const std::string &reason);
   void export_dataset(std::uint64_t id, const std::string &path);
   void fail_streams(int code, const std::string &error);
 };

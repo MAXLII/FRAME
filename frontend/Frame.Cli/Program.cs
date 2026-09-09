@@ -15,7 +15,7 @@ internal static class Program
         ["wave"]=["capture","start","stop","status"], ["scope"]=["list","info","channels","start","trigger","stop","reset","pull"],
         ["sfra"]=["list","info","configure","start","stop","reset","points"], ["perf"]=["info","summary","dictionary","samples","start","stop","reset"],
         ["trace"]=["capture","start","stop","status"], ["section"]=["list","nodes"], ["jlink"]=["connect","disconnect","detect","load","symbols","expand","read","write"],
-        ["data"]=["read","view","export","release"], ["ethernet"]=["discover"]
+        ["data"]=["read","view","clear","export","release"], ["ethernet"]=["discover"]
     };
     private static readonly string[] Numeric=["baud","dst","dynamic-dst","timeout","response-timeout","id","dataset","offset","limit","period","data-bits","stop-bits","count","revision","probe","tcp-port","scan-ms","discovery-port","speed"];
     private static readonly string[] Real=["duration","interval","start-hz","stop-hz","amplitude","seconds","left","right"];
@@ -120,19 +120,22 @@ internal static class Program
     private static async Task<JsonObject> StreamAsync(JsonObject request,CancellationToken token)
     {
         var job=Client.Submit(request);using var registration=token.Register(()=>Client.Cancel(job.Id));
-        long cursor=0;
+        long cursor=0;ulong generation=0;
         while(true)
         {
             bool done=job.Completion.IsCompleted;
             var set=Client.Snapshot()["datasets"]!.AsArray().FirstOrDefault(x=>x!["id"]!.GetValue<ulong>()==job.Id);
             if(set!=null)
             {
+                ulong currentGeneration=set["generation"]?.GetValue<ulong>()??0;
+                if(currentGeneration!=generation){generation=currentGeneration;cursor=0;Print(new JsonObject{["kind"]="reset",["dataset_id"]=job.Id,["generation"]=generation},true);}
                 long dropped=set["dropped"]!.GetValue<long>();
                 if(cursor<dropped){Print(new JsonObject{["kind"]="gap",["dataset_id"]=job.Id,["lost"]=dropped-cursor},true);cursor=dropped;}
                 var page=await Client.ExecuteAsync(new JsonObject{["group"]="data",["action"]="read",["dataset"]=job.Id,["offset"]=cursor-dropped,["limit"]=10000});
                 if(page["ok"]!.GetValue<bool>() || (page["code"]!.GetValue<int>()==6 && page["data"] is JsonObject))
                 {
                     var data=page["data"]!;long actualDropped=data["dropped"]?.GetValue<long>()??0;
+                    if((data["generation"]?.GetValue<ulong>()??0)!=generation)continue;
                     if(actualDropped!=dropped)continue;
                     foreach(var row in data["records"]!.AsArray()){Print(new JsonObject{["kind"]="record",["dataset_id"]=job.Id,["index"]=cursor++,["data"]=row!.DeepClone()},true);}
                     if(done&&cursor<actualDropped+data["total"]!.GetValue<long>())continue;

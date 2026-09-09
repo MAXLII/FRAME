@@ -183,6 +183,7 @@ void runtime::publish() {
     sets.push_back({{"id", id},
                     {"group", d["group"]},
                     {"state", d.value("state", std::string())},
+                    {"generation", d.value("generation", 0ull)},
                     {"count", d["records"].size()},
                     {"dropped", d.value("dropped", 0)}});
   std::lock_guard lock(mutex_);
@@ -202,6 +203,16 @@ void runtime::publish() {
                {"dropped", dropped},
                {"jobs", jobs},
                {"datasets", sets}};
+}
+void runtime::clear_wave(std::uint64_t id, const std::string &reason) {
+  auto &data = datasets.at(id);
+  if (data.value("group", "") != "wave") throw failure(2, "Waveform dataset required");
+  data["revision_base"] = data.value("revision_base", 0ull) + data["records"].size() + 1;
+  data["records"] = json::array();
+  data["generation"] = data.value("generation", 0ull) + 1;
+  data["clear_reason"] = reason;
+  data["dropped"] = 0;
+  data["segment"] = data.value("segment", 0u) + 1;
 }
 void runtime::append_stream(const std::string &group, json record) {
   for (auto &[id, s] : streams)
@@ -265,6 +276,22 @@ void runtime::pump(unsigned wait) {
     } else if (p.word == 0x40 && !p.ack) {
       auto batch = decode(p.word, p.payload);
       auto tick = batch["tick_100us"].get<std::uint32_t>();
+      // 0x40 is the ordered PLECS simulation-time protocol. A new sample
+      // returning to an earlier time starts a new simulation, not a MCU epoch.
+      bool restarted = false;
+      for (auto &[id, stream] : streams) if (stream.group == "wave") {
+        auto &data = datasets[id];
+        bool new_connection = data.value("simulation_epoch", epoch_) != epoch_;
+        auto previous = data.value("simulation_tick", tick);
+        bool backwards = batch["first"] == 0 && tick < previous && previous - tick <= 0x80000000u;
+        if (new_connection || backwards) {
+          clear_wave(id, "simulation_restart");
+          restarted = true;
+        }
+        data["simulation_epoch"] = epoch_;
+        if (batch["first"] == 0) data["simulation_tick"] = tick;
+      }
+      if (restarted) { wave_clock = {}; wave_integrity = {}; }
       wave_integrity.observe(tick, batch["total"], batch["first"],
                              static_cast<unsigned>(batch["items"].size()));
       auto extended = wave_clock.extend(tick);

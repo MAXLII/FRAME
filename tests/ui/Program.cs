@@ -300,6 +300,15 @@ internal static class UiTests
                 captureButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for(int attempt=0;attempt<20&&captureButton.Content?.ToString()!="开始";attempt++)await Task.Delay(100);
                 if(captureButton.Content?.ToString()!="开始"||!captureButton.IsEnabled)throw new Exception("Combined button must return to start after stop completion");
+                var waveBody=(Grid)wave.GetType().GetProperty("Body")!.GetValue(wave)!;
+                var clearWave=waveBody.Children.OfType<WrapPanel>().SelectMany(bar=>bar.Children.OfType<Button>()).Single(button=>button.Content?.ToString()=="清除波形");
+                var visibleBeforeClear=series.VisibleNames.ToArray();
+                clearWave.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for(int attempt=0;attempt<20&&!clearWave.IsEnabled;attempt++)await Task.Delay(50);
+                if(((JsonArray)wave.GetType().GetProperty("Records")!.GetValue(wave)!).Count!=0||!visibleBeforeClear.SequenceEqual(series.VisibleNames))throw new Exception("Clear button must empty the plot and preserve curve selection");
+                ulong waveDataset=(ulong)wave.GetType().GetField("Dataset")!.GetValue(wave)!;
+                var clearedWave=await client.ExecuteAsync(new(){["group"]="data",["action"]="read",["dataset"]=waveDataset});
+                if(clearedWave["data"]!["total"]!.GetValue<int>()!=0)throw new Exception("Clear button must clear exportable backend history");
                 await client.ExecuteAsync(new(){["group"]="connect",["replay"]=replay});
                 fields["output"].Text=Path.Combine(root,"build/ui-close-wave.json");
                 await (Task)run.Invoke(window,[wave,"capture"])!;
@@ -314,7 +323,7 @@ internal static class UiTests
         {
             var closed=JsonNode.Parse(File.ReadAllText(Path.Combine(root,"build/ui-close-wave.json")))!;
             if(closed["stop_confirmed"]?.GetValue<bool>()!=true||closed["state"]?.GetValue<string>()!="cancelled")return 1;
-            if(closed["records"]!.AsArray().Select(r=>r!["segment"]!.GetValue<int>()).Distinct().Count()<2)throw new Exception("Restart must retain previous capture records in exported history");
+            if(closed["generation"]?.GetValue<int>()<2||closed["records"]!.AsArray().Select(r=>r!["segment"]!.GetValue<int>()).Distinct().Count()!=1)throw new Exception("New PLECS connection must export only the current simulation after clear");
             Console.WriteLine("PASS: WPF close cancels active acquisition, confirms device stop and flushes partial export.");
         }
         return code;
