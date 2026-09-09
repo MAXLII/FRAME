@@ -5,14 +5,14 @@ internal static class ParameterTests
 {
     public static async Task Run()
     {
-        int calls=0;JsonObject? sent=null;bool reject=false;
+        int calls=0;JsonObject? sent=null;bool reject=false;string feedback="";
         var panel=new ParameterPanel(q=>
         {
             calls++;sent=q;
             if(reject)return Task.FromResult(new JsonObject{["ok"]=false,["error"]="Device rejected reporting change"});
-            var data=q["action"]!.GetValue<string>()=="report"?new JsonObject{["success"]=true}:new JsonObject{["name"]="GAIN",["type"]=6,["value"]=1.25};
+            var data=q["action"]!.GetValue<string>()=="report"?new JsonObject{["success"]=true}:new JsonObject{["name"]="GAIN",["type"]=6,["value"]=1.25,["verification"]="directory_readback",["verified"]=true,["ack_received"]=false};
             return Task.FromResult(new JsonObject{["ok"]=true,["data"]=data});
-        },_=>{});
+        },text=>feedback=text);
         panel.Apply(JsonNode.Parse("""
         [{"name":"GAIN","type":6,"value":1,"raw":1065353216,"min":0,"min_raw":0,"max":10,"max_raw":1092616192,"flags":0},
          {"name":"SIGNED","type":0,"value":-1,"raw":4294967295,"min":-128,"min_raw":4294967168,"max":127,"max_raw":127},
@@ -27,6 +27,10 @@ internal static class ParameterTests
         if(calls!=0||!rows[0].Dirty)throw new Exception("Editing must remain local until Write");
         await panel.RunAsync("write");
         if(sent?["min"]?.ToString()!="-1"||sent?["max"]?.ToString()!="20"||rows[0].Dirty||panel.Table.Items.Count!=4)throw new Exception("Write/update must preserve the parameter list");
+        reject=true;await panel.RunAsync("write");reject=false;
+        if(!rows[0].Invalid)throw new Exception("Unconfirmed write must remain yellow");
+        await panel.RunAsync("write");
+        if(rows[0].Invalid||rows[0].Dirty||!feedback.Contains("ACK 未收到，已通过回读确认"))throw new Exception("Verified readback must clear old yellow state and explain missing ACK");
         await panel.RunAsync("report");if(!rows[0].Reporting)throw new Exception("Reporting state must follow ACK");
         IReadOnlyList<string> waveNames=Array.Empty<string>();var series=new WaveSeriesPanel();
         panel.WaveSelectionChanged+=names=>{waveNames=names;series.SetSelectedParameters(names);};

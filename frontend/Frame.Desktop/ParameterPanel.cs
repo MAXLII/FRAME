@@ -194,6 +194,7 @@ public sealed class ParameterPanel : UserControl
             else if(action=="list"&&result["data"] is JsonArray completed&&rows.Select(r=>r.Name).SequenceEqual(completed.Select(r=>r!["name"]!.ToString())))NotifyWaveSelection();
             else if(result["data"]!=null)Apply(result["data"]!);
             feedback(action=="list"?$"已读取 {rows.Count} 个参数":action=="report"?$"{row!.Name}：{(enabled?"已加入参数波形":"已移出参数波形")}":$"{row!.Name}：{(action=="write"&&row.IsCommand?"执行":action)} 完成");
+            if(action=="write"&&!row!.IsCommand)feedback($"{row.Name}：写入成功，"+(result["data"]?["verification"]?.ToString()=="directory_readback"?"ACK 未收到，已通过回读确认":"已通过 ACK 确认"));
         }
         catch(Exception error){row?.MarkInvalid();feedback(action=="list"?$"参数列表未完成，已收到 {rows.Count}/{(expectedCount<0?"?":expectedCount.ToString())}：{error.Message}":error.Message);}
         finally{listing=false;busy=false;row?.MarkBusy(false);UpdateActions();}

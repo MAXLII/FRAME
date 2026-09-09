@@ -393,16 +393,33 @@ int main(int argc, char **argv) {
       };
       frame::bytes write{4};frame::put(write,bits(1.25f),4);frame::put(write,bits(20.f),4);frame::put(write,bits(-1.f),4);write.insert(write.end(),{'G','A','I','N'});
       frame::packet expected;expected.src=1;expected.dst=2;expected.word=3;expected.ack=0;expected.payload=write;
-      frame::bytes read{4,6};frame::put(read,bits(1.25f),4);read.insert(read.end(),{'G','A','I','N'});
       replay_file parameters(json::array({
           json{{"rx",{response(1,{1,0,0,0}),response(4,row(1.f,10.f,0.f,true),false)}}},
-          json{{"tx",frame::hex(frame::encode(expected))},{"rx",{response(3,row(1.25f,20.f,-1.f,false))}}},
-          json{{"rx",{response(2,read)}}}}));
+          json{{"tx",frame::hex(frame::encode(expected))},{"rx",{response(3,row(1.25f,20.f,-1.f,false))}}}}));
       backend b;
       require(call(b,{{"group","param"},{"action","list"},{"replay",parameters.path.string()}})["ok"],"FP32 parameter catalog");
       auto result=call(b,{{"group","param"},{"action","write"},{"name","GAIN"},{"value","1.25"},{"min","-1"},{"max","20"}});
       require(result["ok"]&&result["data"]["value"]==1.25&&result["data"]["min"]==-1&&result["data"]["max"]==20,"FP32 data and edited bounds sent/read back");
+      require(result["data"]["verification"]=="write_ack"&&result["data"]["ack_received"]==true,"complete write ACK needs no second read");
       require(call(b,{{"group","param"},{"action","write"},{"name","GAIN"},{"value","1"},{"min","5"},{"max","2"}})["code"]==2,"Reject reversed edited bounds before sending");
+      for(unsigned scenario=0;scenario<5;++scenario){
+        frame::packet listRequest;listRequest.src=1;listRequest.dst=2;listRequest.ack=0;listRequest.word=1;
+        json replies=json::array();
+        if(scenario!=3){replies.push_back(response(1,{1,0,0,0}));replies.push_back(response(4,row(scenario==1?1.f:1.25f,scenario==2?10.f:20.f,-1.f,true),false));}
+        auto catalog=row(1.f,10.f,0.f,true);
+        if(scenario==4)catalog[1]=7;
+        auto writeRequest=expected;
+        if(scenario==4){writeRequest.payload={4};for(unsigned i=0;i<12;++i)writeRequest.payload.push_back(0);writeRequest.payload.insert(writeRequest.payload.end(),{'G','A','I','N'});}
+        replay_file missingAck(json::array({
+          json{{"rx",{response(1,{1,0,0,0}),response(4,catalog,false)}}},
+          json{{"tx",frame::hex(frame::encode(writeRequest))},{"rx",json::array()}},
+          json{{"tx",frame::hex(frame::encode(listRequest))},{"rx",replies}}}));
+        backend fallback;
+        require(call(fallback,{{"group","param"},{"action","list"},{"replay",missingAck.path.string()}})["ok"],"fallback catalog");
+        auto confirmed=call(fallback,{{"group","param"},{"action","write"},{"name","GAIN"},{"value","1.25"},{"min","-1"},{"max","20"},{"response_timeout",30}});
+        if(scenario==0)require(confirmed["ok"]&&confirmed["data"]["verification"]=="directory_readback"&&confirmed["data"]["ack_received"]==false,"missing ACK succeeds only after fresh value and bounds verification");
+        else require(confirmed["code"]==(scenario>=3?4:7),"mismatch, unavailable readback and unconfirmed commands stay failures");
+      }
     }
     std::cout << "PASS: ABI, events, quotas, persistent session, paging, "
                  "concurrency, cancellation, stop ACK and timeout isolation\n";

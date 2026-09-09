@@ -418,16 +418,44 @@ json runtime::execute(operation &op) {
       put(b, max_raw, 4);
       put(b, min_raw, 4);
       b.insert(b.end(), name.begin(), name.end());
-      auto ack = query(op, 3, b, matcher);
-      parameters[name].update(ack);
-      if (type != 7) {
-        if (ack["max_raw"] != max_raw || ack["min_raw"] != min_raw)
-          throw failure(7, "Parameter limit readback mismatch");
-        auto read = query(op, 2, payload, matcher);
-        if (read["raw"] != raw)
-          throw failure(7, "Write readback mismatch: " + read.dump());
-        ack["verified"] = true;
+      // A write ACK already contains the device's actual value and limits.
+      // Do not fail an acknowledged update because a redundant read times out
+      // or the application's callback subsequently changes a live variable.
+      std::erase_if(incoming, [&](const packet &p) { return p.word == 3 && matcher(p); });
+      json ack;
+      bool ack_received = true;
+      try {
+        ack = query(op, 3, b, matcher);
+      } catch (const failure &error) {
+        if (error.code != 4 || type == 7) throw;
+        guard(op); // Cancellation and the operation deadline still take precedence.
+        ack_received = false;
+        // The directory supplies value AND limits. A scalar read cannot confirm
+        // edited limits. Never retry the write, including command-type entries.
+        auto saved = q;
+        op.command["action"] = "list";
+        json directory;
+        try { directory = execute(op); }
+        catch (...) { op.command = saved; throw; }
+        op.command = saved;
+        auto found = std::find_if(directory.begin(), directory.end(), [&](const json &row) { return row["name"] == name; });
+        if (found == directory.end()) throw failure(7, "Written parameter missing from fresh directory");
+        ack = *found;
       }
+      if (type != 7) {
+        if (ack["type"] != type)
+          throw failure(7, "Parameter type changed during write confirmation");
+        // Narrow integer fields may carry padding in the upper raw bytes.
+        // Compare their declared typed values; FP32 still compares exactly.
+        if (ack["max"] != maximum || ack["min"] != minimum)
+          throw failure(7, "Parameter limit readback mismatch");
+        if (ack["value"] != numeric)
+          throw failure(7, "Write readback mismatch: " + ack.dump());
+        ack["verified"] = true;
+        ack["verification"] = ack_received ? "write_ack" : "directory_readback";
+      }
+      ack["ack_received"] = ack_received;
+      parameters[name].update(ack);
       return ack;
     }
     if (action == "report") {
