@@ -252,6 +252,7 @@ public partial class MainWindow : Window
         p = Page("param", "参数读写", "读取设备字典后选择参数；写入由后端校验类型、范围并回读确认。");
         p.Parameters = new ParameterPanel(async request => await client.ExecuteAsync(request), message => Feedback.Text=message,(request,progress)=>client.ExecuteAsync(request,progress:progress));
         p.Parameters.WaveSelectionChanged+=names=>pages["wave"].Series!.SetSelectedParameters(names);
+        p.Parameters.WaveParameterEnabled+=name=>pages["wave"].Series!.Select(name);
         p.Body.Children.Clear(); p.Body.Children.Add(p.Parameters);
         p = Page("wave", "参数波形", "在参数页双击名称加入波形（绿色），再次双击移出；此处勾选只控制曲线显示。", true);
         var waveControls=new WrapPanel();p.Form.Children.Add(waveControls);

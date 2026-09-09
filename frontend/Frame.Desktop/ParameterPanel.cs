@@ -90,6 +90,7 @@ public sealed class ParameterPanel : UserControl
     private bool listing;
     private int listGeneration,expectedCount;
     public event Action<IReadOnlyList<string>>? WaveSelectionChanged;
+    public event Action<string>? WaveParameterEnabled;
     public DataGrid Table { get; }=new(){AutoGenerateColumns=false,IsReadOnly=false,SelectionMode=DataGridSelectionMode.Single,SelectionUnit=DataGridSelectionUnit.FullRow,CanUserSortColumns=false,CanUserReorderColumns=false};
     public ParameterPanel(Func<JsonObject,Task<JsonObject>> execute,Action<string> feedback,Func<JsonObject,IProgress<JsonObject>,Task<JsonObject>>? executeProgress=null)
     {
@@ -190,7 +191,7 @@ public sealed class ParameterPanel : UserControl
                 ?await executeProgress(request,new Progress<JsonObject>(update=>{if(listing&&generation==listGeneration)ApplyListProgress(update);}))
                 :await execute(request);
             if(!result["ok"]!.GetValue<bool>())throw new InvalidOperationException(result["error"]?.ToString()??"操作失败");
-            if(action=="report"){row!.SetReporting(enabled);NotifyWaveSelection();}
+            if(action=="report"){row!.SetReporting(enabled);NotifyWaveSelection();if(enabled)WaveParameterEnabled?.Invoke(row.Name);}
             else if(action=="list"&&result["data"] is JsonArray completed&&rows.Select(r=>r.Name).SequenceEqual(completed.Select(r=>r!["name"]!.ToString())))NotifyWaveSelection();
             else if(result["data"]!=null)Apply(result["data"]!);
             feedback(action=="list"?$"已读取 {rows.Count} 个参数":action=="report"?$"{row!.Name}：{(enabled?"已加入参数波形":"已移出参数波形")}":$"{row!.Name}：{(action=="write"&&row.IsCommand?"执行":action)} 完成");

@@ -34,6 +34,7 @@ internal static class ParameterTests
         await panel.RunAsync("report");if(!rows[0].Reporting)throw new Exception("Reporting state must follow ACK");
         IReadOnlyList<string> waveNames=Array.Empty<string>();var series=new WaveSeriesPanel();
         panel.WaveSelectionChanged+=names=>{waveNames=names;series.SetSelectedParameters(names);};
+        panel.WaveParameterEnabled+=series.Select;
         var host=new System.Windows.Window{Content=panel,Width=1100,Height=450};host.Show();host.UpdateLayout();
         System.Windows.Controls.DataGridCell NameCell(ParameterRow row)
         {

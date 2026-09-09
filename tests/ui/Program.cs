@@ -163,6 +163,7 @@ internal static class UiTests
                         int other=wavePlots.AddPlot();wavePlots.Assign("LAYOUT_B",other);
                         var selection=(WaveSeriesPanel)entry.Value.GetType().GetField("Series")!.GetValue(entry.Value)!;
                         selection.SetSelectedParameters(new[]{"LAYOUT_A","LAYOUT_B"});
+                        selection.Select("LAYOUT_A");
                         var valueTest=new WaveSeriesPanel();valueTest.SetSelectedParameters(new[]{"A"});
                         var valueRows=new JsonArray(new JsonObject{["name"]="A",["time"]=1d,["value"]=10d},new JsonObject{["name"]="A",["time"]=2d,["value"]=20d});
                         var valueLatest=new JsonArray(new JsonObject{["name"]="A",["time"]=100d,["value"]=99d});

@@ -32,7 +32,7 @@ public sealed class WaveSeriesPanel : UserControl
         root.Children.Add(new ScrollViewer{Content=items,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});
         search.TextChanged+=(_,_)=>Filter();
     }
-    public bool IsSeriesVisible(string name)=>(selectedParameters==null||selectedParameters.Contains(name))&&(!series.TryGetValue(name,out var item)||item.Check.IsChecked==true);
+    public bool IsSeriesVisible(string name)=>(selectedParameters==null||selectedParameters.Contains(name))&&series.TryGetValue(name,out var item)&&item.Check.IsChecked==true;
     public void SetSelectedParameters(IReadOnlyList<string> names)
     {
         selectedParameters=new HashSet<string>(names,StringComparer.Ordinal);
@@ -54,7 +54,7 @@ public sealed class WaveSeriesPanel : UserControl
         var value=new TextBlock{Width=92,TextAlignment=TextAlignment.Right,TextTrimming=TextTrimming.CharacterEllipsis,Text="—",VerticalAlignment=VerticalAlignment.Center};
         DockPanel.SetDock(value,Dock.Right);row.Children.Add(value);
         var swatch=new System.Windows.Shapes.Line{X1=2,X2=22,Y1=12,Y2=12,StrokeThickness=3,Width=24,Height=24,IsHitTestVisible=false};
-        var check=new System.Windows.Controls.Primitives.ToggleButton{Content=swatch,ToolTip="点击图例显示/隐藏曲线",Width=28,Height=26,Padding=new Thickness(0),Background=System.Windows.Media.Brushes.Transparent,BorderThickness=new Thickness(0),Cursor=System.Windows.Input.Cursors.Hand,VerticalAlignment=VerticalAlignment.Center,IsChecked=true,Margin=new Thickness(0,0,5,0)};
+        var check=new System.Windows.Controls.Primitives.ToggleButton{Content=swatch,ToolTip="点击图例显示/隐藏曲线",Width=28,Height=26,Padding=new Thickness(0),Background=System.Windows.Media.Brushes.Transparent,BorderThickness=new Thickness(0),Cursor=System.Windows.Input.Cursors.Hand,VerticalAlignment=VerticalAlignment.Center,IsChecked=false,Margin=new Thickness(0,0,5,0)};
         var template=new ControlTemplate(typeof(System.Windows.Controls.Primitives.ToggleButton));
         var presenter=new FrameworkElementFactory(typeof(ContentPresenter));presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty,HorizontalAlignment.Center);presenter.SetValue(ContentPresenter.VerticalAlignmentProperty,VerticalAlignment.Center);
         var hitArea=new FrameworkElementFactory(typeof(Border));hitArea.SetValue(Border.BackgroundProperty,System.Windows.Media.Brushes.Transparent);hitArea.AppendChild(presenter);template.VisualTree=hitArea;check.Template=template;
