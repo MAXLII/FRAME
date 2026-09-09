@@ -159,7 +159,14 @@ public partial class MainWindow : Window
                 Grid.SetColumn(p.WavePlots,2);content.Children.Add(p.WavePlots);Grid.SetRow(content,1);p.Body.Children.Add(content);
                 var add=new Button{Content="增加波形框"};add.Click+=(_,_)=>p.WavePlots.AddPlot();bar.Children.Insert(0,add);
                 var fitY=new Button{Content="自适应 Y 轴",ToolTip="按当前框的可见曲线调整纵轴，保持时间范围"};fitY.Click+=(_,_)=>p.WavePlots.FitY();bar.Children.Add(fitY);
+                var measure=new Button{Content="测量时间差",ToolTip="依次点击两个时间位置，显示 Δt；再次点击按钮重新测量，Esc 清除测量"};
+                measure.Click+=(_,_)=>p.WavePlots.BeginTimeMeasurement();bar.Children.Add(measure);
+                var clearMeasurement=new Button{ToolTip="清除测量",Content=new System.Windows.Shapes.Path{Data=System.Windows.Media.Geometry.Parse("M 3,11 L 12,2 L 21,11 L 13,19 L 9,19 Z M 7,7 L 17,15 M 9,19 L 22,19"),Stroke=System.Windows.Media.Brushes.SlateGray,StrokeThickness=1.6,Stretch=System.Windows.Media.Stretch.Uniform,Width=18,Height=18}};
+                System.Windows.Automation.AutomationProperties.SetName(clearMeasurement,"清除测量");System.Windows.Automation.AutomationProperties.SetAutomationId(clearMeasurement,"wave_clear_measurement");
+                clearMeasurement.Click+=(_,_)=>{p.WavePlots.ClearTimeMeasurement();Feedback.Text="测量已清除";};bar.Children.Add(clearMeasurement);
+                p.WavePlots.MeasurementChanged+=text=>{measure.ToolTip=string.IsNullOrEmpty(text)?"依次点击两个时间位置测量 Δt":text;Feedback.Text=text;};
                 AlignWaveToolbar(bar);
+                clearMeasurement.MinWidth=34;clearMeasurement.Width=34;clearMeasurement.Padding=new Thickness(0);
             }
             else if(key=="scope"){p.Body.Children.Remove(p.Plot);p.ScopeView=new ScopePlotView(p.Plot);Grid.SetRow(p.ScopeView,1);p.Body.Children.Add(p.ScopeView);p.Body.RowDefinitions.RemoveAt(2);p.Body.RowDefinitions[1].Height=new GridLength(1,GridUnitType.Star);}
             else { Grid.SetRow(p.Table, 2); p.Body.Children.Add(p.Table); }

@@ -52,7 +52,58 @@ public sealed class WavePlotPanel : UserControl
         if(y)manualY.Add(plot);
         RememberView(plot);plot.Refresh();
     }
-    private readonly Dictionary<WpfPlot,(ScottPlot.Plottables.VerticalLine Vertical,ScottPlot.Plottables.HorizontalLine? Horizontal)> cursors=new();
+    private readonly Dictionary<WpfPlot,ScottPlot.Plottables.VerticalLine> cursors=new();
+    private readonly Dictionary<WpfPlot,List<ScottPlot.IPlottable>> measurements=new();
+    private int measurementStep;
+    private double? firstTime,secondTime;
+    private WpfPlot? measurementPlot;
+    private WpfPlot? firstMeasurementPlot;
+    private double firstMeasurementY;
+    private double measurementY;
+    private bool measurementClick;
+    public event Action<string>? MeasurementChanged;
+    public void BeginTimeMeasurement()
+    {
+        ClearTimeMeasurement();measurementStep=1;ClearCursor();active?.Focus();
+        if(cursorPlot!=null)UpdateCursor(cursorPlot,cursorPosition);
+        MeasurementChanged?.Invoke("点击波形放置第一条竖线（Esc 取消）");
+    }
+    public void ClearTimeMeasurement()
+    {
+        measurementStep=0;firstTime=secondTime=null;measurementPlot=firstMeasurementPlot=null;
+        ClearCursor();RenderMeasurements();MeasurementChanged?.Invoke("");
+    }
+    public void PlaceTimeMarker(WpfPlot source,ScottPlot.Coordinates position)
+    {
+        if(measurementStep==0||!panes.Any(p=>p.Plot==source)||!double.IsFinite(position.X)||!double.IsFinite(position.Y))return;
+        if(measurementStep==1){firstTime=position.X;firstMeasurementPlot=source;firstMeasurementY=position.Y;measurementStep=2;MeasurementChanged?.Invoke("点击波形放置第二条竖线（Esc 取消）");}
+        else{secondTime=position.X;measurementY=position.Y;measurementPlot=source;measurementStep=0;MeasurementChanged?.Invoke(FormatInterval(Math.Abs(secondTime.Value-firstTime!.Value)));}
+        ClearCursor();RenderMeasurements();
+    }
+    public static string FormatInterval(double seconds)=>"Δt = "+(seconds==0?"0 s":seconds<0.001?(seconds*1e6).ToString("G7",System.Globalization.CultureInfo.InvariantCulture)+" μs":seconds<1?(seconds*1000).ToString("G7",System.Globalization.CultureInfo.InvariantCulture)+" ms":seconds.ToString("G7",System.Globalization.CultureInfo.InvariantCulture)+" s");
+    private void ClearCursor()
+    {
+        foreach(var (chart,line) in cursors){chart.Plot.Remove(line);chart.Refresh();}cursors.Clear();
+    }
+    private void RenderMeasurements()
+    {
+        foreach(var (chart,items) in measurements)foreach(var item in items)chart.Plot.Remove(item);
+        measurements.Clear();
+        foreach(var pane in panes){
+            var chart=pane.Plot;var items=new List<ScottPlot.IPlottable>();measurements[chart]=items;
+            foreach(var time in new[]{firstTime,secondTime})if(time.HasValue){var line=chart.Plot.Add.VerticalLine(time.Value);line.Color=ScottPlot.Colors.SteelBlue;line.LineWidth=1;items.Add(line);}
+            void AddLabel(string text,double x,double anchorY){
+                var limits=chart.Plot.Axes.GetLimits();double padding=(limits.Top-limits.Bottom)*0.08;
+                double y=Math.Clamp(anchorY,limits.Bottom+padding,limits.Top-padding);
+                var label=chart.Plot.Add.Text(" "+text+" ",x,y);
+                label.LabelFontColor=ScottPlot.Colors.SteelBlue;label.LabelFontSize=13;label.LabelBold=true;
+                label.LabelAlignment=x>(limits.Left+limits.Right)/2?ScottPlot.Alignment.LowerRight:ScottPlot.Alignment.LowerLeft;items.Add(label);
+            }
+            if(chart==firstMeasurementPlot&&firstTime.HasValue)AddLabel("T1 = "+FormatTime(firstTime.Value,hostTime)+(hostTime?"":" s"),firstTime.Value,firstMeasurementY);
+            if(chart==measurementPlot&&firstTime.HasValue&&secondTime.HasValue)AddLabel(FormatInterval(Math.Abs(secondTime.Value-firstTime.Value)),secondTime.Value,measurementY);
+            chart.Refresh();
+        }
+    }
     private WpfPlot? cursorPlot;
     private ScottPlot.Coordinates cursorPosition;
     public static string FormatTime(double seconds,bool host)=>host&&seconds>=946684800&&seconds<=253402271999
@@ -82,7 +133,7 @@ public sealed class WavePlotPanel : UserControl
         layout.Children.Add(plot);
         plot.Plot.Layout.Fixed(new ScottPlot.PixelPadding(85,24,55,16));
         var pane=new Pane(id,plot,frame,legend);panes.Add(pane);stack.Children.Add(frame);
-        frame.AllowDrop=true;plot.AllowDrop=true;
+        frame.AllowDrop=true;plot.AllowDrop=true;plot.Focusable=true;
         frame.PreviewDragOver+=(_,e)=>{e.Effects=e.Data.GetDataPresent("FRAME.WaveParameter")?DragDropEffects.Move:DragDropEffects.None;e.Handled=true;};
         frame.PreviewDrop+=(_,e)=>{if(e.Data.GetData("FRAME.WaveParameter") is string name){Activate(pane);Assign(name,id);e.Effects=DragDropEffects.Move;e.Handled=true;}};
         close.Click+=(_,_)=>RemovePlot(id);
@@ -94,17 +145,26 @@ public sealed class WavePlotPanel : UserControl
             var modifiers=System.Windows.Input.Keyboard.Modifiers;
             Zoom(plot,anchor,e.Delta,!modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control),!modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift));e.Handled=true;
         };
-        plot.AddHandler(UIElement.MouseUpEvent,new System.Windows.Input.MouseButtonEventHandler((_,_)=>SyncAfterInput()),true);
+        plot.PreviewMouseLeftButtonDown+=(_,e)=>{
+            if(measurementStep==0)return;
+            measurementClick=true;e.Handled=true;plot.Focus();plot.CaptureMouse();
+            var point=e.GetPosition(plot);var dpi=VisualTreeHelper.GetDpi(plot);var pixel=new ScottPlot.Pixel((float)(point.X*dpi.DpiScaleX),(float)(point.Y*dpi.DpiScaleY));
+            var rect=plot.Plot.LastRender.DataRect;
+            if(pixel.X>=rect.Left&&pixel.X<=rect.Right&&pixel.Y>=rect.Top&&pixel.Y<=rect.Bottom)PlaceTimeMarker(plot,plot.Plot.GetCoordinates(pixel));
+        };
+        plot.PreviewMouseLeftButtonUp+=(_,e)=>{if(measurementClick){e.Handled=true;plot.ReleaseMouseCapture();}};
+        plot.PreviewKeyDown+=(_,e)=>{if(e.Key==System.Windows.Input.Key.Escape&&(measurementStep!=0||firstTime.HasValue)){ClearTimeMeasurement();e.Handled=true;}};
+        plot.AddHandler(UIElement.MouseUpEvent,new System.Windows.Input.MouseButtonEventHandler((_,_)=>{if(measurementClick){measurementClick=false;return;}SyncAfterInput();}),true);
         plot.MouseMove+=(_,e)=>{
             var point=e.GetPosition(plot);var dpi=VisualTreeHelper.GetDpi(plot);
             var xy=plot.Plot.GetCoordinates(new ScottPlot.Pixel((float)(point.X*dpi.DpiScaleX),(float)(point.Y*dpi.DpiScaleY)));
             CursorChanged?.Invoke($"X = {FormatTime(xy.X,hostTime)}   Y = {xy.Y:G6}");
-            if(e.LeftButton==System.Windows.Input.MouseButtonState.Pressed||e.RightButton==System.Windows.Input.MouseButtonState.Pressed)SyncAfterInput();
+            if(!measurementClick&&(e.LeftButton==System.Windows.Input.MouseButtonState.Pressed||e.RightButton==System.Windows.Input.MouseButtonState.Pressed))SyncAfterInput();
             UpdateCursor(plot,xy);
         };
         plot.MouseLeave+=(_,_)=>{
             cursorPlot=null;HoverTimeChanged?.Invoke(null);
-            foreach(var (chart,lines) in cursors){chart.Plot.Remove(lines.Vertical);if(lines.Horizontal!=null)chart.Plot.Remove(lines.Horizontal);chart.Refresh();}cursors.Clear();
+            ClearCursor();
         };
         LayoutPlots();Activate(pane);Changed?.Invoke();return id;
     }
@@ -114,12 +174,11 @@ public sealed class WavePlotPanel : UserControl
     {
         cursorPlot=source;cursorPosition=position;
         HoverTimeChanged?.Invoke(position.X);
+        if(measurementStep==0&&firstTime.HasValue){ClearCursor();return;}
         foreach(var pane in panes){
             var plot=pane.Plot;
-            if(cursors.Remove(plot,out var old)){plot.Plot.Remove(old.Vertical);if(old.Horizontal!=null)plot.Plot.Remove(old.Horizontal);}
-            var vertical=plot.Plot.Add.VerticalLine(position.X);vertical.Color=ScottPlot.Colors.Gray;
-            var horizontal=plot==source?plot.Plot.Add.HorizontalLine(position.Y):null;if(horizontal!=null)horizontal.Color=ScottPlot.Colors.Gray;
-            cursors[plot]=(vertical,horizontal);plot.Refresh();
+            if(!cursors.TryGetValue(plot,out var vertical)){vertical=plot.Plot.Add.VerticalLine(position.X);vertical.Color=ScottPlot.Colors.Gray;vertical.LineWidth=1;cursors[plot]=vertical;}
+            vertical.X=position.X;plot.Refresh();
         }
     }
     private void LayoutPlots(){foreach(var pane in panes)pane.Frame.Height=Math.Max(250,ActualHeight/panes.Count-8);}
@@ -129,6 +188,8 @@ public sealed class WavePlotPanel : UserControl
         var pane=panes.FirstOrDefault(p=>p.Id==id);if(pane==null)return;
         panes.Remove(pane);stack.Children.Remove(pane.Frame);
         legendNames.Remove(id);
+        measurements.Remove(pane.Plot);if(measurementPlot==pane.Plot)measurementPlot=panes[0].Plot;
+        if(firstMeasurementPlot==pane.Plot)firstMeasurementPlot=panes[0].Plot;
         cursors.Remove(pane.Plot);if(cursorPlot==pane.Plot){cursorPlot=null;HoverTimeChanged?.Invoke(null);}
         foreach(var name in assignments.Where(p=>p.Value==id).Select(p=>p.Key).ToArray())assignments[name]=panes[0].Id;
         Activate(panes[0]);LayoutPlots();Changed?.Invoke();
@@ -180,6 +241,7 @@ public sealed class WavePlotPanel : UserControl
             if(fitY==plot){var x=plot.Plot.Axes.GetLimits();plot.Plot.Axes.AutoScale();plot.Plot.Axes.SetLimitsX(x.Left,x.Right);manualY.Add(plot);fitY=null;}
             plot.Refresh();
         }
+        RenderMeasurements();
         if(cursorPlot!=null)UpdateCursor(cursorPlot,cursorPosition);
     }
 }
