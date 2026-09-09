@@ -2,6 +2,8 @@
 
 Windows x64 设备诊断工作台，版本以根目录 [VERSION](VERSION) 为准。C++20 后端与 C#/.NET 10 前端共用一套业务实现，提供 CLI、持续交互 Shell 和 WPF/XAML 界面。
 
+版本按软件代际区分：`1.x` 为旧 Python 上位机的终版系列，停止后续版本迭代；`2.x` 为 C++/C# 全新上位机系列，不再按目标用户区分。大功能更新递增第二位，小功能、后端优化和缺陷修复递增第三位。
+
 本期包含：串口调试、参数读写、参数波形、Scope、SFRA、Perf、Trace、链表顺序与 J-Link。设备连接支持串口和以太网 TCP。旧 Python 应用与测试已移除；不包含 CAN、升级、Factory Mode、Black Box。
 
 ## 构建与启动

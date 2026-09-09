@@ -2,7 +2,7 @@
 
 ## 版本规则
 
-根目录 `VERSION` 是唯一版本号来源，格式 `a.b.c`，继续沿用 `AI_WORK_RULES.md` 第 3.11 节：`a` 表示目标用户（1 为作者自用，2 为 DR），`b` 表示大功能版本，`c` 表示小功能和后端优化版本。这不是按破坏兼容性定义主版本的 SemVer。
+根目录 `VERSION` 是唯一版本号来源，格式 `a.b.c`，遵循 `AI_WORK_RULES.md` 第 3.11 节：`a` 表示软件代际，`1.x` 为旧 Python 上位机的终版系列，停止后续版本迭代；`2.x` 为 C++20 后端与 C#/.NET 前端开发的全新上位机系列，不再按目标用户区分版本。`b` 表示大功能版本，`c` 表示小功能和后端优化版本。这不是按破坏兼容性定义主版本的 SemVer。
 
 CMake、后端 DLL 文件版本、.NET 程序版本和安装包均读取该文件。功能、构建和文档按职责提交，最后单独提交版本号。ABI 版本、数据文件格式版本独立，不随产品版本修改。
 
@@ -38,7 +38,7 @@ CMake、后端 DLL 文件版本、.NET 程序版本和安装包均读取该文�
 
 ```powershell
 ./scripts/build-installer.ps1
-./scripts/publish-release.ps1 -NotesFile docs/releases/2.0.0.md
+./scripts/publish-release.ps1 -NotesFile docs/releases/2.0.1.md
 ```
 
 发布脚本核对工作区、VERSION、upstream、安装包版本、构建提交和 SHA-256；推送对应标签，先创建草稿并上传三个文件，核对附件大小后公开为 Latest。已有 Release 或指向不同提交的标签不会被覆盖。根目录历史 `publish_github_release.ps1` 属于旧 Python 流程，不再使用。

@@ -54,9 +54,9 @@ JSON 结果为 `operation_id / ok / code / error / data`。解析阶段的错误
 | trace | capture、start、stop、status | duration、count、filter 行号列表、output、ndjson |
 | section | list、nodes | id 为目录返回的 list_id，不是行号 |
 | jlink | connect、disconnect、load、symbols、expand、read、write | path、elf、device、probe、jlink-exe、name、value、filter、offset、limit |
-| data | read、export、release | dataset、offset、limit、revision、output |
+| data | read、view、clear、export、release | dataset、offset、limit、revision、output |
 
-数值写入支持十进制及浮点科学计数法，整数类型拒绝小数和越界，浮点拒绝 NaN/Infinity。param write 会先读取参数目录并按设备上下限校验，普通变量写后回读；命令类型不执行变量回读。
+数值写入支持十进制及浮点科学计数法，整数类型拒绝小数和越界，浮点拒绝 NaN/Infinity。param write 会先读取参数目录并按设备上下限校验。普通变量优先以写入 ACK 返回的类型、实际值和上下限确认成功，不再强制额外读取；ACK 超时则重新读取设备目录，核对实际值和上下限，成功结果标记 `verification=directory_readback`、`ack_received=false`，界面取消黄色并提示“ACK 未收到，已通过回读确认”。完整 ACK 确认时标记 `verification=write_ack`。校验失败、回读超时仍报错；取消或操作截止后不再查询，不自动重发写入。命令类型仍要求 ACK，不使用参数回读推断执行成功。
 
 `param write --min ... --max ...` 可显式提交编辑后的上下限；不指定时沿用设备值。后端校验类型、上下限顺序及数据范围，验证返回的上下限与数值。沿用旧 FRAME：目录中上下限原始值相同的普通参数为只读；CMD 的写入载荷为三个零值，界面操作显示“执行”。
 
@@ -115,3 +115,11 @@ J-Link 使用持续 Commander 子进程，Shell 连续操作复用连接（conne
 每个后端最多 128 个未释放操作、32 个数据集，单个采集历史保留约 100000 条记录，达到上限批量淘汰旧记录并累计 dropped。常规 JSON/CSV 导出保留当前历史，发生淘汰会标记 partial；需完整长时记录时使用 NDJSON。读数据集每页最多 10000 条，可指定 --revision 校验同一数据版本；data release 释放已完成历史。
 
 设备批量波形记录缺失/重复索引与时间回绕；旧格式波形使用主机接收时间，帧起止标记不作为参数点。Trace 保留设备 tick 和展开时间。Scope/SFRA 部分拉取失败仍保留已收到的数据集及错误原因。真实串口采集速率受波特率、协议开销和固件上报调度限制。
+
+PLECS 的 `0x40` 批量波形按仿真时间顺序上传：新采样批次（first=0）的时间倒退、且不是 32 位计数器自然回绕时，自动清除上一轮波形，从新仿真重新显示。重新连接后续采保留的数据集，也在收到第一个 PLECS 批量包时清除旧仿真。普通 MCU 的 `0x07` 波形不触发自动清除，停止后续采仍保留历史。
+
+波形页的“清除波形”或 Shell 中 `data clear --dataset <ID> --json` 清除该波形数据集的缓存，保留连接、采集任务和界面曲线分配；停止状态也可清除。后续导出仅包含清除后收到的数据，已保存的文件不受影响。清除会递增 `generation` 并使旧分页 `revision` 失效；NDJSON 输出 `kind=reset` 通知，再从新一代的索引 0 输出记录。
+
+参数波形的鼠标参考线仅显示同步的细竖线。点击“测量时间差”后，依次在绘图区点击两次放置两条竖线；第一条线旁显示该点时间，第二次点击所在的波形框会在第二条线旁显示绝对时间差 Δt，按大小自动使用 s、ms 或 μs。允许反向选点和跨框选点，数据刷新保留测量标记；再次点击按钮开始新的测量，Esc 或“清除测量”图标清除测量。清除波形或开始新仿真时同时清除旧测量标记，采集过程不因测量暂停。“全图”和“全部”均持续更新，不进入暂停显示状态。
+
+WPF 左侧导航支持将页面按钮拖出侧栏，作为独立窗口显示；侧栏展开文字和收起图标两种模式均支持。独立窗口复用原有页面、连接和采集任务，可同时打开多个页面。最小化保留独立窗口，点击侧栏对应页面可恢复显示；点击独立窗口的“×”将页面放回主窗口。退出主窗口会统一关闭独立窗口并完成设备和文件收尾。
