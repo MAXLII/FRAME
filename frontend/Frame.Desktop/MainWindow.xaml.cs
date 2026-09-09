@@ -97,6 +97,7 @@ public partial class MainWindow : Window
         ];
         Navigation.ItemsSource = pages.Values.Select((p,i) => new NavigationItem(p.Title,navigationIcons[i])).ToArray();
         Navigation.SelectedIndex = 0;
+        InitializePageDocking();
         Baud.ItemsSource=new[]{"1200","2400","4800","9600","14400","19200","38400","57600","115200","128000","230400","256000","460800","500000","576000","921600","1000000","自定义…"};
         RestoreSettings();
         lastBaud=Baud.Text;initializingConnection=false;
@@ -647,7 +648,14 @@ public partial class MainWindow : Window
                 jobs.Add(poll.Id,(poll,scopePage));scopePage.ScopeActions[poll.Id]=(objectId,"info");scopePage.ScopePollDue[objectId]=Environment.TickCount64+1000;
             }
             Status.Text = $"{(state["connected"]!.GetValue<bool>() ? "已连接 " + state["endpoint"] : "未连接")}   |   RX {state["rx_bytes"]} B   TX {state["tx_bytes"]} B   |   后台任务 {state["jobs"]!.AsArray().Count}   |   丢弃 {state["dropped"]}";
-            var page = pages[current];
+            foreach(var page in VisiblePages()) await RefreshPageAsync(page,state);
+        }
+        catch (Exception e) { Feedback.Text = e.Message; }
+        finally { updating = false; }
+    }
+
+    private async Task RefreshPageAsync(PageState page, JsonObject state)
+    {
             if(page.Diagnostic!=null)return;
             if(page.Key=="scope")return;
             if(page.Key=="sfra"){
@@ -698,15 +706,20 @@ public partial class MainWindow : Window
                 var result = await client.ExecuteAsync(new() { ["group"] = "data", ["action"] = "read", ["dataset"] = page.Dataset, ["offset"] = offset, ["limit"] = 10000 });
                 if (result["ok"]!.GetValue<bool>() || (result["code"]!.GetValue<int>()==6 && result["data"] is JsonObject)) ShowData(page, result["data"]);
             }
-        }
-        catch (Exception e) { Feedback.Text = e.Message; }
-        finally { updating = false; }
     }
 
     private void Navigate(object sender, SelectionChangedEventArgs e)
     {
         if (Navigation.SelectedIndex < 0 || pages.Count == 0) return;
-        var p = pages.Values.ElementAt(Navigation.SelectedIndex); current = p.Key; PageTitle.Text = p.Title; PageHint.Text = p.Hint; Form.Content = p.Form; PageBody.Content = p.Body;
+        var p = pages.Values.ElementAt(Navigation.SelectedIndex);
+        ShowPage(p);
+    }
+
+    private void ShowPage(PageState p)
+    {
+        current = p.Key; PageTitle.Text = p.Title; PageHint.Text = p.Hint;
+        if (ShowDetachedPage(p)) return;
+        Form.Content = p.Form; PageBody.Content = p.Body;
         PageHeading.Visibility=p.Diagnostic!=null||p.Key is "wave" or "scope" or "sfra"?Visibility.Collapsed:Visibility.Visible;
         WaveCursor.Visibility=p.Key=="wave"?Visibility.Visible:Visibility.Collapsed;
     }
@@ -890,6 +903,7 @@ public partial class MainWindow : Window
     private async void OnClosing(object? sender, CancelEventArgs e)
     {
         if (disposed) return; e.Cancel = true; if (closing) return; closing = true; timer.Stop(); IsEnabled = false; Status.Text = "正在停止任务并关闭设备…";
+        foreach(var key in detachedPages.Keys.ToArray()) DockPage(key,false);
         foreach(var diagnostic in pages.Values.Select(p=>p.Diagnostic).OfType<DiagnosticPage>())diagnostic.Shutdown();
         try{SaveSettings();}catch(Exception error){Feedback.Text="保存界面设置失败："+error.Message;}
         while (updating) await Task.Delay(20);

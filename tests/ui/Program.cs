@@ -70,6 +70,7 @@ internal static class UiTests
                 var baudSelector=(ComboBox)window.FindName("Baud");
                 if(!baudSelector.Items.Contains("1000000")||!baudSelector.Items.Contains("自定义…"))throw new Exception("Baud presets/custom option missing");
                 await ConnectionSwitchTests.RunAsync(window,root);
+                await PageDockingTests.Run(window,args.Contains("--mouse"));
                 var flags=BindingFlags.Instance|BindingFlags.NonPublic;
                 var pages=(IDictionary)typeof(MainWindow).GetField("pages",flags)!.GetValue(window)!;
                 var show=typeof(MainWindow).GetMethod("ShowData",flags)!;
@@ -298,6 +299,7 @@ internal static class UiTests
                 await Task.Delay(800);
                 var datasets=client.Snapshot()["datasets"]!.AsArray();
                 if(!datasets.Any(d=>d!["count"]!.GetValue<int>()>0&&d["state"]?.ToString()=="running"))throw new Exception("Display window must not stop continuous acquisition or page navigation");
+                await PageDockingTests.VerifyLiveWave(window,wave);
                 captureButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for(int attempt=0;attempt<20&&captureButton.Content?.ToString()!="开始";attempt++)await Task.Delay(100);
                 if(captureButton.Content?.ToString()!="开始"||!captureButton.IsEnabled)throw new Exception("Combined button must return to start after stop completion");
@@ -315,6 +317,8 @@ internal static class UiTests
                 await (Task)run.Invoke(window,[wave,"capture"])!;
                 await Task.Delay(100);
                 Console.WriteLine("PASS: nine WPF pages rendered; shared Client acquisition survives navigation. Mouse/keyboard acceptance remains separate.");
+                var closingFloat=(Window)typeof(MainWindow).GetMethod("DetachPage",flags)!.Invoke(window,["perf",window.PointToScreen(new Point(300,180))])!;
+                window.Closed+=(_,_)=>{if(closingFloat.IsVisible)throw new Exception("Main window shutdown must close detached pages");};
                 window.Close();
             }
             catch(Exception e){Console.Error.WriteLine(e);app.Shutdown(1);}
