@@ -29,6 +29,10 @@ public sealed class WavePlotPanel : UserControl
     private readonly HashSet<WpfPlot> manualY=new();
     public void ResetView(){prepared=false;tracking=true;scrolling=false;pendingRange=null;latestTime=double.NaN;manualY.Clear();}
     public void FitY(){fitY=active;Changed?.Invoke();}
+    public void FollowCurrentView(double seconds)
+    {
+        prepared=true;tracking=true;scrolling=false;pendingRange=null;windowSeconds=seconds;
+    }
     public (double Left,double Right) PrepareView(double latest,double seconds)
     {
         var limits=active!.Plot.Axes.GetLimits();

@@ -694,9 +694,14 @@ public partial class MainWindow : Window
                         }
                     }
                     var viewResult=await client.ExecuteAsync(view);
-                    if(viewResult["ok"]!.GetValue<bool>()){if(page.WaveShowAll||seconds==0)page.WavePlots!.ResetView();ShowData(page,viewResult["data"]);}
+                    if(viewResult["ok"]!.GetValue<bool>()){
+                        bool fitAll=page.WaveShowAll||seconds==0;
+                        if(fitAll){page.WavePlots!.ResetView();page.Follow.IsChecked=true;}
+                        ShowData(page,viewResult["data"]);
+                        if(fitAll&&seconds>0)page.WavePlots!.FollowCurrentView(seconds);
+                    }
                     else Feedback.Text=viewResult["error"]?.ToString()??"波形读取失败";
-                    if(page.WaveShowAll){page.Pause.IsChecked=true;page.Follow.IsChecked=false;page.WaveShowAll=false;}
+                    page.WaveShowAll=false;
                     page.WaveViewRefresh=false;
                     return;
                 }

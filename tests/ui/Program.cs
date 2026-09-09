@@ -34,6 +34,7 @@ internal static class UiTests
             try
             {
                 if(args.Contains("--jlink-live")){await JlinkLiveTests.Run(root);window.Close();return;}
+                if(args.Contains("--plecs-live")){await PlecsWaveRefreshTests.Run(window,root,args[Array.IndexOf(args,"--plecs-live")+1]);window.Close();return;}
                 await EthernetDiscoveryTests.RunAsync();
                 await ParameterStreamingTests.Run();
                 await ParameterTests.Run();
@@ -300,6 +301,12 @@ internal static class UiTests
                 var datasets=client.Snapshot()["datasets"]!.AsArray();
                 if(!datasets.Any(d=>d!["count"]!.GetValue<int>()>0&&d["state"]?.ToString()=="running"))throw new Exception("Display window must not stop continuous acquisition or page navigation");
                 await PageDockingTests.VerifyLiveWave(window,wave);
+                var fullWave=((Grid)wave.GetType().GetProperty("Body")!.GetValue(wave)!).Children.OfType<WrapPanel>().SelectMany(bar=>bar.Children.OfType<Button>()).Single(b=>b.Content?.ToString()=="全图");
+                fullWave.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await Task.Delay(400);
+                var afterFull=wave.GetType().GetProperty("Records")!.GetValue(wave);
+                await Task.Delay(400);
+                if(pause.IsChecked==true||ReferenceEquals(afterFull,wave.GetType().GetProperty("Records")!.GetValue(wave)))throw new Exception("Full plot must continue refreshing instead of entering a hidden pause state");
                 captureButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for(int attempt=0;attempt<20&&captureButton.Content?.ToString()!="开始";attempt++)await Task.Delay(100);
                 if(captureButton.Content?.ToString()!="开始"||!captureButton.IsEnabled)throw new Exception("Combined button must return to start after stop completion");
@@ -324,7 +331,7 @@ internal static class UiTests
             catch(Exception e){Console.Error.WriteLine(e);app.Shutdown(1);}
         };
         int code=app.Run(window);
-        if(code==0)
+        if(code==0&&!args.Contains("--plecs-live"))
         {
             var closed=JsonNode.Parse(File.ReadAllText(Path.Combine(root,"build/ui-close-wave.json")))!;
             if(closed["stop_confirmed"]?.GetValue<bool>()!=true||closed["state"]?.GetValue<string>()!="cancelled")return 1;
