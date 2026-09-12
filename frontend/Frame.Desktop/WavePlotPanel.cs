@@ -29,6 +29,7 @@ public sealed class WavePlotPanel : UserControl
     private readonly HashSet<WpfPlot> manualY=new();
     public void ResetView(){prepared=false;tracking=true;scrolling=false;pendingRange=null;latestTime=double.NaN;manualY.Clear();}
     public void FitY(){fitY=active;Changed?.Invoke();}
+    public void FollowLatest(){tracking=true;scrolling=true;pendingRange=null;}
     public void FollowCurrentView(double seconds)
     {
         prepared=true;tracking=true;scrolling=false;pendingRange=null;windowSeconds=seconds;
@@ -37,7 +38,10 @@ public sealed class WavePlotPanel : UserControl
     {
         var limits=active!.Plot.Axes.GetLimits();
         double width=seconds>0?seconds:30,left=pendingRange?.Left??limits.Left,right=pendingRange?.Right??limits.Right;
-        if(!prepared||windowSeconds!=seconds){left=latest;right=left+width;tracking=true;scrolling=false;}
+        // Entity: the viewport selects received samples, not future simulation data.
+        // Prior: retain the latest batch with headroom for incoming samples.
+        // Time: simulation and host clocks may start far from zero.
+        if(!prepared||windowSeconds!=seconds){right=latest+width*0.2;left=right-width;tracking=true;scrolling=false;}
         else if(tracking&&(scrolling||latest>right)){width=right-left;right=latest+width*0.2;left=right-width;scrolling=true;}
         latestTime=latest;windowSeconds=seconds;prepared=true;
         pendingRange=(left,right);
@@ -226,7 +230,7 @@ public sealed class WavePlotPanel : UserControl
             var names=series.VisibleNames.Where(name=>PlotFor(name)==pane.Id).ToArray();
             foreach(var name in names)SeriesColor(name);
             foreach(var group in groups.Where(g=>series.IsSeriesVisible(g.Key)&&PlotFor(g.Key)==pane.Id)){
-                var points=CurvePoints(group.ToArray());var line=plot.Plot.Add.Scatter(points.X,points.Y);line.LegendText=group.Key;line.MarkerSize=0;
+                var points=CurvePoints(group.ToArray());var line=plot.Plot.Add.Scatter(points.X,points.Y);line.LegendText=group.Key;line.MarkerSize=group.Count()==1?4:0;
                 line.Color=SeriesColor(group.Key);
             }
             if(!legendNames.TryGetValue(pane.Id,out var oldNames)||!oldNames.SequenceEqual(names)){
@@ -239,10 +243,11 @@ public sealed class WavePlotPanel : UserControl
             }
             plot.Plot.Axes.Bottom.TickGenerator=new ScottPlot.TickGenerators.NumericAutomatic{LabelFormatter=value=>FormatTime(value,hostTime)};
             plot.Plot.XLabel(hostTime?"":"Simulation time (s)");plot.Plot.YLabel("Value");plot.Plot.HideLegend();
-            if(prepared){if(!manualY.Contains(plot))plot.Plot.Axes.AutoScale();else plot.Plot.Axes.SetLimits(limits);plot.Plot.Axes.SetLimitsX(sharedLeft,sharedRight);}
-            else if(follow){plot.Plot.Axes.AutoScale();if(times.Length>1&&times.Max()>times.Min())plot.Plot.Axes.SetLimitsX(times.Min(),times.Max());}
+            bool hasCurves=plot.Plot.GetPlottables<ScottPlot.Plottables.Scatter>().Any();
+            if(prepared){if(hasCurves&&!manualY.Contains(plot))plot.Plot.Axes.AutoScale();else plot.Plot.Axes.SetLimits(limits);plot.Plot.Axes.SetLimitsX(sharedLeft,sharedRight);}
+            else if(follow&&hasCurves){plot.Plot.Axes.AutoScale();if(times.Length>1&&times.Max()>times.Min())plot.Plot.Axes.SetLimitsX(times.Min(),times.Max());}
             else{plot.Plot.Axes.SetLimits(limits);plot.Plot.Axes.SetLimitsX(sharedTime.Left,sharedTime.Right);}
-            if(fitY==plot){var x=plot.Plot.Axes.GetLimits();plot.Plot.Axes.AutoScale();plot.Plot.Axes.SetLimitsX(x.Left,x.Right);manualY.Add(plot);fitY=null;}
+            if(fitY==plot){if(hasCurves){var x=plot.Plot.Axes.GetLimits();plot.Plot.Axes.AutoScale();plot.Plot.Axes.SetLimitsX(x.Left,x.Right);manualY.Add(plot);}fitY=null;}
             plot.Refresh();
         }
         RenderMeasurements();

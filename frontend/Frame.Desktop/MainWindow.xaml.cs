@@ -45,7 +45,6 @@ public partial class MainWindow : Window
         public ParameterPanel? Parameters;
         public WaveSeriesPanel? Series;
         public WavePlotPanel? WavePlots;
-        public ComboBox? WaveWindowPreset;
         public ComboBox? ScopeObjects;
         public ComboBox? ScopeHistory;
         public ScopePlotView? ScopeView;
@@ -125,7 +124,7 @@ public partial class MainWindow : Window
             var fit = new Button { Content = "全图" }; fit.Click += (_, _) => {
                 if(key=="wave"&&p.Dataset!=0){p.WaveShowAll=true;p.WaveViewRefresh=true;p.Follow.IsChecked=true;}
                 else {p.Plot.Plot.Axes.AutoScale();p.Plot.Refresh();}
-            }; bar.Children.Add(fit);
+            }; if(key!="wave")bar.Children.Add(fit);
             if(key is not ("scope" or "sfra"))p.Body.Children.Add(bar); Grid.SetRow(p.Plot, 1); p.Body.Children.Add(p.Plot);
             if(key is not ("wave" or "scope" or "sfra")){
             p.Plot.MouseWheel += (_, _) => {p.Follow.IsChecked=false;p.WaveViewRefresh=true;};
@@ -160,6 +159,21 @@ public partial class MainWindow : Window
                 content.Children.Add(p.Series);var splitter=new GridSplitter{Width=6,HorizontalAlignment=HorizontalAlignment.Stretch,VerticalAlignment=VerticalAlignment.Stretch};Grid.SetColumn(splitter,1);content.Children.Add(splitter);
                 Grid.SetColumn(p.WavePlots,2);content.Children.Add(p.WavePlots);Grid.SetRow(content,1);p.Body.Children.Add(content);
                 var add=new Button{Content="增加波形框"};add.Click+=(_,_)=>p.WavePlots.AddPlot();bar.Children.Insert(0,add);
+                var latest=new Button{Content="最新数据",ToolTip="移到最新采样位置并继续跟随，保留当前窗口宽度和 Y 轴缩放"};
+                System.Windows.Automation.AutomationProperties.SetAutomationId(latest,"wave_latest");
+                latest.Click+=(_,_)=>{
+                    if(!double.TryParse(p.Fields["window"].Text,NumberStyles.Float,CultureInfo.InvariantCulture,out double seconds)||!double.IsFinite(seconds)||seconds<0||seconds>86400){Feedback.Text="显示窗口应为 0～86400 秒";return;}
+                    if(seconds==0){
+                        var limits=p.Plot.Plot.Axes.GetLimits();seconds=Math.Clamp(limits.Right-limits.Left,0.001,86400);
+                        p.Fields["window"].Text=seconds.ToString("G17",CultureInfo.InvariantCulture);
+                        p.WavePlots.FollowCurrentView(seconds);
+                    }
+                    p.WavePlots.FollowLatest();p.WaveShowAll=false;p.WaveViewRefresh=true;p.Pause.IsChecked=false;p.Follow.IsChecked=true;
+                    if(p.Dataset==0&&p.Records.Count>0){
+                        double time=p.Records.Max(row=>row!["time"]!.GetValue<double>());
+                        p.WavePlots.PrepareView(time,seconds);Draw(p);
+                    }
+                };bar.Children.Insert(0,latest);
                 var fitY=new Button{Content="自适应 Y 轴",ToolTip="按当前框的可见曲线调整纵轴，保持时间范围"};fitY.Click+=(_,_)=>p.WavePlots.FitY();bar.Children.Add(fitY);
                 var measure=new Button{Content="测量时间差",ToolTip="依次点击两个时间位置，显示 Δt；再次点击按钮重新测量，Esc 清除测量"};
                 measure.Click+=(_,_)=>p.WavePlots.BeginTimeMeasurement();bar.Children.Add(measure);
@@ -253,27 +267,16 @@ public partial class MainWindow : Window
         p = Page("param", "参数读写", "读取设备字典后选择参数；写入由后端校验类型、范围并回读确认。");
         p.Parameters = new ParameterPanel(async request => await client.ExecuteAsync(request), message => Feedback.Text=message,(request,progress)=>client.ExecuteAsync(request,progress:progress));
         p.Parameters.WaveSelectionChanged+=names=>pages["wave"].Series!.SetSelectedParameters(names);
-        p.Parameters.WaveParameterEnabled+=name=>pages["wave"].Series!.Select(name);
         p.Body.Children.Clear(); p.Body.Children.Add(p.Parameters);
         p = Page("wave", "参数波形", "在参数页双击名称加入波形（绿色），再次双击移出；此处勾选只控制曲线显示。", true);
         var waveControls=new WrapPanel();p.Form.Children.Add(waveControls);
         var wavePage=p;
-        foreach(var field in new[]{("period","周期 ms","10"),("window","窗口 s","30")}){
-            waveControls.Children.Add(new TextBlock{Text=field.Item2,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(4,0,6,6)});
-            var input=new TextBox{Text=field.Item3,Width=65,ToolTip=field.Item1=="window"?"只控制显示范围；0 为全部历史，不停止采集":"设备上报周期（毫秒）"};
-            System.Windows.Automation.AutomationProperties.SetAutomationId(input,"wave_"+field.Item1);p.Fields.Add(field.Item1,input);waveControls.Children.Add(input);
-            if(field.Item1=="window"){
-                input.Visibility=Visibility.Collapsed;
-                var presets=new ComboBox{Width=110,ItemsSource=new[]{"最近10秒","最近30秒","最近1分钟","最近10分钟","自定义","全部"},SelectedIndex=1};waveControls.Children.Insert(waveControls.Children.Count-1,presets);
-                p.WaveWindowPreset=presets;
-                presets.SelectionChanged+=(_,_)=>{
-                    input.Visibility=presets.SelectedIndex==4?Visibility.Visible:Visibility.Collapsed;
-                    if(presets.SelectedIndex!=4)input.Text=new[]{"10","30","60","600","30","0"}[presets.SelectedIndex];
-                    wavePage.Pause.IsChecked=false;wavePage.Follow.IsChecked=true;
-                    if(presets.SelectedIndex==5){wavePage.WaveShowAll=true;wavePage.WaveViewRefresh=true;}
-                };
-            }
-        }
+        waveControls.Children.Add(new TextBlock{Text="周期 ms"});
+        var periodInput=new TextBox{Text="10",Width=65,ToolTip="设备上报周期（毫秒）"};
+        System.Windows.Automation.AutomationProperties.SetAutomationId(periodInput,"wave_period");
+        p.Fields.Add("period",periodInput);waveControls.Children.Add(periodInput);
+        // Keep the acquisition viewport state independent of the toolbar; zoom/pan adjusts the visible span.
+        p.Fields.Add("window",new TextBox{Text="30"});
         p.Fields.Add("output",new TextBox());
         p.Fields["period"].KeyDown+=async(_,e)=>{if(e.Key==System.Windows.Input.Key.Enter){e.Handled=true;await RunPageAsync(wavePage,"period");}};
         Actions(p, ("capture", "开始"), ("export", "导出…"), ("open-data", "打开…"));
@@ -893,7 +896,6 @@ public partial class MainWindow : Window
             if(double.TryParse(settings["height"]?.ToString(),CultureInfo.InvariantCulture,out var height)&&double.IsFinite(height))Height=Math.Clamp(height,MinHeight,Math.Max(MinHeight,SystemParameters.VirtualScreenHeight));
             if(settings["fields"] is JsonObject fields)foreach(var page in pages.Values)foreach(var field in page.Fields)
                 if(!(page.Key=="sfra"&&field.Key is "start_hz" or "stop_hz" or "amplitude" or "count")&&field.Key is not ("value" or "hex" or "text" or "output")&&fields[page.Key+"."+field.Key] is JsonValue saved&&saved.TryGetValue<string>(out var text))field.Value.Text=text;
-            if(pages.TryGetValue("wave",out var wave))wave.WaveWindowPreset!.SelectedIndex=wave.Fields["window"].Text switch{"10"=>0,"30"=>1,"60"=>2,"600"=>3,"0"=>5,_=>4};
         }
         catch(Exception error){Feedback.Text="读取界面设置失败，已使用默认值："+error.Message;}
     }

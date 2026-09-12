@@ -14,6 +14,7 @@ internal static class UiTests
     public static int Main(string[] args)
     {
         string root=Path.GetFullPath(args.Length>0?args[0]:".");
+        if(args.Contains("--wave-viewport")){new Application();WaveViewportTests.Run();return 0;}
         var gapRows=new[]{0d,0.01,0.02,2d,2.01}.Select(t=>new JsonObject{["time"]=t,["value"]=1d,["segment"]=0}).ToArray();
         if(!WavePlotPanel.CurvePoints(gapRows).Y.Any(double.IsNaN))throw new Exception("Long sampling gaps must break curves");
         gapRows[1]["segment"]=1;if(!WavePlotPanel.CurvePoints(gapRows.Take(2).ToArray()).Y.Any(double.IsNaN))throw new Exception("Restart boundary must break curve even with adjacent timestamps");
@@ -220,8 +221,8 @@ internal static class UiTests
                         clearMeasurementButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                         if(charts.Any(chart=>chart.Plot.GetPlottables<ScottPlot.Plottables.VerticalLine>().Any()||chart.Plot.GetPlottables<ScottPlot.Plottables.Text>().Any()))throw new Exception("Restart/cancel measurement must remove previous markers");
                         window.UpdateLayout();await Task.Delay(100);
-                        wavePlots.ResetView();var initial=wavePlots.PrepareView(100,30);var filling=wavePlots.PrepareView(110,30);
-                        if(initial!=filling||initial.Right!=130)throw new Exception("Live samples must fill the existing window without scrolling");
+                        wavePlots.ResetView();var initial=wavePlots.PrepareView(100,30);var filling=wavePlots.PrepareView(105,30);
+                        if(initial!=filling||initial.Right!=106)throw new Exception("Live samples must fill the existing window without scrolling");
                         var advanced=wavePlots.PrepareView(131,30);
                         if(advanced.Right<=131||Math.Abs(advanced.Right-advanced.Left-30)>0.001)throw new Exception("Boundary crossing must scroll with headroom and preserve span");
                         var nextScroll=wavePlots.PrepareView(132,30);
@@ -233,6 +234,13 @@ internal static class UiTests
                         if(charts[0].Plot.Axes.GetLimits().Top!=afterZoom.Top||charts[1].Plot.Axes.GetLimits().Left!=charts[0].Plot.Axes.GetLimits().Left)throw new Exception("Shift wheel must change shared X only");
                         charts[0].Plot.Axes.SetLimitsX(10,20);typeof(WavePlotPanel).GetMethod("RememberView",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(wavePlots,[charts[0]]);
                         if(wavePlots.PrepareView(140,30)!=(10d,20d))throw new Exception("History viewport must survive incoming samples");
+                        var latestButton=((Grid)entry.Value.GetType().GetProperty("Body")!.GetValue(entry.Value)!).Children.OfType<WrapPanel>().SelectMany(bar=>bar.Children.OfType<Button>()).Single(button=>System.Windows.Automation.AutomationProperties.GetAutomationId(button)=="wave_latest");
+                        var latestY=charts[0].Plot.Axes.GetLimits();
+                        latestButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        var latestRange=wavePlots.PrepareView(1000,30);
+                        if(Math.Abs(latestRange.Right-latestRange.Left-10)>0.001||latestRange.Left>=1000||latestRange.Right<=1000)throw new Exception("Latest button must leave history and preserve zoomed time span");
+                        if(charts[0].Plot.Axes.GetLimits().Bottom!=latestY.Bottom||charts[0].Plot.Axes.GetLimits().Top!=latestY.Top)throw new Exception("Latest button must preserve Y zoom");
+                        if(wavePlots.PrepareView(1001,30).Right<=latestRange.Right)throw new Exception("Latest button must resume continuous following");
                         wavePlots.ResetView();show.Invoke(window,[entry.Value,new JsonObject{["records"]=preview.DeepClone()}]);window.UpdateLayout();await Task.Delay(100);
                         var currentChart=(ScottPlot.WPF.WpfPlot)entry.Value.GetType().GetField("Plot")!.GetValue(entry.Value)!;
                         var beforeFit=currentChart.Plot.Axes.GetLimits();currentChart.Plot.Axes.SetLimitsY(-10000,10000);wavePlots.FitY();
@@ -301,12 +309,13 @@ internal static class UiTests
                 var datasets=client.Snapshot()["datasets"]!.AsArray();
                 if(!datasets.Any(d=>d!["count"]!.GetValue<int>()>0&&d["state"]?.ToString()=="running"))throw new Exception("Display window must not stop continuous acquisition or page navigation");
                 await PageDockingTests.VerifyLiveWave(window,wave);
-                var fullWave=((Grid)wave.GetType().GetProperty("Body")!.GetValue(wave)!).Children.OfType<WrapPanel>().SelectMany(bar=>bar.Children.OfType<Button>()).Single(b=>b.Content?.ToString()=="全图");
-                fullWave.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var waveButtons=((Grid)wave.GetType().GetProperty("Body")!.GetValue(wave)!).Children.OfType<WrapPanel>().SelectMany(bar=>bar.Children.OfType<Button>()).ToArray();
+                if(waveButtons.Any(b=>b.Content?.ToString()=="全图")||fields["window"].Parent!=null)throw new Exception("Wave toolbar must omit full plot and window controls");
+                waveButtons.Single(b=>b.Content?.ToString()=="最新数据").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 await Task.Delay(400);
                 var afterFull=wave.GetType().GetProperty("Records")!.GetValue(wave);
                 await Task.Delay(400);
-                if(pause.IsChecked==true||ReferenceEquals(afterFull,wave.GetType().GetProperty("Records")!.GetValue(wave)))throw new Exception("Full plot must continue refreshing instead of entering a hidden pause state");
+                if(pause.IsChecked==true||ReferenceEquals(afterFull,wave.GetType().GetProperty("Records")!.GetValue(wave)))throw new Exception("Latest-data action must continue refreshing instead of entering a hidden pause state");
                 captureButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 for(int attempt=0;attempt<20&&captureButton.Content?.ToString()!="开始";attempt++)await Task.Delay(100);
                 if(captureButton.Content?.ToString()!="开始"||!captureButton.IsEnabled)throw new Exception("Combined button must return to start after stop completion");

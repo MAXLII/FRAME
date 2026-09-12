@@ -34,7 +34,6 @@ internal static class ParameterTests
         await panel.RunAsync("report");if(!rows[0].Reporting)throw new Exception("Reporting state must follow ACK");
         IReadOnlyList<string> waveNames=Array.Empty<string>();var series=new WaveSeriesPanel();
         panel.WaveSelectionChanged+=names=>{waveNames=names;series.SetSelectedParameters(names);};
-        panel.WaveParameterEnabled+=series.Select;
         var host=new System.Windows.Window{Content=panel,Width=1100,Height=450};host.Show();host.UpdateLayout();
         System.Windows.Controls.DataGridCell NameCell(ParameterRow row)
         {
@@ -56,7 +55,7 @@ internal static class ParameterTests
         DoubleClickName(rows[0]);await Task.Yield();
         if(rows[0].Reporting||waveNames.Count!=0||series.IsSeriesVisible("GAIN"))throw new Exception("Double-click must remove the reported parameter from the wave selection");
         DoubleClickName(rows[0]);await Task.Yield();
-        if(!rows[0].Reporting||!waveNames.SequenceEqual(new[]{"GAIN"})||!series.IsSeriesVisible("GAIN")||sent?["enable"]?.GetValue<bool>()!=true)throw new Exception("Double-click must enable reporting and populate wave selection");
+        if(!rows[0].Reporting||!waveNames.SequenceEqual(new[]{"GAIN"})||series.IsSeriesVisible("GAIN")||sent?["enable"]?.GetValue<bool>()!=true)throw new Exception("Double-click must enable reporting and populate the list without showing a curve");
         await host.Dispatcher.InvokeAsync(()=>{},System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         if((NameCell(rows[0]).Background as System.Windows.Media.SolidColorBrush)?.Color!=System.Windows.Media.Brushes.Honeydew.Color)throw new Exception("Selected waveform parameter must remain visibly green");
         reject=true;DoubleClickName(rows[0]);await Task.Yield();reject=false;

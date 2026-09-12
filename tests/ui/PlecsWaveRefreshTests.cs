@@ -19,7 +19,7 @@ internal static class PlecsWaveRefreshTests
         var fields = (Dictionary<string, TextBox>)type.GetProperty("Fields")!.GetValue(wave)!;
         var pause = (CheckBox)type.GetProperty("Pause")!.GetValue(wave)!;
         var body = (Grid)type.GetProperty("Body")!.GetValue(wave)!;
-        var full = body.Children.OfType<WrapPanel>().SelectMany(bar => bar.Children.OfType<Button>()).Single(b => b.Content?.ToString() == "全图");
+        var latest = body.Children.OfType<WrapPanel>().SelectMany(bar => bar.Children.OfType<Button>()).Single(b => b.Content?.ToString() == "最新数据");
         var series = (WaveSeriesPanel)type.GetField("Series")!.GetValue(wave)!;
         JsonArray Records() => (JsonArray)type.GetProperty("Records")!.GetValue(wave)!;
         double Latest() => Records().Select(r => r!["time"]!.GetValue<double>()).DefaultIfEmpty(-1).Max();
@@ -43,14 +43,10 @@ internal static class PlecsWaveRefreshTests
             if (pause.IsChecked == true || after <= before) throw new Exception($"PLECS waveform stopped refreshing at {stage}: {before} -> {after}");
         }
         await Observe("normal", () => { });
-        await Observe("full_plot", () => full.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
-        await Observe("after_full_plot", () => { });
-        var preset = (ComboBox)type.GetField("WaveWindowPreset")!.GetValue(wave)!;
-        await Observe("all_history", () => preset.SelectedIndex = 5);
-        await Observe("after_all_history", () => { });
-        await Observe("return_to_30_seconds", () => preset.SelectedIndex = 1);
+        await Observe("latest_data", () => latest.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
+        await Observe("after_latest_data", () => { });
         await File.WriteAllTextAsync(Path.Combine(root, "build/plecs-ui-refresh.json"), evidence.ToJsonString(new() { WriteIndented = true }));
-        Console.WriteLine("PASS: live PLECS TCP waveform advances before/after full plot, all history and returning to 30 seconds.");
+        Console.WriteLine("PASS: live PLECS TCP waveform advances before/after moving to latest data.");
         Console.WriteLine(evidence.ToJsonString());
     }
 }
