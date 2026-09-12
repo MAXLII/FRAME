@@ -7,6 +7,7 @@
 #include <future>
 namespace frame {
 runtime::runtime() {
+  comm_log.write("runtime_start", {{"pid", GetCurrentProcessId()}, {"build", __DATE__ " " __TIME__}});
   RegisterLinkedModules(registry);
   registry.Validate();
   registry.Start(*this);
@@ -48,6 +49,7 @@ runtime::runtime() {
   }
 }
 runtime::~runtime() {
+  comm_log.write("runtime_shutdown_begin");
   stopping_ = true;
   {
     std::lock_guard lock(mutex_);
@@ -61,6 +63,7 @@ runtime::~runtime() {
     jlink_worker_.join();
   serial.close();
   registry.Stop(*this);
+  comm_log.write("runtime_shutdown_end");
 }
 std::uint64_t runtime::submit(json cmd) {
   if (!cmd.is_object() || !cmd.contains("group") || !cmd["group"].is_string())
@@ -106,6 +109,8 @@ std::uint64_t runtime::submit(json cmd) {
   op->command = std::move(cmd);
   operations_[op->id] = op;
   pending_.push_back(op);
+  if (comm_log.enabled() && op->command.value("group", "") != "data" && op->command.value("group", "") != "status")
+    comm_log.write("operation_submitted", {{"id", op->id}, {"group", op->command.value("group", "")}, {"action", op->command.value("action", "")}});
   cv_.notify_one();
   return op->id;
 }
@@ -125,7 +130,7 @@ int runtime::cancel(std::uint64_t id) {
   auto it = operations_.find(id);
   if (it == operations_.end())
     return -1;
-  it->second->cancel = true;
+  if (!it->second->cancel.exchange(true)) comm_log.write("cancel_requested", {{"id", id}});
   return 0;
 }
 int runtime::release(std::uint64_t id) {
@@ -166,6 +171,8 @@ void runtime::progress(const operation &op, json data) {
 }
 void runtime::finish(const std::shared_ptr<operation> &op, int code, json data,
                      std::string error) {
+  if (comm_log.enabled() && (code != 0 || (op->command.value("group", "") != "data" && op->command.value("group", "") != "status")))
+    comm_log.write("operation_end", {{"id", op->id}, {"group", op->command.value("group", "")}, {"action", op->command.value("action", "")}, {"code", code}, {"error", error}});
   std::lock_guard lock(mutex_);
   op->result = {{"operation_id", op->id},
                 {"code", code},
@@ -231,12 +238,30 @@ void runtime::append_stream(const std::string &group, json record) {
       rows.push_back(record);
     }
 }
+void runtime::log_communication_state() {
+  if (!comm_log.enabled() || clock::now() < diagnostic_due) return;
+  diagnostic_due = clock::now() + std::chrono::seconds(1);
+  json counts = json::array();
+  for (const auto &[id, stream] : streams)
+    counts.push_back({{"id", id}, {"group", stream.group}, {"records", datasets.at(id)["records"].size()}});
+  comm_log.write("communication_state", {{"connected", serial.opened()}, {"endpoint", serial.endpoint},
+      {"epoch", epoch_}, {"rx_bytes", rx_bytes}, {"tx_bytes", tx_bytes}, {"rejected", decoder.rejected},
+      {"packets", received_packets}, {"ignored_packets", ignored_packets}, {"reports", report_packets},
+      {"pending_bytes", receive_link.PendingBytes()}, {"unmatched_packets", incoming.size()}, {"dropped", dropped},
+      {"rx_idle_ms", last_rx == clock::time_point{} ? -1 : std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - last_rx).count()},
+      {"last_rx_prefix", last_rx_preview}, {"streams", counts}});
+}
 void runtime::pump(unsigned wait) {
+  log_communication_state();
   if (receive_link.PendingBytes() != 0) { receive_link.Process(); return; }
   auto b = serial.read(wait);
   if (b.empty())
     return;
   rx_bytes += b.size();
+  if (comm_log.enabled()) {
+    last_rx = clock::now();
+    last_rx_preview = hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)));
+  }
   append_stream("serial", {{"hex", hex(b)},
                            {"host_seconds", std::chrono::duration<double>(
                                                 clock::now().time_since_epoch())
@@ -334,6 +359,7 @@ void runtime::fail_streams(int code, const std::string &error) {
 }
 void runtime::run() {
   while (!stopping_) {
+    log_communication_state();
     std::shared_ptr<operation> op;
     {
       std::unique_lock lock(mutex_);
@@ -345,6 +371,9 @@ void runtime::run() {
       }
     }
     if (op) {
+      if (comm_log.enabled() && op->command.value("group", "") != "data" && op->command.value("group", "") != "status")
+        comm_log.write("operation_begin", {{"id", op->id}, {"group", op->command.value("group", "")},
+            {"action", op->command.value("action", "")}, {"command_preview", op->command.dump().substr(0, 2048)}});
       try {
         guard(*op);
         auto data = execute(*op);
@@ -387,6 +416,7 @@ void runtime::run() {
       if (serial.opened())
         pump();
     } catch (const std::exception &e) {
+      comm_log.write("receive_error", {{"error", e.what()}});
       serial.close();
       receive_link.Reset();
       incoming.clear();

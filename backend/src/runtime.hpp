@@ -4,6 +4,7 @@
 #include "transport.hpp"
 #include "stream_link.hpp"
 #include "backend_registry.hpp"
+#include "communication_log.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -51,6 +52,11 @@ class runtime final {
   void run();
 
 public:
+  communication_log comm_log;
+  clock::time_point diagnostic_due{}, last_rx{};
+  std::uint64_t received_packets = 0, ignored_packets = 0, report_packets = 0;
+  std::string last_rx_preview;
+  void log_communication_state();
   BackendRegistry registry;
   std::string protocol_name = "frame-v1";
   void receive_packet(packet p);
