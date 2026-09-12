@@ -15,11 +15,11 @@ internal static class Program
         ["wave"]=["capture","start","stop","status"], ["scope"]=["list","info","channels","start","trigger","stop","reset","pull"],
         ["sfra"]=["list","info","configure","start","stop","reset","points"], ["perf"]=["info","summary","dictionary","samples","start","stop","reset"],
         ["trace"]=["capture","start","stop","status"], ["section"]=["list","nodes"], ["jlink"]=["connect","disconnect","detect","load","symbols","expand","read","write"],
-        ["data"]=["read","view","clear","export","release"], ["ethernet"]=["discover"]
+        ["data"]=["read","view","clear","export","release"], ["ethernet"]=["discover"], ["backend"]=["catalog"]
     };
     private static readonly string[] Numeric=["baud","dst","dynamic-dst","timeout","response-timeout","id","dataset","offset","limit","period","data-bits","stop-bits","count","revision","probe","tcp-port","scan-ms","discovery-port","speed"];
     private static readonly string[] Real=["duration","interval","start-hz","stop-hz","amplitude","seconds","left","right"];
-    private static readonly string[] Strings=["port","replay","name","value","min","max","input","output","hex","text","parity","enable","elf","path","device","jlink-exe","filter","record","transport","host","map","interface"];
+    private static readonly string[] Strings=["port","replay","name","value","min","max","input","output","hex","text","parity","enable","elf","path","device","jlink-exe","filter","record","transport","host","map","interface","protocol"];
     private static readonly Dictionary<ulong,BackendJob> jobs=new();
     private static readonly Dictionary<ulong,JsonObject> completedJobs=new();
     private static BackendClient? client;

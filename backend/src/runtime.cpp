@@ -7,6 +7,10 @@
 #include <future>
 namespace frame {
 runtime::runtime() {
+  RegisterLinkedModules(registry);
+  registry.Validate();
+  registry.Start(*this);
+  try {
   publish();
   jlink_worker_ = std::jthread([this] {
     while (!stopping_) {
@@ -24,17 +28,24 @@ runtime::runtime() {
       }
       try {
         guard(*op);
-        finish(op, 0, jlink(*op));
+        finish(op, 0, op->handler(*this, *op));
       } catch (const failure &e) {
         finish(op, e.code, nullptr, e.what());
       } catch (const std::exception &e) {
         finish(op, 2, nullptr, e.what());
       }
-      if (op->command.value("action", std::string()) == "write")
+      if (op->exclusive_write)
         jlink_write_active_ = false;
     }
   });
   worker_ = std::jthread([this] { run(); });
+  } catch (...) {
+    stopping_ = true;
+    cv_.notify_all();
+    if (jlink_worker_.joinable()) jlink_worker_.join();
+    registry.Stop(*this);
+    throw;
+  }
 }
 runtime::~runtime() {
   stopping_ = true;
@@ -49,6 +60,7 @@ runtime::~runtime() {
   if (jlink_worker_.joinable())
     jlink_worker_.join();
   serial.close();
+  registry.Stop(*this);
 }
 std::uint64_t runtime::submit(json cmd) {
   if (!cmd.is_object() || !cmd.contains("group") || !cmd["group"].is_string())
@@ -148,8 +160,8 @@ std::string runtime::events(std::uint64_t after, unsigned limit) {
 void runtime::progress(const operation &op, json data) {
   std::lock_guard lock(mutex_);
   if (events_.size() >= 1024) events_.pop_front();
-  auto group = op.command.value("group", "");
-  events_.push_back({{"sequence", ++event_sequence_}, {"kind", group == "section" ? "section_nodes" : group == "perf" ? "perf_samples" : "parameter_directory"},
+  const auto &entry = registry.Find(op.command.value("group", std::string()), op.command.value("action", std::string()));
+  events_.push_back({{"sequence", ++event_sequence_}, {"kind", entry.policy.progressKind},
                      {"operation_id", op.id}, {"data", std::move(data)}});
 }
 void runtime::finish(const std::shared_ptr<operation> &op, int code, json data,
@@ -204,62 +216,23 @@ void runtime::publish() {
                {"jobs", jobs},
                {"datasets", sets}};
 }
-void runtime::clear_wave(std::uint64_t id, const std::string &reason) {
-  auto &data = datasets.at(id);
-  if (data.value("group", "") != "wave") throw failure(2, "Waveform dataset required");
-  data["revision_base"] = data.value("revision_base", 0ull) + data["records"].size() + 1;
-  data["records"] = json::array();
-  data["generation"] = data.value("generation", 0ull) + 1;
-  data["clear_reason"] = reason;
-  data["dropped"] = 0;
-  data["segment"] = data.value("segment", 0u) + 1;
-}
 void runtime::append_stream(const std::string &group, json record) {
   for (auto &[id, s] : streams)
     if (s.group == group) {
       auto &data = datasets[id];
-      if (group == "wave") { record["segment"] = data.value("segment", 0u); record["period_ms"] = data.value("period_ms", 10u); }
-      if (group == "trace" && record.contains("tick_extended"))
-        record["time"] = record["tick_extended"].get<double>() *
-                         data["control"].value("unit_us", 100u) / 1e6;
-      if (group == "trace" && s.op->command.contains("filter") &&
-          !s.op->command["filter"].get<std::string>().empty()) {
-        auto filter = "," + s.op->command["filter"].get<std::string>() + ",";
-        if (filter.find("," + record["line"].dump() + ",") == std::string::npos)
-          continue;
-      }
+      const auto &definition = registry.FindStream(group);
+      if (!definition.prepare(*this, s, data, record)) continue;
       auto &rows = data["records"];
-      if (group != "wave" && rows.size() >= 100000) {
-        rows.erase(rows.begin(), rows.begin() + 4096);
-        data["dropped"] = data.value("dropped", 0) + 4096;
+      if (definition.retainedLimit != 0 && rows.size() >= definition.retainedLimit) {
+        auto count = std::min<std::size_t>(4096, rows.size());
+        rows.erase(rows.begin(), rows.begin() + count);
+        data["dropped"] = data.value("dropped", 0ull) + count;
       }
       rows.push_back(record);
     }
 }
-bool runtime::receive_sfra_report(const packet &report) {
-  if (report.ack || (report.word != 0x36 && report.word != 0x37)) return false;
-  auto row = decode(report.word, report.payload);
-  for (auto &[id, data] : datasets) {
-    if (data.value("group", std::string()) != "sfra" || data.value("state", std::string()) != "running" ||
-        data.value("epoch", 0ull) != epoch_ || data["metadata"]["id"] != row["id"] || data["metadata"]["tag"] != row["tag"]) continue;
-    auto &records=data["records"];
-    if (report.word==0x36) {
-      if(row.value("status",0)!=0 || row.value("index",0u)>=1000000) {data["partial"]=true;return true;}
-      auto duplicate=std::find_if(records.begin(),records.end(),[&](const json &item){return item["index"]==row["index"];});
-      if(duplicate==records.end())records.push_back(row);
-      else {data["duplicates"]=data.value("duplicates",0u)+1;if(*duplicate!=row)data["partial"]=true;}
-      std::sort(records.begin(),records.end(),[](const json &a,const json &b){return a["index"]<b["index"];});
-    } else {
-      auto expected=row.value("count",0u);bool complete=records.size()==expected;
-      for(unsigned index=0;index<records.size();++index)complete=complete&&records[index]["index"]==index;
-      data["metadata"]=row;data["partial"]=data.value("partial",false)||!complete;
-      data["state"]=data["partial"].get<bool>()?"partial":"complete";
-    }
-    return true;
-  }
-  return false;
-}
 void runtime::pump(unsigned wait) {
+  if (receive_link.PendingBytes() != 0) { receive_link.Process(); return; }
   auto b = serial.read(wait);
   if (b.empty())
     return;
@@ -268,102 +241,8 @@ void runtime::pump(unsigned wait) {
                            {"host_seconds", std::chrono::duration<double>(
                                                 clock::now().time_since_epoch())
                                                 .count()}});
-  for (auto &p : decoder.feed(b)) {
-    if (p.group != 1 || !(p.dst == 1 || p.dst == 0) || p.src != dst)
-      continue;
-    if ((p.word==0x36||p.word==0x37)&&!p.ack&&receive_sfra_report(p)) {
-      continue;
-    } else if (p.word == 0x40 && !p.ack) {
-      auto batch = decode(p.word, p.payload);
-      auto tick = batch["tick_100us"].get<std::uint32_t>();
-      // 0x40 is the ordered PLECS simulation-time protocol. A new sample
-      // returning to an earlier time starts a new simulation, not a MCU epoch.
-      bool restarted = false;
-      for (auto &[id, stream] : streams) if (stream.group == "wave") {
-        auto &data = datasets[id];
-        bool new_connection = data.value("simulation_epoch", epoch_) != epoch_;
-        auto previous = data.value("simulation_tick", tick);
-        bool backwards = batch["first"] == 0 && tick < previous && previous - tick <= 0x80000000u;
-        if (new_connection || backwards) {
-          clear_wave(id, "simulation_restart");
-          restarted = true;
-        }
-        data["simulation_epoch"] = epoch_;
-        if (batch["first"] == 0) data["simulation_tick"] = tick;
-      }
-      if (restarted) { wave_clock = {}; wave_integrity = {}; }
-      wave_integrity.observe(tick, batch["total"], batch["first"],
-                             static_cast<unsigned>(batch["items"].size()));
-      auto extended = wave_clock.extend(tick);
-      for (auto row : batch["items"]) {
-        row["time"] = double(extended) / 10000;
-        row["time_source"] = "device_100us";
-        append_stream("wave", row);
-      }
-    } else if (p.word == 7 && !p.ack) {
-      reader wave(p.payload);
-      if (p.payload.size() == 6 && wave.u8(0) == 0 &&
-          (wave.u32(2) == 0xAAAAAAAA || wave.u32(2) == 0x55555555))
-        continue;
-      auto row = parameter(p.payload, 6);
-      row["time"] =
-          std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
-              .count();
-      row["time_source"] = "host_receive";
-      append_stream("wave", row);
-    } else if (p.word == 0x2d && !p.ack) {
-      auto row = decode(p.word, p.payload);
-      row["tick_extended"] = trace_clock.extend(row["tick"]);
-      append_stream("trace", row);
-    } else {
-      if (incoming.size() >= 4096) {
-        incoming.pop_front();
-        ++dropped;
-      }
-      incoming.push_back(std::move(p));
-    }
-  }
-}
-void runtime::send(unsigned word, const bytes &payload) {
-  packet p;
-  p.src = 1;
-  p.dst = static_cast<std::uint8_t>(dst);
-  p.dynamic_dst = static_cast<std::uint8_t>(dynamic_dst);
-  p.word = static_cast<std::uint8_t>(word);
-  p.ack = 0;
-  p.payload = payload;
-  auto b = encode(p);
-  serial.write(b);
-  tx_bytes += b.size();
-}
-packet runtime::wait_packet(operation &op, unsigned word, bool ack,
-                            const std::function<bool(const packet &)> &match) {
-  auto end = clock::now() + std::chrono::milliseconds(timeout_ms);
-  while (true) {
-    guard(op);
-    for (auto it = incoming.begin(); it != incoming.end(); ++it)
-      if (it->word == word && (it->ack != 0) == ack && (!match || match(*it))) {
-        auto p = std::move(*it);
-        incoming.erase(it);
-        return p;
-      }
-    if (clock::now() > end)
-      throw failure(4, "Response timeout for command " + std::to_string(word));
-    pump();
-  }
-}
-json runtime::query(operation &op, unsigned word, const bytes &payload,
-                    const std::function<bool(const packet &)> &match) {
-  send(word, payload);
-  auto p = wait_packet(op, word, true, match);
-  auto result = decode(static_cast<std::uint8_t>(word), p.payload);
-  if (result.contains("status") && result["status"] != 0)
-    throw failure(7, "Device status " + result["status"].dump());
-  if (result.contains("success") && !result["success"].get<bool>())
-    throw failure(7, "Device reported failure");
-  if (result.contains("accepted") && !result["accepted"].get<bool>())
-    throw failure(7, "Device rejected request");
-  return result;
+  receive_link.Push(b);
+  receive_link.Process();
 }
 void runtime::export_dataset(std::uint64_t id, const std::string &path) {
   auto it = datasets.find(id);
@@ -430,6 +309,7 @@ void runtime::export_dataset(std::uint64_t id, const std::string &path) {
   writer.get();
 }
 void runtime::fail_streams(int code, const std::string &error) {
+  registry.Disconnected(*this);
   for (auto &[id, s] : streams) {
     auto &data = datasets[id];
     data["state"] = "partial";
@@ -468,13 +348,7 @@ void runtime::run() {
       try {
         guard(*op);
         auto data = execute(*op);
-        auto group = op->command.value("group", std::string());
-        auto action = op->command.value("action", std::string());
-        if (group == "connect" || group == "disconnect" ||
-            (group == "serial" && (action == "connect" || action == "baud")))
-          publish(); // Connection completion must expose the new state immediately.
-        if (!streams.contains(op->id) &&
-            op->command.value("group", std::string()) != "jlink") {
+        if (!streams.contains(op->id) && !op->deferred) {
           int result_code =
               data.is_object() && data.value("partial", false) ? 6 : 0;
           finish(op, result_code, std::move(data));
@@ -500,7 +374,7 @@ void runtime::run() {
         if (e.code == 4 || e.code == 130) {
           serial.close();
           incoming.clear();
-          decoder.reset();
+          receive_link.Reset();
           ++epoch_;
           fail_streams(3, "Serial session invalidated by failed transaction; "
                           "remote stop not confirmed");
@@ -514,6 +388,9 @@ void runtime::run() {
         pump();
     } catch (const std::exception &e) {
       serial.close();
+      receive_link.Reset();
+      incoming.clear();
+      ++epoch_;
       fail_streams(3, e.what());
     }
     for (auto it = streams.begin(); it != streams.end();) {
@@ -530,10 +407,7 @@ void runtime::run() {
         try {
           operation stop_op;
           stop_op.deadline = clock::now() + std::chrono::seconds(3);
-          if (!confirmed && s.group == "wave")
-            query(stop_op, 0x0c, {0});
-          if (!confirmed && s.group == "trace")
-            query(stop_op, 0x2c, {0});
+          if (!confirmed) registry.FindStream(s.group).stop(*this, stop_op);
           confirmed = true;
         } catch (const std::exception &e) {
           stop_error = e.what();
@@ -545,23 +419,7 @@ void runtime::run() {
         datasets[id]["partial"] = datasets[id].value("dropped", 0) > 0 ||
                                   s.op->cancel.load() || expired || !confirmed;
         datasets[id]["stop_confirmed"] = confirmed;
-        if (s.group == "wave")
-          datasets[id]["integrity"] = {
-              {"missing",
-               wave_integrity.missing + wave_integrity.pending_missing()},
-              {"duplicates", wave_integrity.duplicates},
-              {"time_wraps", wave_clock.wraps},
-              {"out_of_order", wave_clock.out_of_order}};
-        if (s.group == "trace")
-          datasets[id]["integrity"] = {
-              {"time_wraps", trace_clock.wraps},
-              {"out_of_order", trace_clock.out_of_order}};
-        bool integrity_failed =
-            s.group == "wave" &&
-            (wave_integrity.missing || wave_integrity.pending_missing() ||
-             wave_integrity.duplicates || wave_clock.out_of_order);
-        integrity_failed = integrity_failed ||
-                           (s.group == "trace" && trace_clock.out_of_order);
+        bool integrity_failed = registry.FindStream(s.group).finalize(*this, datasets[id]);
         if (integrity_failed)
           datasets[id]["partial"] = true;
         try {
@@ -589,7 +447,7 @@ void runtime::run() {
         if (!confirmed) {
           serial.close();
           incoming.clear();
-          decoder.reset();
+          receive_link.Reset();
           ++epoch_;
           fail_streams(3, "Serial session invalidated after unconfirmed stop");
           break;
@@ -602,10 +460,9 @@ void runtime::run() {
   try {
     if (serial.opened()) {
       for (auto &[id, s] : streams) {
-        if (s.group == "wave")
-          send(0x0c, {0});
-        if (s.group == "trace")
-          send(0x2c, {0});
+        operation stop_op;
+        stop_op.deadline = clock::now() + std::chrono::milliseconds(250);
+        registry.FindStream(s.group).stop(*this, stop_op);
       }
     }
   } catch (...) {

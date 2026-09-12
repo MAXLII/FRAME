@@ -2,6 +2,8 @@
 #pragma once
 #include "acquisition.hpp"
 #include "transport.hpp"
+#include "stream_link.hpp"
+#include "backend_registry.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -19,6 +21,8 @@ struct operation final {
   std::atomic_bool cancel = false;
   const operation *parent = nullptr;
   bool done = false;
+  bool deferred = false, exclusive_write = false;
+  CommandHandler handler = nullptr;
   clock::time_point deadline;
 };
 struct stream_job final {
@@ -47,8 +51,18 @@ class runtime final {
   void run();
 
 public:
+  BackendRegistry registry;
+  std::string protocol_name = "frame-v1";
+  void receive_packet(packet p);
+  std::uint64_t epoch() const noexcept { return epoch_; }
+  bool probe_write_active() const noexcept { return jlink_write_active_; }
+  unsigned active_streams() const noexcept { return stream_count_; }
+  void begin_stream(operation &op, const std::string &group, double duration);
+  json connect_device(operation &op);
+  json disconnect_device(operation &op);
   transport serial;
   parser decoder;
+  StreamLink receive_link;
   std::deque<packet> incoming;
   std::map<std::uint64_t, stream_job> streams;
   std::map<std::string, json> parameters;
@@ -74,7 +88,6 @@ public:
   void finish(const std::shared_ptr<operation> &op, int code, json data,
               std::string error = {});
   void pump(unsigned wait = 5);
-  bool receive_sfra_report(const packet &report);
   void guard(const operation &op);
   void publish();
   void send(unsigned word, const bytes &payload);
@@ -83,7 +96,6 @@ public:
   json query(operation &op, unsigned word, const bytes &payload,
              const std::function<bool(const packet &)> &match = {});
   json execute(operation &op);
-  json jlink(operation &op);
   void append_stream(const std::string &group, json record);
   void clear_wave(std::uint64_t id, const std::string &reason);
   void export_dataset(std::uint64_t id, const std::string &path);

@@ -3,6 +3,12 @@ $frameRoot=Split-Path $PSScriptRoot -Parent
 $exe=Join-Path $frameRoot 'build/app/frame.exe'
 & $exe --help | Out-Null
 if($LASTEXITCODE){throw 'CLI help failed'}
+$catalog=& $exe backend catalog --json | ConvertFrom-Json
+if($LASTEXITCODE -or -not $catalog.ok -or $catalog.data.services.Count -ne 10 -or $catalog.data.streams.Count -ne 2){throw 'Backend registration catalog failed'}
+$shellCatalog='backend catalog --json' | & $exe shell | ConvertFrom-Json
+if($LASTEXITCODE -or -not $shellCatalog.ok -or $shellCatalog.data.commands.Count -ne $catalog.data.commands.Count){throw 'Shell registered command failed'}
+$unknown=& $exe connect --protocol unknown --json | ConvertFrom-Json
+if($LASTEXITCODE -ne 2 -or $unknown.ok){throw 'Unknown protocol must fail before transport access'}
 $portResult=& $exe serial ports --json | ConvertFrom-Json
 if($LASTEXITCODE -or -not $portResult.ok){throw 'Port enumeration failed'}
 $fixture=Join-Path $PSScriptRoot 'fixtures/parameter-session.json'

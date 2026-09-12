@@ -63,6 +63,19 @@ static std::string response(unsigned word, frame::bytes payload,
 int main(int argc, char **argv) {
   try {
     require(argc == 3, "fixture directory and fake Commander required");
+    {
+      backend registered;
+      auto result = call(registered, {{"group", "backend"}, {"action", "catalog"}});
+      require(result["code"] == 0, "registered catalog command");
+      auto catalog = result["data"];
+      require(catalog["services"].size() == 10 && catalog["reports"].size() == 5,
+              "all linked business modules and reports retained");
+      require(catalog["commands"].size() >= 60, "business command catalog populated");
+      require(call(registered, {{"group", "param"}, {"action", "typo"}})["code"] == 2,
+              "unknown action rejected before transport access");
+      require(call(registered, {{"group", "connect"}, {"protocol", "missing"}})["code"] == 2,
+              "unknown protocol rejected before opening device");
+    }
     auto fixture = std::filesystem::path(argv[1]);
     {
       auto batch=[](std::uint32_t tick){

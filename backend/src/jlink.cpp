@@ -15,12 +15,12 @@ static std::string quote_arg(const std::string &s) {
     throw failure(2, "Invalid process argument");
   return "\"" + s + "\"";
 }
-json runtime::jlink(operation &op) {
+static json Handle(runtime &r, operation &op) {
   auto &q = op.command;
   auto action = q.value("action", std::string("connect"));
   if (action == "disconnect") {
-    if (probe_session)
-      probe_session->close();
+    if (r.probe_session)
+      r.probe_session->close();
     return {{"connected", false}};
   }
   if (action == "detect") {
@@ -44,40 +44,40 @@ json runtime::jlink(operation &op) {
     }
     return {{"detected", false}};
   }
-  if (!symbol_index)
-    symbol_index = std::make_unique<symbols>();
-  if (q.contains("elf") && jlink_settings.value("loaded_elf", std::string()) !=
+  if (!r.symbol_index)
+    r.symbol_index = std::make_unique<symbols>();
+  if (q.contains("elf") && r.jlink_settings.value("loaded_elf", std::string()) !=
                                q["elf"].get<std::string>()) {
-    symbol_index->load(q["elf"]);
-    jlink_settings["loaded_elf"] = q["elf"];
+    r.symbol_index->load(q["elf"]);
+    r.jlink_settings["loaded_elf"] = q["elf"];
   }
   if (action == "load") {
-    auto result = symbol_index->load(q.at("path"));
-    if (q.contains("map")) symbol_index->merge_map(q.at("map"));
-    jlink_settings["loaded_elf"] = q.at("path");
+    auto result = r.symbol_index->load(q.at("path"));
+    if (q.contains("map")) r.symbol_index->merge_map(q.at("map"));
+    r.jlink_settings["loaded_elf"] = q.at("path");
     return result;
   }
   if (action == "symbols")
-    return symbol_index->list(q.value("filter", std::string()),
+    return r.symbol_index->list(q.value("filter", std::string()),
                               q.value("offset", 0u), q.value("limit", 100u), q.value("variables_only", false));
   if (action == "expand") {
-    auto variable = symbol_index->find(q.at("name"));
+    auto variable = r.symbol_index->find(q.at("name"));
     if (variable.value("kind", std::string()) == "pointer") {
       if (q.value("offset", 0u) != 0) return json::array();
       auto saved = q;
       q["action"] = "read";
       json pointer;
-      try { pointer = jlink(op); } catch (...) { q = saved; throw; }
+      try { pointer = Handle(r, op); } catch (...) { q = saved; throw; }
       q = saved;
-      return symbol_index->dereference(q.at("name"), pointer.at("raw"));
+      return r.symbol_index->dereference(q.at("name"), pointer.at("raw"));
     }
-    return symbol_index->expand(q.at("name"), q.value("offset", 0u), q.value("limit", 100u));
+    return r.symbol_index->expand(q.at("name"), q.value("offset", 0u), q.value("limit", 100u));
   }
-  jlink_settings.update(q);
-  auto device = jlink_settings.value("device", std::string("GD32E507ZE"));
+  r.jlink_settings.update(q);
+  auto device = r.jlink_settings.value("device", std::string("GD32E507ZE"));
   if (!std::regex_match(device, std::regex("[A-Za-z0-9_+.-]+")))
     throw failure(2, "Invalid J-Link target");
-  auto exe = jlink_settings.value(
+  auto exe = r.jlink_settings.value(
       "jlink_exe",
       std::string("C:\\Program Files\\SEGGER\\JLink_V936\\JLink.exe"));
   if (!std::filesystem::exists(wide(exe)))
@@ -100,7 +100,7 @@ json runtime::jlink(operation &op) {
   std::uint32_t address = 0;
   unsigned size = 0;
   if (action == "read" || action == "write") {
-    variable = symbol_index->find(q.at("name"));
+    variable = r.symbol_index->find(q.at("name"));
     if (variable.value("unsupported_location", false))
       throw failure(7, "Variable location/bit-field layout is not supported");
     auto addr = variable.at("address").get<std::uint64_t>();
@@ -115,7 +115,7 @@ json runtime::jlink(operation &op) {
           (write_encoding != 2 && write_encoding != 4 && write_encoding != 5 &&
            write_encoding != 6 && write_encoding != 7 && write_encoding != 8))
         throw failure(7, "Write requires a supported DWARF scalar type");
-      if (stream_count_ != 0)
+      if (r.active_streams() != 0)
         throw failure(9, "Stop acquisition before J-Link writes");
       if (address < 0x20000000 || std::uint64_t(address) + size > 0x20020000)
         throw failure(7,
@@ -157,25 +157,25 @@ json runtime::jlink(operation &op) {
              << address << ", 0x" << size << std::dec << "\n";
   } else if (action != "connect")
     throw failure(2, "Unknown J-Link action");
-  if (!probe_session)
-    probe_session = std::make_unique<commander>();
-  auto check = [this, &op] { guard(op); };
-  auto probe = jlink_settings.value("probe", 0u);
-  auto interface_name = jlink_settings.value("interface", std::string("SWD"));
-  auto speed = jlink_settings.value("speed", 1000u);
+  if (!r.probe_session)
+    r.probe_session = std::make_unique<commander>();
+  auto check = [&r, &op] { r.guard(op); };
+  auto probe = r.jlink_settings.value("probe", 0u);
+  auto interface_name = r.jlink_settings.value("interface", std::string("SWD"));
+  auto speed = r.jlink_settings.value("speed", 1000u);
   if ((interface_name != "SWD" && interface_name != "JTAG") || speed < 1 || speed > 50000)
     throw failure(2, "J-Link interface must be SWD/JTAG; speed must be 1..50000 kHz");
-  bool reused = probe_session->alive() &&
-                probe_session->identity ==
+  bool reused = r.probe_session->alive() &&
+                r.probe_session->identity ==
                     exe + "|" + device + "|" + std::to_string(probe) + "|" + interface_name + "|" + std::to_string(speed);
   if (!reused)
-    probe_session->open(exe, device, probe, check, interface_name, speed);
+    r.probe_session->open(exe, device, probe, check, interface_name, speed);
   std::string output;
   std::istringstream script(commands.str());
   std::string command;
   while (std::getline(script, command))
     if (!command.empty())
-      output += probe_session->exchange(command, check);
+      output += r.probe_session->exchange(command, check);
   if (action == "connect")
     return {{"device", device},
             {"connected", true},
@@ -215,9 +215,16 @@ json runtime::jlink(operation &op) {
       throw failure(7, "RAM readback mismatch");
   }
   if (variable.value("kind", std::string()) == "pointer" && variable.contains("raw")) {
-    try { variable.update(symbol_index->describe_pointer(q.at("name"), variable.at("raw"))); }
+    try { variable.update(r.symbol_index->describe_pointer(q.at("name"), variable.at("raw"))); }
     catch (const failure &) { /* Reading a pointer succeeds even if its target has no usable layout. */ }
   }
   return variable;
 }
+static void Stop(runtime &r) noexcept { r.probe_session.reset(); r.symbol_index.reset(); }
+static void Install(BackendRegistry &registry) {
+  registry.Service({"jlink", {}, nullptr, Stop});
+  registry.Commands("jlink", "jlink", {"","connect","disconnect","detect","load","symbols","expand","read"}, Handle, {ExecutionLane::Probe});
+  registry.Commands("jlink", "jlink", {"write"}, Handle, {ExecutionLane::Probe,false,false,true});
+}
+FRAME_REGISTER_MODULE(frame_module_jlink, Install)
 } // namespace frame
