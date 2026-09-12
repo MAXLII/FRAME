@@ -36,6 +36,7 @@ ctest --test-dir build/native -C Release --output-on-failure
 ## 文档
 
 - [原生软件架构](docs/NATIVE_ARCHITECTURE.md)：Top Down 分层、ABI、线程和数据模型。
+- [后端注册与流式协议](docs/STREAM_PROTOCOL_ARCHITECTURE.md)：模块自注册、依赖生命周期、命令与上报分发、协议扩展。
 - [详细架构方案](docs/CPP_CSHARP_TOP_DOWN_ARCHITECTURE.md)：设计目标与阶段门槛。
 - [CLI / Shell 手册](docs/CLI_REFERENCE.md)：九项功能、退出码、NDJSON、任务与数据集。
 - [验证记录](docs/NATIVE_VALIDATION.md)：构建、回放、E507、UI、持续运行证据及未完成项。

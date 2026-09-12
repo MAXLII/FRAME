@@ -13,6 +13,8 @@ COM6 是本次 E507 验证枚举结果，其他电脑需先枚举，不能直接
 
 ## 公共约定
 
+`backend catalog --json` 查询后端实际注册的服务、依赖、命令、协议、上报和采集处理器。Shell 使用同一命令。连接可传 `--protocol frame-v1`；默认保持 FRAME 协议，未知协议在打开设备前拒绝。新协议需要在后端模块中实现并注册，参数不会凭空启用其他协议。
+
 - `--help`：根命令、命令组、子命令均提供帮助；与 `--json` 组合返回结构化帮助，`--version --json` 返回版本。
 - `--port`、`--baud`、`--dst`、`--dynamic-dst`：一次性命令的设备连接参数。
 - `--transport tcp --host IP --tcp-port 9000`：以太网 TCP 连接，host 为 IPv4/IPv6 数字地址；连接等待最多 3 秒，同时遵守操作截止时间及取消。省略 transport 时使用串口。
