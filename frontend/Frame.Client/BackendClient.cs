@@ -22,6 +22,7 @@ public sealed class BackendClient : IAsyncDisposable
     private readonly Task pump;
     private bool closing;
     public string? ShutdownError { get; private set; }
+    public Action<JsonObject>? PrepareCommand { get; set; }
 
     public BackendClient()
     {
@@ -34,6 +35,8 @@ public sealed class BackendClient : IAsyncDisposable
     public BackendJob Submit(JsonObject command) => Submit(command,null);
     private BackendJob Submit(JsonObject command,IProgress<JsonObject>? progress)
     {
+        command=(JsonObject)command.DeepClone();
+        PrepareCommand?.Invoke(command);
         lock(submissionGate)
         {
         if (closing) throw new ObjectDisposedException(nameof(BackendClient));

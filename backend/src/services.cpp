@@ -69,6 +69,24 @@ json runtime::execute(operation &op) {
   }
   if (!entry.policy.protocol.empty() && entry.policy.protocol != protocol_name)
     throw failure(2, "Command is not supported by the connected protocol");
+  if (entry.policy.transport && !entry.policy.protocol.empty()) {
+    const auto next_dst = q.value("dst", dst);
+    const auto next_dynamic_dst = q.value("dynamic_dst", dynamic_dst);
+    if (next_dst > 255 || next_dynamic_dst > 255)
+      throw failure(2, "Address outside uint8");
+    if (next_dst != dst || next_dynamic_dst != dynamic_dst) {
+      if (!streams.empty())
+        throw failure(9, "Stop acquisition before changing target address");
+      // The core worker serializes transactions. Only change target between
+      // operations, and discard device-specific state without closing the link.
+      registry.Disconnected(*this);
+      incoming.clear();
+      receive_link.Reset();
+      ++epoch_;
+      dst = next_dst;
+      dynamic_dst = next_dynamic_dst;
+    }
+  }
   auto result = entry.handler(*this, op);
   if (entry.policy.publish) publish();
   return result;

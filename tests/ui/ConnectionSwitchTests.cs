@@ -26,6 +26,7 @@ internal static class ConnectionSwitchTests
         if(client.Snapshot()["endpoint"]?.ToString()!=$"tcp://127.0.0.1:{Device(second).Port}")throw new Exception("Discovered device did not auto-connect to new endpoint: "+client.Snapshot()+"; "+((TextBlock)window.FindName("Feedback")).Text);
         var rejected=await client.ExecuteAsync(new(){["group"]="serial",["action"]="baud",["baud"]=9600});
         if(rejected["ok"]!.GetValue<bool>()||!client.Snapshot()["connected"]!.GetValue<bool>())throw new Exception("Baud changes must reject TCP without dropping connection");
+        await VerifyTargetSwitch(window,client,secondPeer);
         type.SelectedIndex=0;
         await Task.Delay(200);
         if(client.Snapshot()["connected"]!.GetValue<bool>())throw new Exception("Changing transport must disconnect");
@@ -35,5 +36,52 @@ internal static class ConnectionSwitchTests
         await Task.Delay(200);
         if(client.Snapshot()["connected"]!.GetValue<bool>())throw new Exception("Selecting a different serial port must disconnect");
         Console.WriteLine("PASS: discovered TCP endpoint auto-connect/switch, old session close, transport/serial selection disconnect, TCP baud rejection.");
+    }
+
+    private static async Task VerifyTargetSwitch(MainWindow window,BackendClient client,TcpClient peer)
+    {
+        var address=(TextBox)window.FindName("Address");
+        var dynamicAddress=(TextBox)window.FindName("DynamicAddress");
+        var endpoint=client.Snapshot()["endpoint"]!.ToString();
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        static byte[] Reply(byte source,byte dynamicSource,uint count)
+        {
+            byte[] bytes=[0xe8,1,source,dynamicSource,1,0,1,1,1,4,0,(byte)count,(byte)(count>>8),(byte)(count>>16),(byte)(count>>24),0,0,13,10];
+            ushort crc=0xffff;
+            foreach(byte value in bytes.AsSpan(0,15))
+            {
+                crc^=(ushort)(value<<8);
+                for(int bit=0;bit<8;bit++)crc=(ushort)((crc&0x8000)!=0?(crc<<1)^0x1021:crc<<1);
+            }
+            bytes[15]=(byte)crc;bytes[16]=(byte)(crc>>8);return bytes;
+        }
+        async Task Exchange(byte target,byte dynamicTarget,string? editWhilePending=null)
+        {
+            address.Text=target.ToString();dynamicAddress.Text=dynamicTarget.ToString();
+            var request=new System.Text.Json.Nodes.JsonObject{["group"]="param",["action"]="list"};
+            var job=client.Submit(request);
+            if(request.ContainsKey("dst"))throw new Exception("Submission must not mutate caller command");
+            if(editWhilePending!=null)address.Text=editWhilePending;
+            byte[] sent=new byte[15];
+            await peer.GetStream().ReadExactlyAsync(sent,timeout.Token);
+            if(sent[4]!=target||sent[5]!=dynamicTarget||sent[7]!=1)throw new Exception("Live target not reflected in transmitted FRAME header");
+            // An ACK from another node must not satisfy the pending transaction.
+            await peer.GetStream().WriteAsync(Reply((byte)(target==2?3:2),dynamicTarget,100001),timeout.Token);
+            await peer.GetStream().WriteAsync(Reply(target,dynamicTarget,0),timeout.Token);
+            var result=await job.Completion.WaitAsync(timeout.Token);
+            if(!result["ok"]!.GetValue<bool>()||result["data"]!.AsArray().Count!=0)throw new Exception("Target reply mismatch: "+result);
+            if(!client.Snapshot()["connected"]!.GetValue<bool>()||client.Snapshot()["endpoint"]!.ToString()!=endpoint)throw new Exception("Target change must retain TCP connection");
+        }
+        await Exchange(2,0,"3");
+        await Exchange(3,0);
+        await Exchange(2,7);
+        foreach(string invalid in new[]{"","256","-1","abc"})
+        {
+            address.Text=invalid;
+            try{client.Submit(new(){["group"]="param",["action"]="list"});throw new Exception("Invalid target was accepted");}
+            catch(InvalidOperationException error) when(error.Message.Contains("0–255")) { }
+        }
+        await Exchange(2,0);
+        Console.WriteLine("PASS: same TCP connection routes 2 -> 3 -> 2, dynamic address, in-flight target snapshot, foreign ACK rejection and invalid input.");
     }
 }

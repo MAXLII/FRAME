@@ -78,6 +78,23 @@ int main(int argc, char **argv) {
     }
     auto fixture = std::filesystem::path(argv[1]);
     {
+      json session;
+      std::ifstream(fixture / "parameter-session.json") >> session;
+      frame::packet request;
+      request.src = 1; request.dst = 3; request.word = 1; request.ack = 0;
+      frame::packet reply;
+      reply.src = 3; reply.word = 1; reply.ack = 1; reply.payload = {0,0,0,0};
+      replay_file replay(json::array({session[0],
+        json{{"tx", frame::hex(frame::encode(request))}, {"rx", {frame::hex(frame::encode(reply))}}}, session[1]}));
+      backend b;
+      require(call(b, {{"group","connect"},{"replay",replay.path.string()}})["ok"], "connect routing replay");
+      require(call(b, {{"group","param"},{"action","list"}})["ok"], "cache node 2 directory");
+      require(call(b, {{"group","param"},{"action","write"},{"dst",3},{"name","TEST_COUNTER"},{"value",43}})["code"] == 7,
+              "target change reloads directory before write and rejects absent parameter");
+      auto row = call(b, {{"group","param"},{"action","read"},{"dst",2},{"name","TEST_COUNTER"}});
+      require(row["ok"] && row["data"]["value"] == 42, "switch back without reopening replay transport");
+    }
+    {
       auto batch=[](std::uint32_t tick){
         frame::bytes b;frame::put(b,tick,4);frame::put(b,1,4);frame::put(b,0,4);frame::put(b,1,2);
         b.insert(b.end(),{1,5,42,0,0,0,'X'});return response(0x40,b,false);
@@ -90,6 +107,7 @@ int main(int argc, char **argv) {
         json{{"rx",{response(0x0c,{})}}}}));
       backend b;auto capture=submit(b,{{"group","wave"},{"action","capture"},{"replay",replay.path.string()},{"duration",0}});
       for(unsigned i=0;i<100;++i){auto state=call(b,{{"group","status"}});if(!state["data"]["datasets"].empty())break;std::this_thread::sleep_for(5ms);}
+      require(call(b,{{"group","param"},{"action","list"},{"dst",3}})["code"]==9,"target change blocked while acquisition owns old target");
       auto upload=[&](){require(call(b,{{"group","wave"},{"action","period"},{"period",20}})["ok"],"upload replay");return call(b,{{"group","data"},{"action","read"},{"dataset",capture}})["data"];};
       upload();auto old=upload();require(old["total"]==2,"retain simulation samples");
       auto restarted=upload();require(restarted["total"]==1&&restarted["generation"]==1&&restarted["records"][0]["time"]==0,"simulation restart clears old samples before appending");

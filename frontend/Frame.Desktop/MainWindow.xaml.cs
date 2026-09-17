@@ -81,6 +81,7 @@ public partial class MainWindow : Window
     {
         this.settingsPath=settingsPath;
         InitializeComponent();
+        client.PrepareCommand=ApplyCurrentTarget;
         Title=$"FRAME v{typeof(MainWindow).Assembly.GetName().Version!.ToString(3)}";
         CreatePages();
         string[] navigationIcons=[
@@ -782,6 +783,15 @@ public partial class MainWindow : Window
         SerialSettings.Visibility=tcp?Visibility.Collapsed:Visibility.Visible;
         TcpSettings.Visibility=tcp?Visibility.Visible:Visibility.Collapsed;
         if(!initializingConnection)await RunConnectionChangeAsync(async ()=>{await DisconnectCurrentAsync();Feedback.Text="已切换连接类型，请点击连接";},"断开中…");
+    }
+    private void ApplyCurrentTarget(JsonObject request)
+    {
+        if(request["group"]?.ToString() is not ("param" or "wave" or "scope" or "sfra" or "perf" or "trace" or "section"))return;
+        if(request["group"]?.ToString()=="section"&&request["action"]?.ToString()=="resolve")return;
+        if(!byte.TryParse(Address.Text,out byte address)||!byte.TryParse(DynamicAddress.Text,out byte dynamicAddress))
+            throw new InvalidOperationException("地址和 Dyn 必须是 0–255 的十进制整数");
+        request["dst"]=address;
+        request["dynamic_dst"]=dynamicAddress;
     }
     private JsonObject ConnectionRequest()
     {

@@ -20,8 +20,8 @@
             <TextBox x:Name="TcpPort" Text="9000" Width="65" Margin="0,0,10,6"/>
             <Button x:Name="SearchEthernetButton" Content="搜索设备" Click="SearchEthernet"/>
           </StackPanel>
-          <TextBlock Text="地址" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,6"/><TextBox x:Name="Address" Text="2" Width="45" Margin="0,0,10,6"/>
-          <TextBlock Text="Dyn" Foreground="White" VerticalAlignment="Center" Margin="0,0,6,6"/><TextBox x:Name="DynamicAddress" Text="0" Width="40" Margin="0,0,10,6" ToolTip="动态地址（0–255），连接时生效"/>
+          <TextBlock Text="地址" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,6"/><TextBox x:Name="Address" Text="2" Width="45" Margin="0,0,10,6" ToolTip="目的地址（0–255），下一次操作使用当前值，无需重连；切换前请停止持续采集"/>
+          <TextBlock Text="Dyn" Foreground="White" VerticalAlignment="Center" Margin="0,0,6,6"/><TextBox x:Name="DynamicAddress" Text="0" Width="40" Margin="0,0,10,6" ToolTip="动态目的地址（0–255），下一次操作使用当前值，无需重连"/>
           <Button x:Name="ConnectButton" Content="连接" Click="ToggleConnection" Width="90"/>
           <Ellipse x:Name="ConnectionIndicator" Width="12" Height="12" Fill="#94A3B8" VerticalAlignment="Center" Margin="8,0,0,6" ToolTip="未连接" AutomationProperties.Name="未连接"/>
         </StackPanel>

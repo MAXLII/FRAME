@@ -36,6 +36,7 @@ internal static class UiTests
             {
                 if(args.Contains("--jlink-live")){await JlinkLiveTests.Run(root);window.Close();return;}
                 if(args.Contains("--plecs-live")){await PlecsWaveRefreshTests.Run(window,root,args[Array.IndexOf(args,"--plecs-live")+1]);window.Close();return;}
+                if(args.Contains("--connection-switch")){await ConnectionSwitchTests.RunAsync(window,root);window.Close();return;}
                 await EthernetDiscoveryTests.RunAsync();
                 await ParameterStreamingTests.Run();
                 await ParameterTests.Run();
@@ -340,7 +341,7 @@ internal static class UiTests
             catch(Exception e){Console.Error.WriteLine(e);app.Shutdown(1);}
         };
         int code=app.Run(window);
-        if(code==0&&!args.Contains("--plecs-live"))
+        if(code==0&&!args.Contains("--plecs-live")&&!args.Contains("--connection-switch"))
         {
             var closed=JsonNode.Parse(File.ReadAllText(Path.Combine(root,"build/ui-close-wave.json")))!;
             if(closed["stop_confirmed"]?.GetValue<bool>()!=true||closed["state"]?.GetValue<string>()!="cancelled")return 1;
