@@ -27,6 +27,16 @@ internal static class ConnectionSwitchTests
         var rejected=await client.ExecuteAsync(new(){["group"]="serial",["action"]="baud",["baud"]=9600});
         if(rejected["ok"]!.GetValue<bool>()||!client.Snapshot()["connected"]!.GetValue<bool>())throw new Exception("Baud changes must reject TCP without dropping connection");
         await VerifyTargetSwitch(window,client,secondPeer);
+        var wireSelector=(ComboBox)window.FindName("WireSelector");
+        wireSelector.SelectedIndex=1;
+        await Task.Delay(400);
+        if(client.Snapshot()["wire"]?.ToString()!="e9")throw new Exception("Wire dropdown must switch the backend to E9");
+        var probeFrame=new byte[14];
+        await secondPeer.GetStream().ReadExactlyAsync(probeFrame,new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token);
+        if(probeFrame[0]!=0xE9)throw new Exception("Selecting E9 must emit a COMM v1 probe frame");
+        wireSelector.SelectedIndex=0;
+        await Task.Delay(300);
+        if(client.Snapshot()["wire"]?.ToString()!="e8")throw new Exception("Wire dropdown must return to E8");
         type.SelectedIndex=0;
         await Task.Delay(200);
         if(client.Snapshot()["connected"]!.GetValue<bool>())throw new Exception("Changing transport must disconnect");
@@ -64,7 +74,22 @@ internal static class ConnectionSwitchTests
             if(editWhilePending!=null)address.Text=editWhilePending;
             byte[] sent=new byte[15];
             await peer.GetStream().ReadExactlyAsync(sent,timeout.Token);
-            if(sent[4]!=target||sent[5]!=dynamicTarget||sent[7]!=1)throw new Exception("Live target not reflected in transmitted FRAME header");
+            if(sent[0]==0xE9)
+            {
+                // The backend sends one COMM v1 (0xE9) CODEC_SELECT probe frame
+                // (14 bytes) right after connecting; the 15-byte read consumed
+                // its tail plus the first byte of the real 0xE8 request.
+                var rest=new byte[14];
+                await peer.GetStream().ReadExactlyAsync(rest,timeout.Token);
+                var frame=new byte[15];frame[0]=sent[14];
+                Array.Copy(rest,0,frame,1,14);
+                sent=frame;
+            }
+            if(sent[0]!=0xE8||sent[4]!=target||sent[5]!=dynamicTarget||sent[7]!=1)
+            {
+                if(job.Completion.IsCompleted){var done=await job.Completion;throw new Exception($"Live target not reflected in transmitted FRAME header: {Convert.ToHexString(sent)}; job={done["code"]} {done["error"]}");}
+                throw new Exception($"Live target not reflected in transmitted FRAME header: {Convert.ToHexString(sent)}; job still pending");
+            }
             // An ACK from another node must not satisfy the pending transaction.
             await peer.GetStream().WriteAsync(Reply((byte)(target==2?3:2),dynamicTarget,100001),timeout.Token);
             await peer.GetStream().WriteAsync(Reply(target,dynamicTarget,0),timeout.Token);

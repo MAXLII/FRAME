@@ -33,7 +33,15 @@ internal static class ParameterStreamingTests
             string feedback="";
             var panel=new ParameterPanel(q=>client.ExecuteAsync(q),message=>feedback=message,(q,p)=>{q["response_timeout"]=mode=="timeout"?200:1500;return client.ExecuteAsync(q,cancelled.Token,p);});
             var reading=panel.RunAsync("list");
-            await socket.ReadExactlyAsync(new byte[15],deadline.Token);
+            var head=new byte[15];
+            await socket.ReadExactlyAsync(head,deadline.Token);
+            if(head[0]==0xe9)
+            {
+                // Skip the COMM v1 CODEC_SELECT probe frame (14 bytes) the
+                // backend sends right after connecting (wire=auto).
+                var rest=new byte[14];
+                await socket.ReadExactlyAsync(rest,deadline.Token);
+            }
             await socket.WriteAsync(Packet(1,BitConverter.GetBytes(3),true),deadline.Token);
             await socket.WriteAsync(Batch(3,0,"FIRST"),deadline.Token);
             while(panel.Table.Items.Count<1){deadline.Token.ThrowIfCancellationRequested();await Task.Delay(10,deadline.Token);}

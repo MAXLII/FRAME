@@ -26,8 +26,20 @@ internal static class SectionRefreshTests
     }
     private static async Task<byte[]> Request(NetworkStream stream,byte word,CancellationToken token)
     {
-        var header=new byte[11];await stream.ReadExactlyAsync(header,token);var tail=new byte[BitConverter.ToUInt16(header,9)+4];await stream.ReadExactlyAsync(tail,token);
-        if(header[7]!=word)throw new Exception($"Unexpected section command {header[7]:X2}");return tail;
+        while(true)
+        {
+            var header=new byte[11];await stream.ReadExactlyAsync(header,token);
+            if(header[0]==0xe9)
+            {
+                // Skip the COMM v1 CODEC_SELECT probe frame (14 bytes) that the
+                // backend sends right after connecting (wire=auto).
+                var probeTail=new byte[3];await stream.ReadExactlyAsync(probeTail,token);
+                continue;
+            }
+            if(header[0]!=0xe8)throw new Exception($"Unexpected frame header {header[0]:X2}");
+            var tail=new byte[BitConverter.ToUInt16(header,9)+4];await stream.ReadExactlyAsync(tail,token);
+            if(header[7]!=word)throw new Exception($"Unexpected section command {header[7]:X2}");return tail;
+        }
     }
     public static async Task Run()
     {

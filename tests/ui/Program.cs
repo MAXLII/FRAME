@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Media.Imaging;
 using System.Xml.Linq;
 using Frame.Desktop;
@@ -269,13 +270,35 @@ internal static class UiTests
                 string serialReplay=Path.Combine(root,"build/serial-text-replay.json");
                 File.WriteAllText(serialReplay,new JsonArray(new JsonObject{["tx"]=Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(" 你好 \r\n")),["rx"]=new JsonArray("E4BD","A0E5A5BD")}).ToJsonString());
                 await client.ExecuteAsync(new(){["group"]="connect",["replay"]=serialReplay});
+                await Task.Delay(300); // let the UI refresh cycle clear the new-session monitor
                 nav.SelectedIndex=0;
                 var runSerial=typeof(MainWindow).GetMethod("RunPageAsync",flags)!;
                 await (Task)runSerial.Invoke(window,[serialPage,"send"])!;await Task.Delay(600);
-                var receiveLog=(TextBox)serialType.GetProperty("ReceiveLog")!.GetValue(serialPage)!;
-                if(receiveLog.Text!="你好")throw new Exception("Serial text send/CRLF/fragmented UTF-8 receive failed: "+receiveLog.Text);
+                var receiveLog=(RichTextBox)serialType.GetProperty("ReceiveLog")!.GetValue(serialPage)!;
+                string logText=new TextRange(receiveLog.Document.ContentStart,receiveLog.Document.ContentEnd).Text;
+                var monitorList=(List<JsonObject>)serialType.GetProperty("SerialMonitor")!.GetValue(serialPage)!;
+                string monitorDump=string.Join(" | ",monitorList.Select(r=>r["kind"]+":"+r["hex"]));
+                if(!logText.StartsWith("→ TX  你好 \r\n")||!logText.Contains("← RX 你好"))throw new Exception("Serial text send/CRLF/fragmented UTF-8 receive failed: "+logText+" MONITOR="+monitorDump);
                 await (Task)runSerial.Invoke(window,[serialPage,"clear-view"])!;
-                if(receiveLog.Text!=""||!client.Snapshot()["datasets"]!.AsArray().Any(d=>d!["group"]?.ToString()=="serial"&&d["count"]!.GetValue<int>()==2))throw new Exception("Clearing serial display must retain exportable data");
+                logText=new TextRange(receiveLog.Document.ContentStart,receiveLog.Document.ContentEnd).Text;
+                if(logText!=""||!client.Snapshot()["datasets"]!.AsArray().Any(d=>d!["group"]?.ToString()=="serial"&&d["count"]!.GetValue<int>()==3))throw new Exception("Clearing serial display must retain exportable data");
+                // Stability stress: a noisy device floods the monitor; the UI must
+                // stay responsive, the retained monitor stays bounded, and the
+                // session still disconnects cleanly afterwards.
+                var stressReplay=Path.Combine(root,"build/serial-stress-replay.json");
+                File.WriteAllText(stressReplay,new JsonObject{["repeat_rx"]="E4BDA0E5A5BD2020",["period_ms"]=5,["steps"]=new JsonArray(new JsonObject(),new JsonObject(),new JsonObject())}.ToJsonString());
+                var stressConnect=await client.ExecuteAsync(new(){["group"]="connect",["replay"]=stressReplay});
+                if(!stressConnect["ok"]!.GetValue<bool>())throw new Exception("Stress replay connect failed: "+stressConnect["error"]);
+                // Two writes advance the replay index so the repeat source activates.
+                await client.ExecuteAsync(new(){["group"]="serial",["action"]="send",["hex"]="00",["duration"]=0.05});
+                await client.ExecuteAsync(new(){["group"]="serial",["action"]="send",["hex"]="00",["duration"]=0.05});
+                await Task.Delay(4000);
+                if(monitorList.Count==0)throw new Exception("Stress replay must produce monitor records");
+                if(monitorList.Count>512)throw new Exception("Serial monitor must stay bounded: "+monitorList.Count);
+                var stressDisconnect=await client.ExecuteAsync(new(){["group"]="disconnect"});
+                if(!stressDisconnect["ok"]!.GetValue<bool>())throw new Exception("Disconnect must complete under monitor load: "+stressDisconnect["error"]);
+                if(client.Snapshot()["connected"]!.GetValue<bool>())throw new Exception("Stress session must disconnect");
+                Console.WriteLine("PASS: noisy-device monitor stays bounded and disconnect completes.");
                 var replay=Path.Combine(root,"tests/fixtures/wave-periodic.json");
                 var connected=await client.ExecuteAsync(new(){["group"]="connect",["replay"]=replay});
                 if(!connected["ok"]!.GetValue<bool>())throw new Exception("WPF client replay connection failed");
