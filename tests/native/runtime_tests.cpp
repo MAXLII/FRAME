@@ -39,6 +39,13 @@ static json wait(backend &b, std::uint64_t id) {
   return result;
 }
 static json call(backend &b, json q) { return wait(b, submit(b, q)); }
+static json snapshot(backend &b) {
+  std::uint32_t n = 0;
+  require(frame_snapshot(b.h, nullptr, 0, &n) <= 2, "snapshot size");
+  std::string s(n, '\0');
+  require(frame_snapshot(b.h, s.data(), n, &n) == 0, "snapshot copy");
+  return json::parse(s);
+}
 struct replay_file {
   std::filesystem::path path =
       std::filesystem::temp_directory_path() /
@@ -341,8 +348,8 @@ int main(int argc, char **argv) {
                              {"replay", (fixture / "timeout.json").string()},
                              {"response_timeout", 20}});
       require(result["code"] == 4, "timeout classification");
-      require(call(b, {{"group", "status"}})["data"]["connected"] == false,
-              "timeout invalidates connection against late ACK");
+      require(call(b, {{"group", "status"}})["data"]["connected"] == true,
+              "timeout keeps the transport open for retry");
     }
     {
       backend b;
@@ -476,6 +483,23 @@ int main(int argc, char **argv) {
         if(scenario==0)require(confirmed["ok"]&&confirmed["data"]["verification"]=="directory_readback"&&confirmed["data"]["ack_received"]==false,"missing ACK succeeds only after fresh value and bounds verification");
         else require(confirmed["code"]==(scenario>=3?4:7),"mismatch, unavailable readback and unconfirmed commands stay failures");
       }
+    }
+    {
+      /* Wire protocol switching: sending only; the receiver parses both 0xE8
+       * and 0xE9 regardless of the selected mode. */
+      replay_file replay(json::array({json{{"rx",{response(1,{1,0,0,0}),response(4,{0,0,0,0})}}}}));
+      backend b;
+      require(call(b,{{"group","connect"},{"replay",replay.path.string()},{"wire","e8"}})["ok"],"connect with forced legacy wire");
+      require(snapshot(b)["wire"]=="e8","wire mode persisted in snapshot");
+      auto set=call(b,{{"group","wire"},{"action","set"},{"wire","e9"}});
+      require(set["ok"]&&set["data"]["wire"]=="e9","wire switches while connected");
+      require(snapshot(b)["wire"]=="e9","switched wire mode visible");
+      require(call(b,{{"group","wire"},{"action","set"},{"wire","e9"}})["ok"],"wire accepts e9");
+      require(call(b,{{"group","wire"},{"action","set"},{"wire","auto"}})["ok"],"wire accepts auto");
+      require(call(b,{{"group","wire"},{"action","set"},{"wire","bogus"}})["code"]==2,"wire rejects unknown mode");
+      require(call(b,{{"group","wire"},{"action","set"},{"wire","e8"}})["ok"],"wire returns to e8");
+      require(call(b,{{"group","connect"},{"replay",replay.path.string()},{"wire","bogus"}})["code"]==2,"connect rejects unknown wire mode");
+      std::cout << "PASS: wire protocol switching (sending only)\n";
     }
     std::cout << "PASS: ABI, events, quotas, persistent session, paging, "
                  "concurrency, cancellation, stop ACK and timeout isolation\n";
