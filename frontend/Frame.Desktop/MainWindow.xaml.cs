@@ -4,6 +4,8 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Frame.Client;
 using Microsoft.Win32;
@@ -24,6 +26,17 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim connectionGate=new(1,1);
     private string lastBaud="115200";
     private string current = "serial";
+    private string wireMode = "e8";
+    private bool switchingWire;
+    private bool serialDirty;
+    private ulong lastEpoch = ulong.MaxValue;
+    private ulong serialMonitorEpoch;
+    private static readonly string[] WireModes = ["e8","e9"];
+    // Serial monitor colors: user-sent, software-sent, software-received.
+    private static readonly Brush UserTxBrush=new SolidColorBrush(Color.FromRgb(0x1D,0x4E,0xD8));
+    private static readonly Brush ProtocolTxBrush=new SolidColorBrush(Color.FromRgb(0xC2,0x41,0x0C));
+    private static readonly Brush RxBrush=new SolidColorBrush(Color.FromRgb(0x04,0x78,0x57));
+    private const int SerialMonitorLimit=512;
     private readonly string? settingsPath;
     public static readonly DependencyProperty SidebarCollapsedProperty=DependencyProperty.Register(nameof(SidebarCollapsed),typeof(bool),typeof(MainWindow),new PropertyMetadata(false));
     public bool SidebarCollapsed { get=>(bool)GetValue(SidebarCollapsedProperty);set=>SetValue(SidebarCollapsedProperty,value); }
@@ -60,7 +73,8 @@ public partial class MainWindow : Window
         public CheckBox SendText { get; }=new(){Content="使用 UTF-8 文本发送",Margin=new Thickness(8)};
         public CheckBox SendNewline { get; }=new(){Content="追加 CRLF",Margin=new Thickness(8)};
         public CheckBox ReceiveText { get; }=new(){Content="接收显示 UTF-8 文本",Margin=new Thickness(8)};
-        public TextBox ReceiveLog { get; }=new(){IsReadOnly=true,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,FontFamily=new System.Windows.Media.FontFamily("Consolas"),Margin=new Thickness(0)};
+        public RichTextBox ReceiveLog { get; }=new(){IsReadOnly=true,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,FontFamily=new System.Windows.Media.FontFamily("Consolas"),FontSize=12,Margin=new Thickness(0),BorderThickness=new Thickness(0)};
+        public List<JsonObject> SerialMonitor { get; } = new();
         public bool SerialCleared;
         public CheckBox Pause { get; } = new(){Content="暂停显示",Margin=new Thickness(8),ToolTip="只冻结显示，设备采集与文件保存继续"};
         public CheckBox Follow { get; } = new() { Content = "跟随最新数据", IsChecked = true, Margin = new Thickness(8) };
@@ -82,6 +96,7 @@ public partial class MainWindow : Window
         this.settingsPath=settingsPath;
         InitializeComponent();
         client.PrepareCommand=ApplyCurrentTarget;
+        client.Monitor+=data=>Dispatcher.InvokeAsync(()=>OnSerialMonitor(data));
         Title=$"FRAME v{typeof(MainWindow).Assembly.GetName().Version!.ToString(3)}";
         CreatePages();
         string[] navigationIcons=[
@@ -259,7 +274,7 @@ public partial class MainWindow : Window
 
     private void CreatePages()
     {
-        var p = Page("serial", "串口调试", "独占串口 · HEX 收发 · 定时发送与接收保存");
+        var p = Page("serial", "串口调试", "独占串口 · HEX 收发 · TX/RX 方向显示 · 定时发送与接收保存");
         Fields(p, ("hex", "发送 HEX", ""), ("text", "发送文本 / UTF-8", ""), ("duration", "接收时长 / 秒", "1"), ("interval", "重复间隔 / 秒（0 禁用）", "0"), ("output", "接收保存路径（可选）", ""));
         var serial=p;var serialOptions=new WrapPanel();serialOptions.Children.Add(p.SendText);serialOptions.Children.Add(p.SendNewline);serialOptions.Children.Add(p.ReceiveText);p.Form.Children.Add(serialOptions);
         p.ReceiveText.Checked+=(_,_)=>RenderSerial(serial);p.ReceiveText.Unchecked+=(_,_)=>RenderSerial(serial);
@@ -385,7 +400,7 @@ public partial class MainWindow : Window
         {
             if(p.Key=="sfra"&&action=="configure"&&!p.SfraConfigLoaded)throw new ArgumentException("请先获取对象并成功读取设备配置");
             if(p.Key is "scope" or "sfra"&&action is not ("export" or "open-data" or "list")&&p.ScopeObjects?.SelectedItem==null)throw new ArgumentException("请先获取并选择对象");
-            if(action=="clear-view"){p.SerialCleared=true;p.ReceiveLog.Clear();Feedback.Text="已清空显示，原始接收数据仍可导出";return;}
+            if(action=="clear-view"){p.SerialCleared=false;p.SerialMonitor.Clear();p.ReceiveLog.Document=new FlowDocument();Feedback.Text="已清空显示，原始接收数据仍可导出";return;}
             if(p.Key=="serial"&&action=="stop"){foreach(var pending in jobs.Where(x=>x.Value.Page==p))client.Cancel(pending.Key);return;}
             if (action is "browse" or "open-data")
             {
@@ -398,6 +413,17 @@ public partial class MainWindow : Window
                 if(p.Series!=null&&data["records"] is JsonArray savedRecords)p.Series.SetSelectedParameters(savedRecords.OfType<JsonObject>().Where(r=>r["name"]!=null).Select(r=>r["name"]!.ToString()).Distinct().ToArray());
                 p.Dataset=0;p.Pause.IsChecked=false;
                 if(p.Key=="wave"){p.WaveGeneration=data?["generation"]?.GetValue<ulong>()??0;ResetWaveDisplay(p);}
+                if(p.Key=="serial"&&data?["records"] is JsonArray savedBlocks)
+                {
+                    /* Render opened history through the same three-color monitor. */
+                    p.SerialCleared=false;p.SerialMonitor.Clear();
+                    foreach(var block in savedBlocks.OfType<JsonObject>())
+                    {
+                        string dir=block["dir"]?.ToString()??"rx";
+                        p.SerialMonitor.Add(new JsonObject{["kind"]=dir=="tx"?"user_tx":"rx",["hex"]=block["hex"]?.ToString(),["bytes"]=block["bytes"]?.GetValue<int>()});
+                    }
+                    RenderSerial(p);
+                }
                 ShowData(p, data); Feedback.Text = "已打开 " + dialog.FileName; return;
             }
             JsonObject request = new() { ["group"] = p.Key, ["action"] = action, ["timeout"] = 60000 };
@@ -537,11 +563,67 @@ public partial class MainWindow : Window
     private static void RenderSerial(PageState p)
     {
         if(p.SerialCleared)return;
-        // Bound the text control while the backend owns the complete retained data.
-        string hex=string.Concat(p.Records.Select(r=>r?["hex"]?.ToString()?.Replace(" ","")));
-        if(hex.Length>131072)hex=hex[^131072..];
-        string text=p.ReceiveText.IsChecked==true?System.Text.Encoding.UTF8.GetString(Convert.FromHexString(hex)):string.Join(" ",Enumerable.Range(0,hex.Length/2).Select(i=>hex.Substring(i*2,2)));
-        if(p.ReceiveLog.Text!=text){p.ReceiveLog.Text=text;p.ReceiveLog.ScrollToEnd();}
+        bool textMode=p.ReceiveText.IsChecked==true;
+        var doc=new FlowDocument{PagePadding=new Thickness(0),LineHeight=18};
+        void AddLine(Brush brush,string text)
+        {
+            var paragraph=new Paragraph(new Run(text){Foreground=brush}){Margin=new Thickness(0)};
+            doc.Blocks.Add(paragraph);
+        }
+        if(textMode)
+        {
+            // Merge consecutive RX fragments before UTF-8 conversion so split
+            // multi-byte sequences render correctly; TX blocks are converted
+            // individually and flush the pending RX text.
+            var rxHex=new System.Text.StringBuilder();
+            void FlushRx()
+            {
+                if(rxHex.Length==0)return;
+                AddLine(RxBrush,"← RX "+System.Text.Encoding.UTF8.GetString(Convert.FromHexString(rxHex.ToString())));
+                rxHex.Clear();
+            }
+            foreach(var record in p.SerialMonitor)
+            {
+                string hex=record["hex"]?.ToString()?.Replace(" ","")??"";
+                if(string.IsNullOrEmpty(hex))continue;
+                string kind=record["kind"]?.ToString()??"rx";
+                if(kind=="rx"){rxHex.Append(hex);continue;}
+                FlushRx();
+                AddLine(kind=="user_tx"?UserTxBrush:ProtocolTxBrush,(kind=="user_tx"?"→ TX ":"→ 协议 ")+System.Text.Encoding.UTF8.GetString(Convert.FromHexString(hex)));
+            }
+            FlushRx();
+        }
+        else
+        {
+            foreach(var record in p.SerialMonitor)
+            {
+                string hex=record["hex"]?.ToString()?.Replace(" ","")??"";
+                if(string.IsNullOrEmpty(hex))continue;
+                string spaced=string.Join(" ",Enumerable.Range(0,hex.Length/2).Select(i=>hex.Substring(i*2,2)));
+                string kind=record["kind"]?.ToString()??"rx";
+                if(kind=="user_tx")AddLine(UserTxBrush,"→ TX "+spaced);
+                else if(kind=="protocol_tx")AddLine(ProtocolTxBrush,"→ 协议 "+spaced);
+                else AddLine(RxBrush,"← RX "+spaced);
+            }
+        }
+        p.ReceiveLog.Document=doc;
+        p.ReceiveLog.ScrollToEnd();
+    }
+    private void OnSerialMonitor(JsonObject data)
+    {
+        if(closing||disposed||!pages.ContainsKey("serial"))return;
+        var epoch=data["epoch"]?.GetValue<ulong>()??0;
+        if(epoch<serialMonitorEpoch)return; /* Stale events from a previous session. */
+        var p=pages["serial"];
+        if(epoch>serialMonitorEpoch)
+        {
+            /* Events raced ahead of the UI refresh: switch session here. */
+            serialMonitorEpoch=epoch;
+            p.SerialMonitor.Clear();
+        }
+        if(data["records"] is JsonArray records)foreach(var record in records.OfType<JsonObject>())p.SerialMonitor.Add(record);
+        while(p.SerialMonitor.Count>SerialMonitorLimit)p.SerialMonitor.RemoveAt(0);
+        serialDirty=true; /* Render from the 250 ms refresh cycle instead of per event. */
     }
     private static void Draw(PageState p)
     {
@@ -644,6 +726,22 @@ public partial class MainWindow : Window
             var state = client.Snapshot();
             foreach(var diagnostic in pages.Values.Select(p=>p.Diagnostic).OfType<DiagnosticPage>())await diagnostic.TickAsync(state);
             UpdateConnectionDisplay(state["connected"]!.GetValue<bool>(),state["endpoint"]?.ToString() ?? "");
+            UpdateWireDisplay(state);
+            if(serialDirty)
+            {
+                serialDirty=false;
+                RenderSerial(pages["serial"]);
+            }
+            var epoch=state["epoch"]?.GetValue<ulong>()??0;
+            if(epoch!=lastEpoch)
+            {
+                /* New connection session: restart the serial monitor view. */
+                lastEpoch=epoch;
+                serialMonitorEpoch=epoch;
+                var serialMonitor=pages["serial"];
+                serialMonitor.SerialMonitor.Clear();
+                serialMonitor.ReceiveLog.Document=new FlowDocument();
+            }
             var scopePage=pages["scope"];
             if(!state["connected"]!.GetValue<bool>())scopePage.ScopePollDue.Clear();
             foreach(var (objectId,due) in scopePage.ScopePollDue.ToArray()){
@@ -795,10 +893,48 @@ public partial class MainWindow : Window
     }
     private JsonObject ConnectionRequest()
     {
-        JsonObject request=new(){["group"]="connect",["dst"]=int.Parse(Address.Text),["dynamic_dst"]=int.Parse(DynamicAddress.Text)};
+        JsonObject request=new(){["group"]="connect",["dst"]=int.Parse(Address.Text),["dynamic_dst"]=int.Parse(DynamicAddress.Text),["wire"]=wireMode};
         if(ConnectionType.SelectedIndex==1){request["transport"]="tcp";request["host"]=TcpHost.Text.Trim();request["tcp_port"]=int.Parse(TcpPort.Text);}
         else{request["transport"]="serial";request["port"]=SelectedPort();request["baud"]=int.Parse(Baud.Text);}
         return request;
+    }
+    private void UpdateWireDisplay(JsonObject state)
+    {
+        bool connected=state["connected"]?.ToString()=="true";
+        if(switchingWire)return; /* Keep the selection stable while a switch is in flight. */
+        string mode=state["wire"]?.ToString() ?? wireMode;
+        /* The backend is authoritative only while connected; when disconnected
+         * the backend value is stale and must not overwrite the user's pick. */
+        if(connected&&mode is "e8" or "e9")wireMode=mode;
+        bool negotiated=state["v1_negotiated"]?.ToString()=="true";
+        int index=Array.IndexOf(WireModes,wireMode);
+        if(index>=0&&WireSelector.SelectedIndex!=index)WireSelector.SelectedIndex=index;
+        WireSelector.ToolTip=$"发送协议：E8 旧协议（默认）；E9 COMM v1（协商完成后自动压缩）。当前：{wireMode}；"+
+            (connected? (negotiated?"已协商 0xE9 压缩":"未协商（E9 走 RAW）"):"未连接")+
+            "。仅影响发送方向，接收始终同时解析两种协议。连接中切换立即生效。";
+    }
+    private async void ChangeWire(object sender, SelectionChangedEventArgs e)
+    {
+        if(initializingConnection||switchingWire||connectionBusy||closing||WireSelector.SelectedIndex<0)return;
+        try
+        {
+            string next=WireModes[WireSelector.SelectedIndex];
+            if(next==wireMode)return;
+            switchingWire=true;
+            if(client.Snapshot()["connected"]?.ToString()=="true")
+            {
+                var result=await client.ExecuteAsync(new(){["group"]="wire",["action"]="set",["wire"]=next});
+                if(result["ok"]?.GetValue<bool>()!=true)throw new InvalidOperationException(result["error"]?.ToString()??"切换发送协议失败");
+            }
+            wireMode=next;
+            Feedback.Text=$"发送协议已切换为 {next}（仅影响发送，接收始终双协议解析）";
+        }
+        catch(Exception error)
+        {
+            Feedback.Text="切换发送协议失败："+error.Message;
+            WireSelector.SelectedIndex=Array.IndexOf(WireModes,wireMode); /* Roll back the visual selection. */
+        }
+        finally{switchingWire=false;}
     }
     private async void ToggleConnection(object sender, RoutedEventArgs e)
     {
@@ -901,6 +1037,10 @@ public partial class MainWindow : Window
             foreach(var entry in new[]{("port",(Action<string>)(v=>Port.Text=v)),("baud",v=>Baud.Text=v),("address",v=>Address.Text=v),("host",v=>TcpHost.Text=v),("tcp_port",v=>TcpPort.Text=v)})
                 if(settings[entry.Item1] is JsonValue value&&value.TryGetValue<string>(out var text))entry.Item2(text);
             ConnectionType.SelectedIndex=settings["transport"]?.ToString()=="tcp"?1:0;
+            var savedWire=settings["wire"]?.ToString();
+            if(savedWire is "e8" or "e9")wireMode=savedWire;
+            int wireIndex=Array.IndexOf(WireModes,wireMode);
+            if(wireIndex>=0)WireSelector.SelectedIndex=wireIndex;
             if(settings["sidebar_collapsed"]?.ToString()=="true")ToggleSidebar(this,new RoutedEventArgs());
             if(double.TryParse(settings["width"]?.ToString(),CultureInfo.InvariantCulture,out var width)&&double.IsFinite(width))Width=Math.Clamp(width,MinWidth,Math.Max(MinWidth,SystemParameters.VirtualScreenWidth));
             if(double.TryParse(settings["height"]?.ToString(),CultureInfo.InvariantCulture,out var height)&&double.IsFinite(height))Height=Math.Clamp(height,MinHeight,Math.Max(MinHeight,SystemParameters.VirtualScreenHeight));
@@ -915,7 +1055,7 @@ public partial class MainWindow : Window
         JsonObject fields=new();foreach(var page in pages.Values)foreach(var field in page.Fields)
             if(field.Key is not ("value" or "hex" or "text" or "output"))fields[page.Key+"."+field.Key]=field.Value.Text;
         var bounds=WindowState==WindowState.Normal?new Rect(Left,Top,ActualWidth,ActualHeight):RestoreBounds;
-        DesktopSettings.Save(settingsPath,new(){["version"]=1,["port"]=SelectedPort(),["baud"]=Baud.Text,["address"]=Address.Text,["dynamic_address"]=DynamicAddress.Text,["host"]=TcpHost.Text,["tcp_port"]=TcpPort.Text,["transport"]=ConnectionType.SelectedIndex==1?"tcp":"serial",["sidebar_collapsed"]=SidebarCollapsed,["width"]=bounds.Width,["height"]=bounds.Height,["fields"]=fields});
+        DesktopSettings.Save(settingsPath,new(){["version"]=1,["port"]=SelectedPort(),["baud"]=Baud.Text,["address"]=Address.Text,["dynamic_address"]=DynamicAddress.Text,["host"]=TcpHost.Text,["tcp_port"]=TcpPort.Text,["transport"]=ConnectionType.SelectedIndex==1?"tcp":"serial",["wire"]=wireMode,["sidebar_collapsed"]=SidebarCollapsed,["width"]=bounds.Width,["height"]=bounds.Height,["fields"]=fields});
     }
     private async void OnClosing(object? sender, CancelEventArgs e)
     {

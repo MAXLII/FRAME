@@ -23,6 +23,10 @@
           <TextBlock Text="地址" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,6"/><TextBox x:Name="Address" Text="2" Width="45" Margin="0,0,10,6" ToolTip="目的地址（0–255），下一次操作使用当前值，无需重连；切换前请停止持续采集"/>
           <TextBlock Text="Dyn" Foreground="White" VerticalAlignment="Center" Margin="0,0,6,6"/><TextBox x:Name="DynamicAddress" Text="0" Width="40" Margin="0,0,10,6" ToolTip="动态目的地址（0–255），下一次操作使用当前值，无需重连"/>
           <Button x:Name="ConnectButton" Content="连接" Click="ToggleConnection" Width="90"/>
+          <ComboBox x:Name="WireSelector" Width="78" Margin="8,0,0,6" Padding="5" SelectedIndex="0" SelectionChanged="ChangeWire" ToolTip="发送协议：E8 旧协议（默认）；E9 COMM v1（协商完成后自动压缩）。仅影响发送方向，接收始终同时解析两种协议。连接中切换立即生效。">
+            <ComboBoxItem Content="E8"/>
+            <ComboBoxItem Content="E9"/>
+          </ComboBox>
           <Ellipse x:Name="ConnectionIndicator" Width="12" Height="12" Fill="#94A3B8" VerticalAlignment="Center" Margin="8,0,0,6" ToolTip="未连接" AutomationProperties.Name="未连接"/>
         </StackPanel>
       </DockPanel>

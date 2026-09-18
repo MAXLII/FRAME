@@ -23,6 +23,9 @@ public sealed class BackendClient : IAsyncDisposable
     private bool closing;
     public string? ShutdownError { get; private set; }
     public Action<JsonObject>? PrepareCommand { get; set; }
+    // Called from the pump thread for operation-independent "serial_monitor"
+    // events; the consumer must marshal to its UI context.
+    public Action<JsonObject>? Monitor { get; set; }
 
     public BackendClient()
     {
@@ -56,7 +59,6 @@ public sealed class BackendClient : IAsyncDisposable
         using var registration = cancellationToken.Register(() => Cancel(job.Id));
         return await job.Completion.ConfigureAwait(false);
     }
-
     public bool Cancel(ulong id) => !handle.IsClosed && Native.Cancel(handle, id)==0;
 
     public JsonObject Snapshot()
@@ -122,7 +124,8 @@ public sealed class BackendClient : IAsyncDisposable
                 foreach(var entry in events)
                 {
                     eventCursor=entry!["sequence"]!.GetValue<ulong>();
-                    if(entry["kind"]?.ToString() is "parameter_directory" or "section_nodes" or "perf_samples"&&progressHandlers.TryGetValue(entry["operation_id"]!.GetValue<ulong>(),out var handler))handler.Report(entry["data"]!.AsObject());
+                    if(entry["kind"]?.ToString()=="serial_monitor"){Monitor?.Invoke(entry!.AsObject());continue;}
+                    if(entry["kind"]?.ToString() is "parameter_directory" or "section_nodes" or "perf_samples" or "serial"&&progressHandlers.TryGetValue(entry["operation_id"]!.GetValue<ulong>(),out var handler))handler.Report(entry["data"]!.AsObject());
                 }
                 if(events.Count<128)return;
             }
