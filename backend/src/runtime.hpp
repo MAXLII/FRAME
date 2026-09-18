@@ -66,6 +66,7 @@ public:
   void begin_stream(operation &op, const std::string &group, double duration);
   json connect_device(operation &op);
   json disconnect_device(operation &op);
+  json set_wire(operation &op);
   transport serial;
   parser decoder;
   StreamLink receive_link;
@@ -106,5 +107,23 @@ public:
   void clear_wave(std::uint64_t id, const std::string &reason);
   void export_dataset(std::uint64_t id, const std::string &path);
   void fail_streams(int code, const std::string &error);
+  /* COMM v1 (0xE9) wire protocol state.
+   * wire_mode selects the sending format only: "e8" (default) forces legacy
+   * 0xE8, "e9" forces 0xE9 (RAW until negotiation completes), "auto" probes
+   * the device and falls back to 0xE8.
+   * comm_v1_negotiated is set by a valid CODEC_SELECT response and only gates
+   * compression; it never changes the selected wire format by itself. */
+  void probe_comm_v1();
+  bool comm_v1_sending() const noexcept {
+    return wire_mode == "e9" || (wire_mode == "auto" && comm_v1_negotiated);
+  }
+  /* Serial monitor: stream every user-sent, protocol-sent and received byte
+   * block to the UI through throttled "serial_monitor" events. */
+  void monitor(const std::string &kind, const bytes &b);
+  std::string wire_mode = "e8";
+  bool comm_v1_negotiated = false;
+  std::uint8_t comm_v1_next_seq = 0;
+  json monitor_pending_ = json::array();
+  clock::time_point monitor_flush_due_ = clock::time_point::min();
 };
 } // namespace frame

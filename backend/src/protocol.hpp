@@ -51,13 +51,25 @@ inline void putf(bytes &b, float v) {
 }
 struct packet {
   std::uint8_t src = 2, dynamic_src = 0, dst = 1, dynamic_dst = 0, group = 1,
-               word = 0, ack = 1;
+               word = 0, ack = 1, seq = 0;
   bytes payload;
 };
 std::uint16_t crc(std::span<const std::uint8_t> b);
 bytes encode(const packet &p);
 bytes unhex(const std::string &s);
 std::string hex(std::span<const std::uint8_t> b);
+
+/* COMM v1 (0xE9) protocol support. */
+std::uint8_t sum(std::span<const std::uint8_t> b);
+bytes encode_v1(const packet &p, bool allow_compression = true);
+bytes codec_select_request();
+bool is_codec_select_response(const packet &p);
+enum class codec : unsigned { raw = 0, dict = 1, rle = 2, lzss = 3, zero = 4 };
+bool codec_encode(codec kind, std::span<const std::uint8_t> input,
+                  unsigned limit, bytes &output);
+bool codec_decode(codec kind, std::span<const std::uint8_t> input,
+                  unsigned limit, bytes &output);
+std::uint32_t codebook_crc32();
 class parser final {
   bytes buffer_;
 

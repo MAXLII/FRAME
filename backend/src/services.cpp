@@ -22,7 +22,24 @@ json runtime::connect_device(operation &op) {
       serial.close();
       throw failure(2, "Address outside uint8");
     }
-    return {{"connected", true}, {"endpoint", serial.endpoint}};
+    /* Wire protocol selection affects sending only; the receiver keeps
+     * parsing both 0xE8 and 0xE9 frames regardless of this choice. */
+    const auto wire = q.value("wire", wire_mode);
+    if (wire != "auto" && wire != "e8" && wire != "e9") {
+      serial.close();
+      throw failure(2, "wire must be auto, e8, or e9");
+    }
+    wire_mode = wire;
+    comm_v1_negotiated = false;
+    comm_v1_next_seq = 0;
+    {
+      /* Drop throttled monitor records that belong to the previous session. */
+      std::lock_guard lock(mutex_);
+      monitor_pending_ = json::array();
+      monitor_flush_due_ = clock::time_point::min();
+    }
+    probe_comm_v1();
+    return {{"connected", true}, {"endpoint", serial.endpoint}, {"wire", wire_mode}};
 }
 json runtime::disconnect_device(operation &) {
     if (!streams.empty())
@@ -32,7 +49,25 @@ json runtime::disconnect_device(operation &) {
     ++epoch_;
     incoming.clear();
     receive_link.Reset();
+    {
+      /* Drop throttled monitor records that belong to the closed session. */
+      std::lock_guard lock(mutex_);
+      monitor_pending_ = json::array();
+      monitor_flush_due_ = clock::time_point::min();
+    }
     return {{"connected", false}};
+}
+json runtime::set_wire(operation &op) {
+    const auto wire = op.command.value("wire", std::string());
+    if (wire != "auto" && wire != "e8" && wire != "e9")
+      throw failure(2, "wire must be auto, e8, or e9");
+    wire_mode = wire;
+    comm_v1_negotiated = false;
+    comm_v1_next_seq = 0;
+    /* Re-probe while connected so forced 0xE9 and auto mode negotiate
+     * compression again; forced 0xE8 simply stays on the legacy sender. */
+    probe_comm_v1();
+    return {{"wire", wire_mode}, {"negotiated", comm_v1_negotiated}};
 }
 void runtime::begin_stream(operation &op, const std::string &group, double duration) {
   registry.FindStream(group);

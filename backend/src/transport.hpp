@@ -30,6 +30,7 @@ public:
   bool opened() const {
     return handle_ != INVALID_HANDLE_VALUE || tcp_.opened() || !replay_.is_null();
   }
+  bool replay_active() const noexcept { return !replay_.is_null(); }
   void write(const bytes &b);
   bytes read(unsigned timeout_ms = 10);
   static json ports();

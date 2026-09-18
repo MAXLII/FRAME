@@ -37,9 +37,23 @@ static json Handle(runtime &r, operation &op) {
                  {"dropped", 0}};
       auto &blocks = dataset["records"];
       std::size_t retained = 0;
+      /* Append one direction-tagged block, evicting the oldest blocks when the
+       * retained byte quota is exceeded. */
+      auto push_block = [&](const char *dir, const char *monitor_kind, const bytes &data) {
+        while (!blocks.empty() && retained + data.size() > 8 * 1024 * 1024) {
+          retained -= blocks[0]["bytes"].get<std::size_t>();
+          blocks.erase(blocks.begin());
+          dataset["dropped"] = dataset["dropped"].get<unsigned>() + 1;
+        }
+        json block = {{"dir", dir}, {"hex", hex(data)}, {"bytes", data.size()}};
+        blocks.push_back(block);
+        retained += data.size();
+        r.monitor(monitor_kind, data);
+      };
       if (!b.empty()) {
         r.serial.write(b);
         r.tx_bytes += b.size();
+        push_block("tx", "user_tx", b);
       }
       auto end = clock::now() +
                  std::chrono::milliseconds(static_cast<int>(duration * 1000));
@@ -50,17 +64,12 @@ static json Handle(runtime &r, operation &op) {
         auto data = r.serial.read(10);
         if (!data.empty()) {
           r.rx_bytes += data.size();
-          while (!blocks.empty() && retained + data.size() > 8 * 1024 * 1024) {
-            retained -= blocks[0]["bytes"].get<std::size_t>();
-            blocks.erase(blocks.begin());
-            dataset["dropped"] = dataset["dropped"].get<unsigned>() + 1;
-          }
-          blocks.push_back({{"hex", hex(data)}, {"bytes", data.size()}});
-          retained += data.size();
+          push_block("rx", "rx", data);
         }
         if (interval > 0 && clock::now() >= next) {
           r.serial.write(b);
           r.tx_bytes += b.size();
+          push_block("tx", "user_tx", b);
           next = clock::now() +
                  std::chrono::milliseconds(static_cast<int>(interval * 1000));
         }

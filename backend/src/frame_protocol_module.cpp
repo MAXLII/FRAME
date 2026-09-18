@@ -4,11 +4,37 @@
 namespace frame {
 void runtime::receive_packet(packet p) {
   ++received_packets;
+  /* COMM v1 codebook negotiation: a valid CODEC_SELECT response arms
+   * compressed 0xE9 sending for this connection. */
+  if (is_codec_select_response(p)) {
+    comm_v1_negotiated = true;
+    ++report_packets;
+    return;
+  }
   if (p.group != 1 || !(p.dst == 1 || p.dst == 0) || p.src != dst) { ++ignored_packets; return; }
   if (registry.DispatchReport(protocol_name, *this, p)) { ++report_packets; return; }
   if (comm_log.enabled() && p.ack) comm_log.write("ack_received", {{"word", p.word}, {"source", p.src}, {"bytes", p.payload.size()}});
   if (incoming.size() >= 4096) { incoming.pop_front(); ++dropped; }
   incoming.push_back(std::move(p));
+}
+void runtime::probe_comm_v1() {
+  if (!serial.opened() || serial.replay_active() || wire_mode == "e8" ||
+      dst > 15 || dynamic_dst > 7)
+    return; /* Skip on replay transports, forced legacy, and wide addresses. */
+  packet p;
+  p.src = 1;
+  p.dst = static_cast<std::uint8_t>(dst);
+  p.dynamic_dst = static_cast<std::uint8_t>(dynamic_dst);
+  p.group = 0;
+  p.word = 0;
+  p.ack = 0;
+  p.seq = comm_v1_next_seq;
+  p.payload = codec_select_request();
+  const auto b = encode_v1(p);
+  monitor("protocol_tx", b);
+  if (comm_log.enabled()) comm_log.write("tx_begin", {{"word", 0}, {"dst", dst}, {"bytes", b.size()}, {"prefix", hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)))}, {"probe", true}});
+  serial.write(b);
+  comm_v1_next_seq = static_cast<std::uint8_t>((comm_v1_next_seq + 1u) & 7u);
 }
 void runtime::send(unsigned word, const bytes &payload) {
   packet p;
@@ -18,7 +44,16 @@ void runtime::send(unsigned word, const bytes &payload) {
   p.word = static_cast<std::uint8_t>(word);
   p.ack = 0;
   p.payload = payload;
-  auto b = encode(p);
+  bytes b;
+  if (comm_v1_sending()) {
+    p.seq = comm_v1_next_seq;
+    /* Compression waits for codebook negotiation even in forced 0xE9 mode. */
+    b = encode_v1(p, comm_v1_negotiated);
+    comm_v1_next_seq = static_cast<std::uint8_t>((comm_v1_next_seq + 1u) & 7u);
+  } else {
+    b = encode(p);
+  }
+  monitor("protocol_tx", b);
   if (comm_log.enabled()) comm_log.write("tx_begin", {{"word", word}, {"dst", dst}, {"bytes", b.size()}, {"prefix", hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)))}});
   serial.write(b);
   tx_bytes += b.size();

@@ -149,6 +149,17 @@ std::string runtime::snapshot() {
 }
 std::string runtime::events(std::uint64_t after, unsigned limit) {
   std::lock_guard lock(mutex_);
+  /* The frontend polls events regularly; use that poll to flush throttled
+   * serial-monitor records that would otherwise linger after idle traffic. */
+  if (!monitor_pending_.empty()) {
+    if (events_.size() >= 1024) events_.pop_front();
+    events_.push_back({{"sequence", ++event_sequence_},
+                       {"kind", "serial_monitor"},
+                       {"epoch", epoch_},
+                       {"records", std::move(monitor_pending_)}});
+    monitor_pending_ = json::array();
+    monitor_flush_due_ = clock::time_point::min();
+  }
   json rows = json::array();
   for (auto &event : events_)
     if (event["sequence"].get<std::uint64_t>() > after &&
@@ -168,6 +179,26 @@ void runtime::progress(const operation &op, json data) {
   const auto &entry = registry.Find(op.command.value("group", std::string()), op.command.value("action", std::string()));
   events_.push_back({{"sequence", ++event_sequence_}, {"kind", entry.policy.progressKind},
                      {"operation_id", op.id}, {"data", std::move(data)}});
+}
+void runtime::monitor(const std::string &kind, const bytes &b) {
+  if (b.empty())
+    return;
+  const auto now = clock::now();
+  std::lock_guard lock(mutex_);
+  if (monitor_pending_.size() >= 512)
+    monitor_pending_.erase(monitor_pending_.begin());
+  monitor_pending_.push_back({{"kind", kind}, {"hex", hex(b)}, {"bytes", b.size()}});
+  /* Batch records into throttled events; the first record flushes immediately. */
+  if (monitor_pending_.size() < 64u && now < monitor_flush_due_)
+    return;
+  if (events_.size() >= 1024)
+    events_.pop_front();
+  events_.push_back({{"sequence", ++event_sequence_},
+                     {"kind", "serial_monitor"},
+                     {"epoch", epoch_},
+                     {"records", std::move(monitor_pending_)}});
+  monitor_pending_ = json::array();
+  monitor_flush_due_ = now + std::chrono::milliseconds(30);
 }
 void runtime::finish(const std::shared_ptr<operation> &op, int code, json data,
                      std::string error) {
@@ -220,6 +251,8 @@ void runtime::publish() {
                {"tx_bytes", tx_bytes},
                {"rejected", decoder.rejected},
                {"dropped", dropped},
+               {"wire", wire_mode},
+               {"v1_negotiated", comm_v1_negotiated},
                {"jobs", jobs},
                {"datasets", sets}};
 }
@@ -261,7 +294,10 @@ void runtime::pump(unsigned wait) {
   if (comm_log.enabled()) {
     last_rx = clock::now();
     last_rx_preview = hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)));
+    if (b[0] == 0xE8 || b[0] == 0xE9)
+      comm_log.write("rx_begin", {{"bytes", b.size()}, {"prefix", last_rx_preview}});
   }
+  monitor("rx", b);
   append_stream("serial", {{"hex", hex(b)},
                            {"host_seconds", std::chrono::duration<double>(
                                                 clock::now().time_since_epoch())
@@ -401,12 +437,12 @@ void runtime::run() {
         }
         finish(op, e.code, partial, e.what());
         if (e.code == 4 || e.code == 130) {
-          serial.close();
+          /* A failed transaction must not poison the next one: drop unmatched
+           * responses and reset parser state, but keep the transport session
+           * open so the user can switch protocol and retry without reconnecting. */
           incoming.clear();
           receive_link.Reset();
-          ++epoch_;
-          fail_streams(3, "Serial session invalidated by failed transaction; "
-                          "remote stop not confirmed");
+          fail_streams(3, "Transaction failed; remote state unconfirmed");
         }
       } catch (const std::exception &e) {
         finish(op, 2, nullptr, e.what());
