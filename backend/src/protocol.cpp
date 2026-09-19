@@ -305,6 +305,9 @@ bool zero_encode(std::span<const std::uint8_t> input, unsigned limit,
           nibble_index == 0 ? value >> 4 : value & 0x0F;
       const unsigned segment = nibble >> 2;
       const unsigned offset = nibble & 3u;
+      const auto required = (bit_count + segment + offset + 2u + 7u) / 8u;
+      if (required > output.size() || required >= limit)
+        return fail(out_len);
       for (unsigned i = 0; i < segment; ++i)
         put_bit(1);
       for (unsigned i = 0; i <= offset; ++i)
@@ -440,10 +443,8 @@ bool is_codec_select_response(const packet &p) {
       p.payload[0] != 0)
     return false;
   const auto crc32 = codebook_crc32();
-  return p.payload[4] == ((crc32 >> 24) & 0xFFu) &&
-         p.payload[5] == (crc32 & 0xFFu) &&
-         p.payload[6] == ((crc32 >> 8) & 0xFFu) &&
-         p.payload[7] == ((crc32 >> 16) & 0xFFu);
+  return p.sop == 0xE9 && p.payload[1] == 1 && p.payload[2] == 0 &&
+         p.payload[3] == 1 && reader(p.payload).u32(4) == crc32;
 }
 bytes encode_v1(const packet &p, bool allow_compression) {
   if (p.src > 15 || p.dst > 15 || p.dynamic_src > 7 || p.dynamic_dst > 7 ||
@@ -573,6 +574,11 @@ std::vector<packet> parser::feed(std::span<const std::uint8_t> data) {
                        (static_cast<std::uint32_t>(buffer_[4]) << 24);
       const unsigned cmd = (msg >> 30) & 1u;
       const unsigned msg_codec = (msg >> 27) & 7u;
+      if (msg_codec > 4 || (cmd == 1u && msg_codec != 0)) {
+        buffer_.erase(buffer_.begin());
+        ++rejected;
+        continue;
+      }
       if (cmd == 1u) {
         if (msg_codec != 0 || buffer_.size() < 6) {
           if (buffer_.size() < 6)
@@ -587,6 +593,7 @@ std::vector<packet> parser::feed(std::span<const std::uint8_t> data) {
           continue;
         }
         packet p;
+        p.sop = 0xE9;
         p.seq = static_cast<std::uint8_t>(msg & 7u);
         p.dst = static_cast<std::uint8_t>((msg >> 3) & 0xFu);
         p.dynamic_dst = static_cast<std::uint8_t>(((msg >> 7) & 1u) |
@@ -613,12 +620,8 @@ std::vector<packet> parser::feed(std::span<const std::uint8_t> data) {
         ++rejected;
         continue;
       }
-      if (msg_codec > 4) {
-        buffer_.erase(buffer_.begin());
-        ++rejected;
-        continue;
-      }
       packet p;
+      p.sop = 0xE9;
       p.seq = static_cast<std::uint8_t>(msg & 7u);
       p.dst = static_cast<std::uint8_t>((msg >> 3) & 0xFu);
       p.dynamic_dst = static_cast<std::uint8_t>(((msg >> 7) & 1u) |

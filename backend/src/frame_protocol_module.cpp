@@ -6,8 +6,11 @@ void runtime::receive_packet(packet p) {
   ++received_packets;
   /* COMM v1 codebook negotiation: a valid CODEC_SELECT response arms
    * compressed 0xE9 sending for this connection. */
-  if (is_codec_select_response(p)) {
+  if (comm_v1_probe_pending && p.src == dst &&
+      p.dynamic_src == dynamic_dst && p.dst == 1 && p.dynamic_dst == 0 &&
+      p.seq == comm_v1_probe_seq && is_codec_select_response(p)) {
     comm_v1_negotiated = true;
+    comm_v1_probe_pending = false;
     ++report_packets;
     return;
   }
@@ -34,6 +37,8 @@ void runtime::probe_comm_v1() {
   monitor("protocol_tx", b);
   if (comm_log.enabled()) comm_log.write("tx_begin", {{"word", 0}, {"dst", dst}, {"bytes", b.size()}, {"prefix", hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)))}, {"probe", true}});
   serial.write(b);
+  comm_v1_probe_seq = p.seq;
+  comm_v1_probe_pending = true;
   comm_v1_next_seq = static_cast<std::uint8_t>((comm_v1_next_seq + 1u) & 7u);
 }
 void runtime::send(unsigned word, const bytes &payload) {
@@ -56,6 +61,8 @@ void runtime::send(unsigned word, const bytes &payload) {
   monitor("protocol_tx", b);
   if (comm_log.enabled()) comm_log.write("tx_begin", {{"word", word}, {"dst", dst}, {"bytes", b.size()}, {"prefix", hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)))}});
   serial.write(b);
+  request_sop = b.front();
+  request_seq = p.seq;
   tx_bytes += b.size();
   if (comm_log.enabled()) comm_log.write("tx_end", {{"word", word}, {"tx_bytes", tx_bytes}});
 }
@@ -66,7 +73,10 @@ packet runtime::wait_packet(operation &op, unsigned word, bool ack,
   while (true) {
     guard(op);
     for (auto it = incoming.begin(); it != incoming.end(); ++it)
-      if (it->word == word && (it->ack != 0) == ack && (!match || match(*it))) {
+      if (it->word == word && (it->ack != 0) == ack &&
+          (!ack || (it->sop == request_sop &&
+                    (request_sop != 0xE9 || it->seq == request_seq))) &&
+          (!match || match(*it))) {
         auto p = std::move(*it);
         incoming.erase(it);
         if (comm_log.enabled()) comm_log.write("ack_matched", {{"id", op.id}, {"word", word}});

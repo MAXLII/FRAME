@@ -105,6 +105,14 @@ int main() {
 
       // The limit bound aborts encoding.
       check(!codec_encode(codec::zero, zeros, 8, small), "zero aborts at limit");
+      bytes too_small(1, 0);
+      check(!codec_encode(codec::zero, bytes{0xFF}, 300, too_small),
+            "zero rejects output capacity before writing a second byte");
+      check(!codec_encode(codec::zero, bytes{0x00, 0x00, 0x00}, 300, too_small),
+            "zero checks capacity even when most encoded bits are zero");
+      bytes exact(2, 0);
+      check(codec_encode(codec::zero, bytes{0xFF}, 300, exact) && exact.size() == 2,
+            "zero accepts exact output capacity");
     }
 
     // Codebook CRC32 golden value (matches device code/lib/codec_dict.c).
@@ -200,21 +208,31 @@ int main() {
     // is_codec_select_response accepts a valid answer and rejects a corrupt one.
     {
       packet response;
+      response.sop = 0xE9;
       response.group = 0;
       response.word = 0;
       response.ack = 1;
       response.payload = {0, 1, 0, 1, 0, 0, 0, 0};
-      const auto crc32 = codebook_crc32();
-      response.payload[4] = static_cast<std::uint8_t>((crc32 >> 24) & 0xFFu);
-      response.payload[5] = static_cast<std::uint8_t>(crc32 & 0xFFu);
-      response.payload[6] = static_cast<std::uint8_t>((crc32 >> 8) & 0xFFu);
-      response.payload[7] = static_cast<std::uint8_t>((crc32 >> 16) & 0xFFu);
+      // Independent device-format fixture: result/codec/id/version/CRC32 LE.
+      response.payload = {0, 1, 0, 1, 0x9D, 0x00, 0xDD, 0xB6};
       check(is_codec_select_response(response), "CODEC_SELECT response valid");
       response.payload[0] = 1;
       check(!is_codec_select_response(response), "CODEC_SELECT result nonzero rejected");
       response.payload[0] = 0;
       response.payload[7] ^= 1;
       check(!is_codec_select_response(response), "CODEC_SELECT CRC mismatch rejected");
+      response.payload[7] ^= 1;
+      for (unsigned i = 1; i <= 3; ++i) {
+        response.payload[i] ^= 1;
+        check(!is_codec_select_response(response), "CODEC_SELECT identity mismatch rejected");
+        response.payload[i] ^= 1;
+      }
+      response.sop = 0xE8;
+      check(!is_codec_select_response(response), "legacy packet cannot negotiate E9");
+      parser device;
+      auto answer = device.feed(unhex("E90808008008000100019D00DDB6B3"));
+      check(answer.size() == 1 && is_codec_select_response(answer[0]),
+            "independent device response wire golden negotiates");
     }
 
     // encode_v1 range rejection.
@@ -255,7 +273,14 @@ int main() {
       joined.insert(joined.end(), v1.begin(), v1.end());
       parser mixed;
       auto got = mixed.feed(joined);
-      check(got.size() == 2, "mixed legacy and v1 frames parsed");
+      check(got.size() == 2 && got[0].sop == 0xE8 && got[1].sop == 0xE9,
+            "mixed legacy and v1 frames retain wire identity");
+      bytes invalid_header = {0xE9, 0, 0, 0, 0x38, 0};
+      invalid_header.insert(invalid_header.end(), legacy.begin(), legacy.end());
+      parser noise;
+      auto recovered = noise.feed(invalid_header);
+      check(recovered.size() == 1 && recovered[0].payload == p.payload && noise.rejected != 0,
+            "invalid E9 CODEC must not block a following legacy frame");
     }
 
     // Parser: fragmented v1 feed across every split point.

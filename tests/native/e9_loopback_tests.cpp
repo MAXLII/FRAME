@@ -8,6 +8,8 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <future>
+#include <memory>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -27,7 +29,7 @@ using json = nlohmann::json;
 using namespace std::chrono_literals;
 
 namespace {
-std::uint32_t socket_port = 0;
+std::promise<std::uint32_t> listening;
 std::uint64_t received_frames = 0;
 std::uint64_t e9_frames = 0;
 std::uint64_t codec_select_requests = 0;
@@ -38,7 +40,14 @@ std::string device_error;
 void fail_device(const std::string &message) {
   device_failed = true;
   device_error = message;
+  try { listening.set_exception(std::make_exception_ptr(std::runtime_error(message))); }
+  catch (const std::future_error &) { /* Readiness was already published. */ }
 }
+
+struct socket_owner {
+  SOCKET value;
+  ~socket_owner() { if (value != INVALID_SOCKET) closesocket(value); }
+};
 
 void device_loop() {
 #ifdef _WIN32
@@ -49,6 +58,7 @@ void device_loop() {
   }
 #endif
   SOCKET listener = socket(AF_INET, SOCK_STREAM, 0);
+  socket_owner listener_owner{listener};
   if (listener == INVALID_SOCKET) {
     fail_device("socket failed");
     return;
@@ -68,14 +78,33 @@ void device_loop() {
     fail_device("getsockname failed");
     return;
   }
-  socket_port = ntohs(address.sin_port);
   if (listen(listener, 1) != 0) {
     fail_device("listen failed");
     return;
   }
+  listening.set_value(ntohs(address.sin_port));
+  fd_set readable;
+  FD_ZERO(&readable);
+  FD_SET(listener, &readable);
+  timeval accept_timeout{5, 0};
+  if (select(static_cast<int>(listener + 1), &readable, nullptr, nullptr, &accept_timeout) <= 0) {
+    fail_device("accept timeout");
+    return;
+  }
   SOCKET peer = accept(listener, nullptr, nullptr);
+  socket_owner peer_owner{peer};
   if (peer == INVALID_SOCKET) {
     fail_device("accept failed");
+    return;
+  }
+#ifdef _WIN32
+  DWORD receive_timeout = 5000;
+#else
+  timeval receive_timeout{5, 0};
+#endif
+  if (setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char *>(&receive_timeout), sizeof(receive_timeout)) != 0) {
+    fail_device("receive timeout setup failed");
     return;
   }
   frame::parser parser;
@@ -93,11 +122,10 @@ void device_loop() {
     }
     for (auto &packet : packets) {
       ++received_frames;
-      if (packet.seq <= 7 && packet.src == 1)
+      if (packet.sop == 0xE9)
         ++e9_frames;
       if (packet.group == 0 && packet.word == 0 && packet.ack == 0) {
         ++codec_select_requests;
-        const auto crc32 = frame::codebook_crc32();
         frame::packet response;
         response.src = 2;
         response.dst = 1;
@@ -105,11 +133,7 @@ void device_loop() {
         response.word = 0;
         response.ack = 1;
         response.seq = packet.seq;
-        response.payload = {0, 1, 0, 1, 0, 0, 0, 0};
-        response.payload[4] = static_cast<std::uint8_t>((crc32 >> 24) & 0xFFu);
-        response.payload[5] = static_cast<std::uint8_t>(crc32 & 0xFFu);
-        response.payload[6] = static_cast<std::uint8_t>((crc32 >> 8) & 0xFFu);
-        response.payload[7] = static_cast<std::uint8_t>((crc32 >> 16) & 0xFFu);
+        response.payload = {0, 1, 0, 1, 0x9D, 0x00, 0xDD, 0xB6};
         auto wire = frame::encode_v1(response);
         send(peer, reinterpret_cast<const char *>(wire.data()),
              static_cast<int>(wire.size()), 0);
@@ -122,6 +146,12 @@ void device_loop() {
         response.word = 1;
         response.ack = 1;
         response.seq = packet.seq;
+        // A previous transaction's ACK must not satisfy this request.
+        response.seq = static_cast<std::uint8_t>((packet.seq + 7) & 7);
+        response.payload = {1, 0, 0, 0};
+        auto stale = frame::encode_v1(response, false);
+        send(peer, reinterpret_cast<const char *>(stale.data()), static_cast<int>(stale.size()), 0);
+        response.seq = packet.seq;
         response.payload = {0, 0, 0, 0}; // zero parameters
         auto wire = frame::encode_v1(response, true);
         send(peer, reinterpret_cast<const char *>(wire.data()),
@@ -129,8 +159,6 @@ void device_loop() {
       }
     }
   }
-  closesocket(peer);
-  closesocket(listener);
 }
 
 void require(bool ok, const char *text) {
@@ -163,15 +191,13 @@ json call(void *h, json q) { return wait(h, submit(h, q)); }
 
 int main() {
   try {
-    std::thread device(device_loop);
-    auto deadline = std::chrono::steady_clock::now() + 5s;
-    while (socket_port == 0 && !device_failed) {
-      require(std::chrono::steady_clock::now() < deadline, "device port");
-      std::this_thread::sleep_for(10ms);
-    }
-    require(!device_failed, device_error.c_str());
+    auto ready = listening.get_future();
+    std::jthread device(device_loop);
+    require(ready.wait_for(5s) == std::future_status::ready, "device readiness timeout");
+    const auto socket_port = ready.get();
 
-    void *h = frame_create();
+    std::unique_ptr<void, decltype(&frame_destroy)> backend(frame_create(), frame_destroy);
+    void *h = backend.get();
     require(h != nullptr, "create");
 
     auto connected =
@@ -181,13 +207,18 @@ int main() {
                  {"tcp_port", socket_port},
                  {"wire", "e9"}});
     require(connected["ok"] == true, "connect with wire=e9");
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!call(h, {{"group", "status"}})["data"]["v1_negotiated"].get<bool>()) {
+      require(std::chrono::steady_clock::now() < deadline, "CODEC_SELECT negotiation not completed");
+      std::this_thread::sleep_for(5ms);
+    }
 
     auto listed = call(h, {{"group", "param"}, {"action", "list"}});
     require(listed["ok"] == true, "parameter list over E9");
     require(listed["data"].is_array() && listed["data"].empty(),
             "parameter list empty result");
 
-    frame_destroy(h);
+    backend.reset();
     device.join();
 
     require(!device_failed, device_error.c_str());

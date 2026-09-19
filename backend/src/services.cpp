@@ -31,6 +31,7 @@ json runtime::connect_device(operation &op) {
     }
     wire_mode = wire;
     comm_v1_negotiated = false;
+    comm_v1_probe_pending = false;
     comm_v1_next_seq = 0;
     {
       /* Drop throttled monitor records that belong to the previous session. */
@@ -46,6 +47,8 @@ json runtime::disconnect_device(operation &) {
       throw failure(9, "Cancel jobs before disconnecting");
     serial.close();
     registry.Disconnected(*this);
+    comm_v1_negotiated = false;
+    comm_v1_probe_pending = false;
     ++epoch_;
     incoming.clear();
     receive_link.Reset();
@@ -63,7 +66,7 @@ json runtime::set_wire(operation &op) {
       throw failure(2, "wire must be auto, e8, or e9");
     wire_mode = wire;
     comm_v1_negotiated = false;
-    comm_v1_next_seq = 0;
+    comm_v1_probe_pending = false;
     /* Re-probe while connected so forced 0xE9 and auto mode negotiate
      * compression again; forced 0xE8 simply stays on the legacy sender. */
     probe_comm_v1();
@@ -120,6 +123,9 @@ json runtime::execute(operation &op) {
       ++epoch_;
       dst = next_dst;
       dynamic_dst = next_dynamic_dst;
+      comm_v1_negotiated = false;
+      comm_v1_probe_pending = false;
+      probe_comm_v1();
     }
   }
   auto result = entry.handler(*this, op);

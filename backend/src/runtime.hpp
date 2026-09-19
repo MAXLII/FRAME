@@ -123,6 +123,9 @@ public:
   std::string wire_mode = "e8";
   bool comm_v1_negotiated = false;
   std::uint8_t comm_v1_next_seq = 0;
+  bool comm_v1_probe_pending = false;
+  std::uint8_t comm_v1_probe_seq = 0;
+  std::uint8_t request_sop = 0xE8, request_seq = 0;
   json monitor_pending_ = json::array();
   clock::time_point monitor_flush_due_ = clock::time_point::min();
 };

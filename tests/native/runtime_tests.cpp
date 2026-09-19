@@ -348,8 +348,8 @@ int main(int argc, char **argv) {
                              {"replay", (fixture / "timeout.json").string()},
                              {"response_timeout", 20}});
       require(result["code"] == 4, "timeout classification");
-      require(call(b, {{"group", "status"}})["data"]["connected"] == true,
-              "timeout keeps the transport open for retry");
+      require(call(b, {{"group", "status"}})["data"]["connected"] == false,
+              "timeout invalidates connection against late ACK");
     }
     {
       backend b;

@@ -51,7 +51,7 @@ inline void putf(bytes &b, float v) {
 }
 struct packet {
   std::uint8_t src = 2, dynamic_src = 0, dst = 1, dynamic_dst = 0, group = 1,
-               word = 0, ack = 1, seq = 0;
+               word = 0, ack = 1, seq = 0, sop = 0xE8;
   bytes payload;
 };
 std::uint16_t crc(std::span<const std::uint8_t> b);

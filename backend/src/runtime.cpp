@@ -437,12 +437,15 @@ void runtime::run() {
         }
         finish(op, e.code, partial, e.what());
         if (e.code == 4 || e.code == 130) {
-          /* A failed transaction must not poison the next one: drop unmatched
-           * responses and reset parser state, but keep the transport session
-           * open so the user can switch protocol and retry without reconnecting. */
+          /* E8 has no transaction identity. A late response can arrive after
+           * clearing the parser, so invalidate the session before retrying. */
+          serial.close();
           incoming.clear();
           receive_link.Reset();
-          fail_streams(3, "Transaction failed; remote state unconfirmed");
+          comm_v1_negotiated = false;
+          comm_v1_probe_pending = false;
+          ++epoch_;
+          fail_streams(3, "Serial session invalidated by failed transaction; remote stop not confirmed");
         }
       } catch (const std::exception &e) {
         finish(op, 2, nullptr, e.what());
