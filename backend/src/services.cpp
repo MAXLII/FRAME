@@ -9,7 +9,9 @@ json runtime::connect_device(operation &op) {
       throw failure(9, "Stop acquisition jobs before reconnecting");
     StreamLink nextLink;
     nextLink.AddDecoder(definition.create(*this));
+    flush_monitor();
     serial.open(q, [&] { guard(op); });
+    monitor_protocol_rx = false;
     registry.Disconnected(*this);
     ++epoch_;
     incoming.clear();
@@ -46,18 +48,13 @@ json runtime::disconnect_device(operation &) {
     if (!streams.empty())
       throw failure(9, "Cancel jobs before disconnecting");
     serial.close();
+    flush_monitor();
     registry.Disconnected(*this);
     comm_v1_negotiated = false;
     comm_v1_probe_pending = false;
     ++epoch_;
     incoming.clear();
     receive_link.Reset();
-    {
-      /* Drop throttled monitor records that belong to the closed session. */
-      std::lock_guard lock(mutex_);
-      monitor_pending_ = json::array();
-      monitor_flush_due_ = clock::time_point::min();
-    }
     return {{"connected", false}};
 }
 json runtime::set_wire(operation &op) {

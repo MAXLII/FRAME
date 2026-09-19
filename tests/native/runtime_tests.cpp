@@ -46,6 +46,13 @@ static json snapshot(backend &b) {
   require(frame_snapshot(b.h, s.data(), n, &n) == 0, "snapshot copy");
   return json::parse(s);
 }
+static json monitor_events(backend &b) {
+  std::uint32_t n = 0;
+  require(frame_events(b.h, 0, 256, nullptr, 0, &n) == 2, "monitor event size");
+  std::string s(n, '\0');
+  require(frame_events(b.h, 0, 256, s.data(), n, &n) == 0, "monitor event copy");
+  return json::parse(s);
+}
 struct replay_file {
   std::filesystem::path path =
       std::filesystem::temp_directory_path() /
@@ -500,6 +507,33 @@ int main(int argc, char **argv) {
       require(call(b,{{"group","wire"},{"action","set"},{"wire","e8"}})["ok"],"wire returns to e8");
       require(call(b,{{"group","connect"},{"replay",replay.path.string()},{"wire","bogus"}})["code"]==2,"connect rejects unknown wire mode");
       std::cout << "PASS: wire protocol switching (sending only)\n";
+    }
+    {
+      frame::packet request;request.src=1;request.dst=2;request.ack=0;request.word=6;
+      frame::put(request.payload,20,4);
+      auto protocol_reply=response(6,request.payload);
+      replay_file replay(json::array({
+        json{{"tx",frame::hex(frame::encode(request))},{"rx",{protocol_reply}}},
+        json{{"tx","AA"},{"rx",{"BB"}}}}));
+      backend b;
+      require(call(b,{{"group","connect"},{"replay",replay.path.string()}})["ok"],"monitor replay connect");
+      require(call(b,{{"group","wave"},{"action","period"},{"period",20}})["ok"],"monitor protocol traffic");
+      require(call(b,{{"group","serial"},{"action","send"},{"hex","AA"},{"duration",0.02}})["ok"],"monitor serial traffic");
+      require(call(b,{{"group","disconnect"}})["ok"],"monitor disconnect");
+      bool protocol_tx=false,protocol_rx=false,user_tx=false,user_rx=false;
+      auto events=monitor_events(b);
+      for (auto &event : events["events"]) {
+        if(event.value("kind","")!="serial_monitor")continue;
+        for(auto &record:event["records"]) {
+          const auto kind=record.value("kind","");
+          const auto source=record.value("source","");
+          protocol_tx |= kind=="protocol_tx"&&source=="protocol";
+          protocol_rx |= kind=="rx"&&source=="protocol"&&record["hex"]==protocol_reply;
+          user_tx |= kind=="user_tx"&&source=="serial"&&record["hex"]=="AA";
+          user_rx |= kind=="rx"&&source=="serial"&&record["hex"]=="BB";
+        }
+      }
+      require(protocol_tx&&protocol_rx&&user_tx&&user_rx,"disconnect retains final monitor blocks with both source directions");
     }
     std::cout << "PASS: ABI, events, quotas, persistent session, paging, "
                  "concurrency, cancellation, stop ACK and timeout isolation\n";

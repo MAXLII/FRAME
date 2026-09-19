@@ -270,8 +270,8 @@ internal static class UiTests
                 string serialReplay=Path.Combine(root,"build/serial-text-replay.json");
                 File.WriteAllText(serialReplay,new JsonArray(new JsonObject{["tx"]=Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(" 你好 \r\n")),["rx"]=new JsonArray("E4BD","A0E5A5BD")}).ToJsonString());
                 await client.ExecuteAsync(new(){["group"]="connect",["replay"]=serialReplay});
-                await Task.Delay(300); // let the UI refresh cycle clear the new-session monitor
                 nav.SelectedIndex=0;
+                await SerialMonitorTests.RunAsync(window);
                 var runSerial=typeof(MainWindow).GetMethod("RunPageAsync",flags)!;
                 await (Task)runSerial.Invoke(window,[serialPage,"send"])!;await Task.Delay(600);
                 var receiveLog=(RichTextBox)serialType.GetProperty("ReceiveLog")!.GetValue(serialPage)!;

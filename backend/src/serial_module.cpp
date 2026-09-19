@@ -18,6 +18,7 @@ static json Handle(runtime &r, operation &op) {
       b.assign(text.begin(), text.end());
     }
     if (action == "send" || action == "raw") {
+      r.monitor_protocol_rx = false;
       double duration = q.value("duration", 0.2),
              interval = q.value("interval", 0.0);
       if (!std::isfinite(duration) || duration < 0 || duration > 86400 ||

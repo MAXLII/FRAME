@@ -34,7 +34,8 @@ void runtime::probe_comm_v1() {
   p.seq = comm_v1_next_seq;
   p.payload = codec_select_request();
   const auto b = encode_v1(p);
-  monitor("protocol_tx", b);
+  monitor_protocol_rx = true;
+  monitor("protocol_tx", b, "protocol");
   if (comm_log.enabled()) comm_log.write("tx_begin", {{"word", 0}, {"dst", dst}, {"bytes", b.size()}, {"prefix", hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)))}, {"probe", true}});
   serial.write(b);
   comm_v1_probe_seq = p.seq;
@@ -58,7 +59,8 @@ void runtime::send(unsigned word, const bytes &payload) {
   } else {
     b = encode(p);
   }
-  monitor("protocol_tx", b);
+  monitor_protocol_rx = true;
+  monitor("protocol_tx", b, "protocol");
   if (comm_log.enabled()) comm_log.write("tx_begin", {{"word", word}, {"dst", dst}, {"bytes", b.size()}, {"prefix", hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)))}});
   serial.write(b);
   request_sop = b.front();

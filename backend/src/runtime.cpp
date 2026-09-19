@@ -151,15 +151,7 @@ std::string runtime::events(std::uint64_t after, unsigned limit) {
   std::lock_guard lock(mutex_);
   /* The frontend polls events regularly; use that poll to flush throttled
    * serial-monitor records that would otherwise linger after idle traffic. */
-  if (!monitor_pending_.empty()) {
-    if (events_.size() >= 1024) events_.pop_front();
-    events_.push_back({{"sequence", ++event_sequence_},
-                       {"kind", "serial_monitor"},
-                       {"epoch", epoch_},
-                       {"records", std::move(monitor_pending_)}});
-    monitor_pending_ = json::array();
-    monitor_flush_due_ = clock::time_point::min();
-  }
+  flush_monitor_locked();
   json rows = json::array();
   for (auto &event : events_)
     if (event["sequence"].get<std::uint64_t>() > after &&
@@ -180,24 +172,30 @@ void runtime::progress(const operation &op, json data) {
   events_.push_back({{"sequence", ++event_sequence_}, {"kind", entry.policy.progressKind},
                      {"operation_id", op.id}, {"data", std::move(data)}});
 }
-void runtime::monitor(const std::string &kind, const bytes &b) {
+void runtime::flush_monitor_locked() {
+  if (monitor_pending_.empty()) return;
+  if (events_.size() >= 1024) events_.pop_front();
+  events_.push_back({{"sequence", ++event_sequence_}, {"kind", "serial_monitor"},
+                     {"epoch", epoch_}, {"records", std::move(monitor_pending_)}});
+  monitor_pending_ = json::array();
+  monitor_flush_due_ = clock::time_point::min();
+}
+void runtime::flush_monitor() {
+  std::lock_guard lock(mutex_);
+  flush_monitor_locked();
+}
+void runtime::monitor(const std::string &kind, const bytes &b, const char *source) {
   if (b.empty())
     return;
   const auto now = clock::now();
   std::lock_guard lock(mutex_);
   if (monitor_pending_.size() >= 512)
     monitor_pending_.erase(monitor_pending_.begin());
-  monitor_pending_.push_back({{"kind", kind}, {"hex", hex(b)}, {"bytes", b.size()}});
+  monitor_pending_.push_back({{"kind", kind}, {"source", source}, {"hex", hex(b)}, {"bytes", b.size()}});
   /* Batch records into throttled events; the first record flushes immediately. */
   if (monitor_pending_.size() < 64u && now < monitor_flush_due_)
     return;
-  if (events_.size() >= 1024)
-    events_.pop_front();
-  events_.push_back({{"sequence", ++event_sequence_},
-                     {"kind", "serial_monitor"},
-                     {"epoch", epoch_},
-                     {"records", std::move(monitor_pending_)}});
-  monitor_pending_ = json::array();
+  flush_monitor_locked();
   monitor_flush_due_ = now + std::chrono::milliseconds(30);
 }
 void runtime::finish(const std::shared_ptr<operation> &op, int code, json data,
@@ -297,7 +295,7 @@ void runtime::pump(unsigned wait) {
     if (b[0] == 0xE8 || b[0] == 0xE9)
       comm_log.write("rx_begin", {{"bytes", b.size()}, {"prefix", last_rx_preview}});
   }
-  monitor("rx", b);
+  monitor("rx", b, monitor_protocol_rx ? "protocol" : "serial");
   append_stream("serial", {{"hex", hex(b)},
                            {"host_seconds", std::chrono::duration<double>(
                                                 clock::now().time_since_epoch())

@@ -43,6 +43,7 @@ class runtime final {
   std::jthread jlink_worker_;
   std::deque<std::shared_ptr<operation>> jlink_pending_;
   std::deque<json> events_;
+  void flush_monitor_locked();
   std::uint64_t event_sequence_ = 0;
   std::atomic_bool jlink_write_active_ = false;
   std::atomic_uint stream_count_ = 0;
@@ -119,7 +120,9 @@ public:
   }
   /* Serial monitor: stream every user-sent, protocol-sent and received byte
    * block to the UI through throttled "serial_monitor" events. */
-  void monitor(const std::string &kind, const bytes &b);
+  void monitor(const std::string &kind, const bytes &b, const char *source = "serial");
+  void flush_monitor();
+  bool monitor_protocol_rx = false; // Receive owner, including replies arriving between commands.
   std::string wire_mode = "e8";
   bool comm_v1_negotiated = false;
   std::uint8_t comm_v1_next_seq = 0;
