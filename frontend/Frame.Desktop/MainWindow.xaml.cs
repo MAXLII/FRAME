@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Frame.Client;
@@ -101,6 +102,7 @@ public partial class MainWindow : Window
     {
         this.settingsPath=settingsPath;
         InitializeComponent();
+        PreviewKeyDown += (_, e) => { if (e.Key == Key.F1) { OpenPageHelp(current, this); e.Handled = true; } };
         client.PrepareCommand=ApplyCurrentTarget;
         client.Monitor+=data=>Dispatcher.InvokeAsync(()=>OnSerialMonitor(data));
         Title=$"FRAME v{typeof(MainWindow).Assembly.GetName().Version!.ToString(3)}";
@@ -872,6 +874,13 @@ public partial class MainWindow : Window
         if (Navigation.SelectedIndex < 0 || pages.Count == 0) return;
         var p = pages.Values.ElementAt(Navigation.SelectedIndex);
         ShowPage(p);
+    }
+
+    private void ShowHelp(object sender, RoutedEventArgs e) => OpenPageHelp(current, this);
+
+    private void OpenPageHelp(string key, Window owner)
+    {
+        if (pages.TryGetValue(key, out var page)) new HelpWindow(owner, key, page.Title).ShowDialog();
     }
 
     private void ShowPage(PageState p)

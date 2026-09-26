@@ -15,6 +15,9 @@ foreach($entry in $manifest.files){
     $file=Join-Path $app $entry.path
     if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ine $entry.sha256){throw "Installed file differs: $($entry.path)"}
 }
+foreach($key in @('serial','param','wave','scope','sfra','perf','trace','section','jlink')){
+    if(-not(Test-Path -LiteralPath "$app/help/$key.md")){throw "Installed help file missing: $key.md"}
+}
 if(@(Get-ChildItem $app -Recurse -File | Where-Object {$_.Extension -in '.py','.pyc','.pyd'}).Count){throw 'Python payload found'}
 $actual=& "$app/frame.exe" --version --json | ConvertFrom-Json
 if($LASTEXITCODE -or $actual.version -ne $version){throw 'Installed CLI version failed'}

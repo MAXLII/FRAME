@@ -4,6 +4,7 @@
     <Border Background="#102A43" Padding="22,12">
       <DockPanel>
         <Button x:Name="SidebarToggle" DockPanel.Dock="Left" Content="☰" ToolTip="收起侧边栏" Click="ToggleSidebar" Width="38" VerticalAlignment="Center"/>
+        <Button x:Name="HelpButton" DockPanel.Dock="Right" Content="❓" Click="ShowHelp" Width="38" Height="34" Margin="8,0,0,6" VerticalAlignment="Center" AutomationProperties.Name="当前页面帮助"/>
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
           <ComboBox x:Name="ConnectionType" Width="125" Margin="0,0,10,6" Padding="5" SelectionChanged="ChangeConnectionType" SelectedIndex="0"><ComboBoxItem Content="串口"/><ComboBoxItem Content="以太网 TCP"/></ComboBox>
           <StackPanel x:Name="SerialSettings" Orientation="Horizontal">

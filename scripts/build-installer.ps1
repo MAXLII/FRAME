@@ -27,6 +27,9 @@ try {
     foreach($project in @('Frame.Cli','Frame.Desktop')){
         Invoke-Checked dotnet @('publish',"frontend/$project",'-c','Release','-r','win-x64','--self-contained','true','-p:PublishSingleFile=false','-p:DebugType=None','-p:DebugSymbols=false','-o',$stage,'--nologo')
     }
+    foreach($key in @('serial','param','wave','scope','sfra','perf','trace','section','jlink')){
+        if(-not(Test-Path -LiteralPath "$stage/help/$key.md")){throw "Published help file missing: $key.md"}
+    }
     Copy-Item -LiteralPath $native -Destination $stage
     Copy-Item -LiteralPath VERSION,LICENSE -Destination $stage
     Copy-Item -LiteralPath scripts/frame-package.bat -Destination "$stage/frame.bat"

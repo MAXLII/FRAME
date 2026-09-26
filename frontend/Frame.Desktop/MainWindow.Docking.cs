@@ -75,6 +75,7 @@ public partial class MainWindow
         layout.Children.Add(page.Form); layout.Children.Add(page.Body);
         var footer = new Grid { Margin = new Thickness(12, 5, 12, 5) };
         footer.ColumnDefinitions.Add(new()); footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var feedback = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         feedback.SetBinding(TextBlock.TextProperty, new Binding(nameof(TextBlock.Text)) { Source = Feedback });
         feedback.SetBinding(ToolTipProperty, new Binding(nameof(TextBlock.Text)) { Source = Feedback });
@@ -85,6 +86,9 @@ public partial class MainWindow
             cursor.SetBinding(TextBlock.TextProperty, new Binding(nameof(TextBlock.Text)) { Source = WaveCursor });
             Grid.SetColumn(cursor, 1); footer.Children.Add(cursor);
         }
+        var help = new Button { Content = "❓", Width = 34, Height = 26, Margin = new Thickness(8, 0, 0, 0) };
+        System.Windows.Automation.AutomationProperties.SetName(help, "当前页面帮助");
+        Grid.SetColumn(help, 2); footer.Children.Add(help);
         var root = new DockPanel();
         var status = new Border { Background = new SolidColorBrush(Color.FromRgb(231, 238, 245)), Child = footer, MinHeight = 34 };
         DockPanel.SetDock(status, Dock.Bottom); root.Children.Add(status); root.Children.Add(layout);
@@ -95,6 +99,8 @@ public partial class MainWindow
             Width = Math.Max(900, ActualWidth - SidebarColumn.ActualWidth), Height = Math.Max(600, ActualHeight - 74),
             MinWidth = 760, MinHeight = 450, WindowStartupLocation = WindowStartupLocation.Manual
         };
+        help.Click += (_, _) => OpenPageHelp(key, floating);
+        floating.PreviewKeyDown += (_, e) => { if (e.Key == Key.F1) { OpenPageHelp(key, floating); e.Handled = true; } };
         // PointToScreen returns physical pixels; WPF window bounds use device-independent units.
         Point location = PresentationSource.FromVisual(this)!.CompositionTarget.TransformFromDevice.Transform(screenPosition);
         floating.Left = location.X - 120; floating.Top = location.Y - 16;
