@@ -43,6 +43,7 @@ public partial class MainWindow : Window
     private const int SerialMonitorByteLimit=65536;
     private readonly string? settingsPath;
     private readonly Dictionary<byte,JsonArray> parameterSnapshots=new();
+    private readonly HashSet<byte> parameterAddresses=new();
     private byte activeParameterAddress=2;
     private bool changingParameterAddress;
     public static readonly DependencyProperty SidebarCollapsedProperty=DependencyProperty.Register(nameof(SidebarCollapsed),typeof(bool),typeof(MainWindow),new PropertyMetadata(false));
@@ -127,10 +128,14 @@ public partial class MainWindow : Window
         InitializePageDocking();
         Baud.ItemsSource=new[]{"1200","2400","4800","9600","14400","19200","38400","57600","115200","128000","230400","256000","460800","500000","576000","921600","1000000","自定义…"};
         RestoreSettings();
-        Address.ItemsSource=Enumerable.Range(0,256).Select(value=>value.ToString(CultureInfo.InvariantCulture)).ToArray();
+        LoadParameterAddressHistory();
+        parameterAddresses.Add(activeParameterAddress);
+        RefreshParameterAddresses();
         Address.SelectedItem=activeParameterAddress.ToString(CultureInfo.InvariantCulture);
         LoadParameterData(activeParameterAddress);
-        Address.SelectionChanged+=(_,_)=>SelectParameterAddress(Address.SelectedItem?.ToString());
+        Address.SelectionChanged+=(_,e)=>{if(e.AddedItems.Count>0)CommitAddress(e.AddedItems[0]?.ToString());};
+        Address.LostKeyboardFocus+=(_,_)=>CommitAddress(Address.Text);
+        Address.KeyDown+=(_,e)=>{if(e.Key==Key.Enter){CommitAddress(Address.Text);e.Handled=true;}};
         lastBaud=Baud.Text;initializingConnection=false;
         timer.Tick += async (_, _) => await UpdateAsync();
         timer.Start();
@@ -962,20 +967,34 @@ public partial class MainWindow : Window
         request["dynamic_dst"]=dynamicAddress;
     }
     private string? ParameterDataPath(byte address)=>settingsPath==null?null:System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(settingsPath))!,"parameters",address.ToString(CultureInfo.InvariantCulture)+".json");
-    private void SelectParameterAddress(string? selected)
+    private void LoadParameterAddressHistory()
+    {
+        if(settingsPath==null)return;
+        try
+        {
+            string directory=System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(settingsPath))!,"parameters");
+            if(Directory.Exists(directory))foreach(string path in Directory.EnumerateFiles(directory,"*.json",SearchOption.TopDirectoryOnly))
+                if(byte.TryParse(System.IO.Path.GetFileNameWithoutExtension(path),out byte address))parameterAddresses.Add(address);
+        }
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException){Feedback.Text="读取历史参数地址失败："+error.Message;}
+    }
+    private void RefreshParameterAddresses()=>Address.ItemsSource=parameterAddresses.Order().Select(value=>value.ToString(CultureInfo.InvariantCulture)).ToArray();
+    private void CommitAddress(string? text)
     {
         if(changingParameterAddress)return;
         changingParameterAddress=true;
         try
         {
-            if(!byte.TryParse(selected,out byte address)){Address.SelectedItem=activeParameterAddress.ToString(CultureInfo.InvariantCulture);return;}
+            if(!byte.TryParse(text?.Trim(),out byte address)){Feedback.Text="地址必须是 0–255 的十进制整数";Address.SelectedItem=activeParameterAddress.ToString(CultureInfo.InvariantCulture);Address.Text=activeParameterAddress.ToString(CultureInfo.InvariantCulture);return;}
             if(address!=activeParameterAddress)
             {
-                if(pages["param"].Parameters!.IsBusy){Feedback.Text="参数操作进行中，请完成后切换地址";Address.SelectedItem=activeParameterAddress.ToString(CultureInfo.InvariantCulture);return;}
+                if(pages["param"].Parameters!.IsBusy){Feedback.Text="参数操作进行中，请完成后切换地址";Address.SelectedItem=activeParameterAddress.ToString(CultureInfo.InvariantCulture);Address.Text=activeParameterAddress.ToString(CultureInfo.InvariantCulture);return;}
                 SaveParameterData();
                 activeParameterAddress=address;
+                if(parameterAddresses.Add(address))RefreshParameterAddresses();
                 LoadParameterData(address);
             }
+            Address.SelectedItem=address.ToString(CultureInfo.InvariantCulture);
         }
         finally{changingParameterAddress=false;}
     }
@@ -1154,6 +1173,8 @@ public partial class MainWindow : Window
         {
             var settings=DesktopSettings.Load(settingsPath);
             if(byte.TryParse(settings["address"]?.ToString(),out byte savedAddress))activeParameterAddress=savedAddress;
+            if(settings["address_history"] is JsonArray history)foreach(var saved in history)
+                if(byte.TryParse(saved?.ToString(),out byte address))parameterAddresses.Add(address);
             DynamicAddress.Text=settings["dynamic_address"]?.ToString()??"0";
             pages["serial"].ShowProtocolTraffic.IsChecked=settings["serial_show_protocol"]?.ToString()=="true";
             foreach(var entry in new[]{("port",(Action<string>)(v=>Port.Text=v)),("baud",v=>Baud.Text=v),("host",v=>TcpHost.Text=v),("tcp_port",v=>TcpPort.Text=v)})
@@ -1174,11 +1195,12 @@ public partial class MainWindow : Window
     private void SaveSettings()
     {
         if(settingsPath==null)return;
+        CommitAddress(Address.Text);
         SaveParameterData();
         JsonObject fields=new();foreach(var page in pages.Values)foreach(var field in page.Fields)
             if(field.Key is not ("value" or "hex" or "text" or "output"))fields[page.Key+"."+field.Key]=field.Value.Text;
         var bounds=WindowState==WindowState.Normal?new Rect(Left,Top,ActualWidth,ActualHeight):RestoreBounds;
-        DesktopSettings.Save(settingsPath,new(){["version"]=1,["port"]=SelectedPort(),["baud"]=Baud.Text,["address"]=activeParameterAddress.ToString(CultureInfo.InvariantCulture),["dynamic_address"]=DynamicAddress.Text,["host"]=TcpHost.Text,["tcp_port"]=TcpPort.Text,["transport"]=ConnectionType.SelectedIndex==1?"tcp":"serial",["wire"]=wireMode,["serial_show_protocol"]=pages["serial"].ShowProtocolTraffic.IsChecked==true,["sidebar_collapsed"]=SidebarCollapsed,["width"]=bounds.Width,["height"]=bounds.Height,["fields"]=fields});
+        DesktopSettings.Save(settingsPath,new(){["version"]=1,["port"]=SelectedPort(),["baud"]=Baud.Text,["address"]=activeParameterAddress.ToString(CultureInfo.InvariantCulture),["address_history"]=new JsonArray(parameterAddresses.Order().Select(value=>(JsonNode?)JsonValue.Create(value)).ToArray()),["dynamic_address"]=DynamicAddress.Text,["host"]=TcpHost.Text,["tcp_port"]=TcpPort.Text,["transport"]=ConnectionType.SelectedIndex==1?"tcp":"serial",["wire"]=wireMode,["serial_show_protocol"]=pages["serial"].ShowProtocolTraffic.IsChecked==true,["sidebar_collapsed"]=SidebarCollapsed,["width"]=bounds.Width,["height"]=bounds.Height,["fields"]=fields});
     }
     private async void OnClosing(object? sender, CancelEventArgs e)
     {

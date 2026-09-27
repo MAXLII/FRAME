@@ -67,11 +67,16 @@ internal static class ConnectionSwitchTests
         }
         async Task Exchange(byte target,byte dynamicTarget,string? editWhilePending=null)
         {
-            address.SelectedItem=target.ToString();dynamicAddress.Text=dynamicTarget.ToString();
+            void Choose(string value)
+            {
+                if(address.Items.Contains(value))address.SelectedItem=value;
+                else{address.Text=value;typeof(MainWindow).GetMethod("CommitAddress",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.Invoke(window,[value]);}
+            }
+            Choose(target.ToString());dynamicAddress.Text=dynamicTarget.ToString();
             var request=new System.Text.Json.Nodes.JsonObject{["group"]="param",["action"]="list"};
             var job=client.Submit(request);
             if(request.ContainsKey("dst"))throw new Exception("Submission must not mutate caller command");
-            if(editWhilePending!=null)address.SelectedItem=editWhilePending;
+            if(editWhilePending!=null)Choose(editWhilePending);
             byte[] sent=new byte[15];
             await peer.GetStream().ReadExactlyAsync(sent,timeout.Token);
             if(sent[0]==0xE9)
@@ -100,7 +105,7 @@ internal static class ConnectionSwitchTests
         await Exchange(2,0,"3");
         await Exchange(3,0);
         await Exchange(2,7);
-        if(address.Items.Count!=256||address.Items.Cast<string>().First()!="0"||address.Items.Cast<string>().Last()!="255")throw new Exception("Address dropdown must contain only valid byte addresses");
+        if(!address.IsEditable||!address.Items.Contains("2")||!address.Items.Contains("3")||address.Items.Count==256)throw new Exception("Address dropdown must list previously used addresses, with editable input for new ones");
         foreach(string invalid in new[]{"","256","-1","abc"})
         {
             dynamicAddress.Text=invalid;
@@ -108,6 +113,6 @@ internal static class ConnectionSwitchTests
             catch(InvalidOperationException error) when(error.Message.Contains("0–255")) { }
         }
         await Exchange(2,0);
-        Console.WriteLine("PASS: same TCP connection routes 2 -> 3 -> 2, dynamic address, in-flight target snapshot, foreign ACK rejection and valid dropdown range.");
+        Console.WriteLine("PASS: same TCP connection routes 2 -> 3 -> 2, dynamic address, in-flight target snapshot, foreign ACK rejection and address history.");
     }
 }
