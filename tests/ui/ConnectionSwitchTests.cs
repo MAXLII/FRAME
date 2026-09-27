@@ -50,7 +50,7 @@ internal static class ConnectionSwitchTests
 
     private static async Task VerifyTargetSwitch(MainWindow window,BackendClient client,TcpClient peer)
     {
-        var address=(TextBox)window.FindName("Address");
+        var address=(ComboBox)window.FindName("Address");
         var dynamicAddress=(TextBox)window.FindName("DynamicAddress");
         var endpoint=client.Snapshot()["endpoint"]!.ToString();
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));
@@ -67,11 +67,11 @@ internal static class ConnectionSwitchTests
         }
         async Task Exchange(byte target,byte dynamicTarget,string? editWhilePending=null)
         {
-            address.Text=target.ToString();dynamicAddress.Text=dynamicTarget.ToString();
+            address.SelectedItem=target.ToString();dynamicAddress.Text=dynamicTarget.ToString();
             var request=new System.Text.Json.Nodes.JsonObject{["group"]="param",["action"]="list"};
             var job=client.Submit(request);
             if(request.ContainsKey("dst"))throw new Exception("Submission must not mutate caller command");
-            if(editWhilePending!=null)address.Text=editWhilePending;
+            if(editWhilePending!=null)address.SelectedItem=editWhilePending;
             byte[] sent=new byte[15];
             await peer.GetStream().ReadExactlyAsync(sent,timeout.Token);
             if(sent[0]==0xE9)
@@ -100,13 +100,14 @@ internal static class ConnectionSwitchTests
         await Exchange(2,0,"3");
         await Exchange(3,0);
         await Exchange(2,7);
+        if(address.Items.Count!=256||address.Items.Cast<string>().First()!="0"||address.Items.Cast<string>().Last()!="255")throw new Exception("Address dropdown must contain only valid byte addresses");
         foreach(string invalid in new[]{"","256","-1","abc"})
         {
-            address.Text=invalid;
+            dynamicAddress.Text=invalid;
             try{client.Submit(new(){["group"]="param",["action"]="list"});throw new Exception("Invalid target was accepted");}
             catch(InvalidOperationException error) when(error.Message.Contains("0–255")) { }
         }
         await Exchange(2,0);
-        Console.WriteLine("PASS: same TCP connection routes 2 -> 3 -> 2, dynamic address, in-flight target snapshot, foreign ACK rejection and invalid input.");
+        Console.WriteLine("PASS: same TCP connection routes 2 -> 3 -> 2, dynamic address, in-flight target snapshot, foreign ACK rejection and valid dropdown range.");
     }
 }

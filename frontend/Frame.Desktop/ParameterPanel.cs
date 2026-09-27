@@ -65,6 +65,16 @@ public sealed class ParameterRow : INotifyPropertyChanged, IEditableObject
         if(Dirty||Busy)return;
         Apply(row);
     }
+    public JsonObject Snapshot()=>new(){["source"]=source.DeepClone(),["data"]=data,["minimum"]=minimum,["maximum"]=maximum,["dirty"]=Dirty};
+    public static ParameterRow FromSnapshot(JsonObject saved)
+    {
+        var row=new ParameterRow((JsonObject)saved["source"]!.DeepClone());
+        row.data=saved["data"]?.ToString()??row.data;
+        row.minimum=saved["minimum"]?.ToString()??row.minimum;
+        row.maximum=saved["maximum"]?.ToString()??row.maximum;
+        row.Dirty=saved["dirty"]?.GetValue<bool>()??false;
+        return row;
+    }
     public static string Format(JsonNode? value,int type)
     {
         if(value==null)return "/";
@@ -88,7 +98,11 @@ public sealed class ParameterPanel : UserControl
     private readonly Button read=new(){Content="读取"},write=new(){Content="写入"};
     private bool busy;
     private bool listing;
+    private bool incompleteList;
     private int listGeneration,expectedCount;
+    public bool IsBusy=>busy;
+    public bool CanAutoSave=>!incompleteList;
+    public event Action? DataChanged;
     public event Action<IReadOnlyList<string>>? WaveSelectionChanged;
     public event Action<string>? WaveParameterEnabled;
     public DataGrid Table { get; }=new(){AutoGenerateColumns=false,IsReadOnly=false,SelectionMode=DataGridSelectionMode.Single,SelectionUnit=DataGridSelectionUnit.FullRow,CanUserSortColumns=false,CanUserReorderColumns=false};
@@ -161,7 +175,18 @@ public sealed class ParameterPanel : UserControl
             var row=rows.FirstOrDefault(r=>r.Name==item["name"]!.GetValue<string>());
             if(row!=null)row.Apply(item);else if(item["type"]!=null)rows.Add(new(item));
         }
-        view.Refresh();Table.SelectedItem=rows.FirstOrDefault(r=>r.Name==selected);UpdateActions();NotifyWaveSelection();
+        view.Refresh();Table.SelectedItem=rows.FirstOrDefault(r=>r.Name==selected);UpdateActions();NotifyWaveSelection();DataChanged?.Invoke();
+    }
+    public JsonArray Snapshot()
+    {
+        CommitEdit();var saved=new JsonArray();foreach(var row in rows)saved.Add(row.Snapshot());return saved;
+    }
+    public void RestoreSnapshot(JsonArray? saved)
+    {
+        rows.Clear();
+        if(saved!=null)foreach(var item in saved.OfType<JsonObject>())
+            if(item["source"] is JsonObject source&&source["name"]!=null&&source["type"]!=null)rows.Add(ParameterRow.FromSnapshot(item));
+        incompleteList=false;view.Refresh();UpdateActions();NotifyWaveSelection();
     }
     public void ApplyReported(JsonArray records)
     {
@@ -175,7 +200,7 @@ public sealed class ParameterPanel : UserControl
         if(action=="write"&&row!.IsReadOnly||action=="report"&&row!.IsCommand)return;
         busy=true;row?.MarkBusy(true);UpdateActions();
         int generation=++listGeneration;
-        if(action=="list"){listing=true;expectedCount=-1;rows.Clear();UpdateActions();feedback("正在读取参数列表…");}
+        if(action=="list"){listing=true;incompleteList=true;expectedCount=-1;rows.Clear();UpdateActions();feedback("正在读取参数列表…");}
         try
         {
             JsonObject request=new(){["group"]="param",["action"]=action};
@@ -194,6 +219,7 @@ public sealed class ParameterPanel : UserControl
             if(action=="report"){row!.SetReporting(enabled);NotifyWaveSelection();if(enabled)WaveParameterEnabled?.Invoke(row.Name);}
             else if(action=="list"&&result["data"] is JsonArray completed&&rows.Select(r=>r.Name).SequenceEqual(completed.Select(r=>r!["name"]!.ToString())))NotifyWaveSelection();
             else if(result["data"]!=null)Apply(result["data"]!);
+            if(action=="list"){incompleteList=false;DataChanged?.Invoke();}
             feedback(action=="list"?$"已读取 {rows.Count} 个参数":action=="report"?$"{row!.Name}：{(enabled?"已加入参数波形":"已移出参数波形")}":$"{row!.Name}：{(action=="write"&&row.IsCommand?"执行":action)} 完成");
             if(action=="write"&&!row!.IsCommand)feedback($"{row.Name}：写入成功，"+(result["data"]?["verification"]?.ToString()=="directory_readback"?"ACK 未收到，已通过回读确认":"已通过 ACK 确认"));
         }

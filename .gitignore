@@ -20,5 +20,6 @@ code
 .claude/
 config/frame_config.json
 config/native-ui.json
+config/parameters/
 publish_github_release.ps1
 AGENTS.md
