@@ -8,6 +8,7 @@ namespace Frame.Desktop;
 
 public sealed class WavePlotPanel : UserControl
 {
+    private const string PaneDragFormat="FRAME.WavePane";
     private sealed record Pane(int Id,WpfPlot Plot,Border Frame,StackPanel Legend);
     private readonly List<Pane> panes=new();
     private readonly Dictionary<string,int> assignments=new();
@@ -21,6 +22,7 @@ public sealed class WavePlotPanel : UserControl
     }
     private readonly Dictionary<int,string[]> legendNames=new();
     private int nextId=1;
+    private int defaultPlotId;
     private bool hostTime;
     private bool prepared,tracking=true,scrolling;
     private (double Left,double Right)? pendingRange;
@@ -137,13 +139,31 @@ public sealed class WavePlotPanel : UserControl
         var layout=new DockPanel();frame.Child=layout;
         var header=new DockPanel{Background=Brushes.AliceBlue};DockPanel.SetDock(header,Dock.Top);layout.Children.Add(header);
         var close=new Button{Content="×",ToolTip="关闭此波形框",Width=28,Height=26,Padding=new Thickness(0),Margin=new Thickness(2)};DockPanel.SetDock(close,Dock.Right);header.Children.Add(close);
+        var handle=new TextBlock{Text="↕",ToolTip="按住并上下拖动，调整波形框顺序",Cursor=System.Windows.Input.Cursors.SizeNS,Background=Brushes.Transparent,Padding=new Thickness(8,4,8,4),VerticalAlignment=VerticalAlignment.Stretch};DockPanel.SetDock(handle,Dock.Left);header.Children.Add(handle);
+        System.Windows.Automation.AutomationProperties.SetAutomationId(handle,"wave_reorder_"+id);
         var legend=new StackPanel{Orientation=Orientation.Horizontal};header.Children.Add(new ScrollViewer{Content=legend,HorizontalScrollBarVisibility=ScrollBarVisibility.Auto,VerticalScrollBarVisibility=ScrollBarVisibility.Disabled,MaxHeight=46});
         layout.Children.Add(plot);
         plot.Plot.Layout.Fixed(new ScottPlot.PixelPadding(85,24,55,16));
-        var pane=new Pane(id,plot,frame,legend);panes.Add(pane);stack.Children.Add(frame);
+        var pane=new Pane(id,plot,frame,legend);if(panes.Count==0)defaultPlotId=id;panes.Add(pane);stack.Children.Add(frame);
+        Point? dragStart=null;
+        handle.PreviewMouseLeftButtonDown+=(_,e)=>{dragStart=e.GetPosition(handle);handle.CaptureMouse();e.Handled=true;};
+        handle.PreviewMouseLeftButtonUp+=(_,e)=>{dragStart=null;handle.ReleaseMouseCapture();e.Handled=true;};
+        handle.LostMouseCapture+=(_,_)=>dragStart=null;
+        handle.PreviewMouseMove+=(_,e)=>{
+            if(dragStart is not Point start||e.LeftButton!=System.Windows.Input.MouseButtonState.Pressed)return;
+            var point=e.GetPosition(handle);
+            if(Math.Abs(point.X-start.X)<SystemParameters.MinimumHorizontalDragDistance&&Math.Abs(point.Y-start.Y)<SystemParameters.MinimumVerticalDragDistance)return;
+            dragStart=null;handle.ReleaseMouseCapture();
+            DragDrop.DoDragDrop(handle,new DataObject(PaneDragFormat,pane),DragDropEffects.Move);e.Handled=true;
+        };
         frame.AllowDrop=true;plot.AllowDrop=true;plot.Focusable=true;
-        frame.PreviewDragOver+=(_,e)=>{e.Effects=e.Data.GetDataPresent("FRAME.WaveParameter")?DragDropEffects.Move:DragDropEffects.None;e.Handled=true;};
-        frame.PreviewDrop+=(_,e)=>{if(e.Data.GetData("FRAME.WaveParameter") is string name){Activate(pane);Assign(name,id);e.Effects=DragDropEffects.Move;e.Handled=true;}};
+        frame.PreviewDragOver+=(_,e)=>{e.Effects=e.Data.GetDataPresent("FRAME.WaveParameter")||(e.Data.GetData(PaneDragFormat) is Pane source&&panes.Contains(source))?DragDropEffects.Move:DragDropEffects.None;e.Handled=true;};
+        frame.PreviewDrop+=(_,e)=>{
+            if(e.Data.GetData(PaneDragFormat) is Pane source&&panes.Contains(source)){
+                MovePlot(source.Id,id,e.GetPosition(frame).Y>=frame.ActualHeight/2);e.Effects=DragDropEffects.Move;e.Handled=true;
+            }
+            else if(e.Data.GetData("FRAME.WaveParameter") is string name){Activate(pane);Assign(name,id);e.Effects=DragDropEffects.Move;e.Handled=true;}
+        };
         close.Click+=(_,_)=>RemovePlot(id);
         frame.PreviewMouseDown+=(_,_)=>Activate(pane);
         void SyncAfterInput()=>Dispatcher.BeginInvoke(new Action(()=>{Activate(pane);manualY.Add(plot);RememberView(plot);}),System.Windows.Threading.DispatcherPriority.Input);
@@ -190,11 +210,22 @@ public sealed class WavePlotPanel : UserControl
         }
     }
     private void LayoutPlots(){foreach(var pane in panes)pane.Frame.Height=Math.Max(250,ActualHeight/panes.Count-8);}
+    public void MovePlot(int sourceId,int targetId,bool after)
+    {
+        var source=panes.FirstOrDefault(p=>p.Id==sourceId);var target=panes.FirstOrDefault(p=>p.Id==targetId);
+        if(source==null||target==null||source==target)return;
+        int oldIndex=panes.IndexOf(source),index=panes.IndexOf(target)+(after?1:0);
+        if(oldIndex<index)index--;
+        if(oldIndex==index)return;
+        panes.RemoveAt(oldIndex);panes.Insert(index,source);
+        stack.Children.Remove(source.Frame);stack.Children.Insert(index,source.Frame);
+    }
     public void RemovePlot(int id)
     {
         if(panes.Count==1)return;
         var pane=panes.FirstOrDefault(p=>p.Id==id);if(pane==null)return;
         panes.Remove(pane);stack.Children.Remove(pane.Frame);
+        if(defaultPlotId==id)defaultPlotId=panes[0].Id;
         legendNames.Remove(id);
         measurements.Remove(pane.Plot);if(measurementPlot==pane.Plot)measurementPlot=panes[0].Plot;
         if(firstMeasurementPlot==pane.Plot)firstMeasurementPlot=panes[0].Plot;
@@ -202,7 +233,7 @@ public sealed class WavePlotPanel : UserControl
         foreach(var name in assignments.Where(p=>p.Value==id).Select(p=>p.Key).ToArray())assignments[name]=panes[0].Id;
         Activate(panes[0]);LayoutPlots();Changed?.Invoke();
     }
-    public int PlotFor(string name)=>assignments.TryGetValue(name,out int id)&&panes.Any(p=>p.Id==id)?id:panes[0].Id;
+    public int PlotFor(string name)=>assignments.TryGetValue(name,out int id)&&panes.Any(p=>p.Id==id)?id:defaultPlotId;
     public void Assign(string name,int id){if(!panes.Any(p=>p.Id==id))return;assignments[name]=id;ParameterAssigned?.Invoke(name);Changed?.Invoke();}
     public static (double[] X,double[] Y) CurvePoints(JsonObject[] rows)
     {
