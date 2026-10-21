@@ -20,6 +20,7 @@ set(LLVM_ENABLE_TERMINFO OFF CACHE BOOL "" FORCE)
 set(LLVM_ENABLE_PROJECTS "" CACHE STRING "" FORCE)
 add_subdirectory("${LLVM_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/llvm" EXCLUDE_FROM_ALL)
 add_library(frame_backend SHARED
+  backend/src/realtime_scope_module.cpp
     backend/src/backend_registry.cpp backend/src/system_module.cpp backend/src/frame_protocol_module.cpp
     backend/src/data_module.cpp backend/src/serial_module.cpp backend/src/param_module.cpp backend/src/upgrade_module.cpp
     backend/src/acquisition_module.cpp backend/src/capture_module.cpp backend/src/section_module.cpp backend/src/perf_module.cpp
@@ -59,6 +60,11 @@ target_include_directories(frame_stream_tests PRIVATE backend/src)
 target_link_libraries(frame_stream_tests PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(frame_stream_tests PRIVATE /W4 /utf-8 /EHsc)
 add_test(NAME stream_link COMMAND frame_stream_tests)
+add_executable(frame_realtime_scope_tests tests/native/realtime_scope_tests.cpp backend/src/protocol.cpp)
+target_include_directories(frame_realtime_scope_tests PRIVATE backend/src)
+target_link_libraries(frame_realtime_scope_tests PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(frame_realtime_scope_tests PRIVATE /W4 /utf-8 /EHsc)
+add_test(NAME realtime_scope COMMAND frame_realtime_scope_tests)
 add_executable(frame_runtime_tests tests/native/runtime_tests.cpp backend/src/protocol.cpp)
 target_include_directories(frame_runtime_tests PRIVATE backend/src)
 target_link_libraries(frame_runtime_tests PRIVATE frame_backend nlohmann_json::nlohmann_json)
