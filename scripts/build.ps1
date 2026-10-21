@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet('Debug','Release')][string]$Configuration='Release',[switch]$CliOnly,[switch]$SkipNative,[switch]$NativeOnly)
+param([ValidateSet('Debug','Release')][string]$Configuration='Release',[switch]$CliOnly,[switch]$SkipNative,[switch]$NativeOnly,[switch]$ForLaunch)
 $ErrorActionPreference='Stop'
 $frameRoot=Split-Path $PSScriptRoot -Parent
 Push-Location $frameRoot
@@ -13,16 +13,24 @@ try {
             git -C $llvmRoot sparse-checkout set llvm cmake third-party
             if($LASTEXITCODE){throw 'LLVM checkout failed'}
         }
-        cmake -S . -B build/native -G 'Visual Studio 18 2026' -A x64 -DLLVM_ENABLE_RTTI=ON
-        if($LASTEXITCODE){throw 'Native configure failed'}
-        cmake --build build/native --config $Configuration --target frame_backend frame_native_tests frame_runtime_tests frame_console_tests --parallel 12
+        if(-not $ForLaunch -or -not (Test-Path -LiteralPath 'build/native/CMakeCache.txt')){
+            cmake -S . -B build/native -G 'Visual Studio 18 2026' -A x64 -DLLVM_ENABLE_RTTI=ON
+            if($LASTEXITCODE){throw 'Native configure failed'}
+        }
+        $nativeTargets=@('frame_backend')
+        if(-not $ForLaunch){$nativeTargets+=@('frame_native_tests','frame_runtime_tests','frame_realtime_scope_tests','frame_console_tests')}
+        cmake --build build/native --config $Configuration --target @nativeTargets --parallel 12
         if($LASTEXITCODE){throw 'Native build failed'}
-        ctest --test-dir build/native -C $Configuration --output-on-failure
-        if($LASTEXITCODE){throw 'Native tests failed'}
+        if(-not $ForLaunch){
+            ctest --test-dir build/native -C $Configuration --output-on-failure
+            if($LASTEXITCODE){throw 'Native tests failed'}
+        }
     }
     if($NativeOnly){return}
-    dotnet build frontend/Frame.Cli -c $Configuration -o build/app --nologo
-    if($LASTEXITCODE){throw 'CLI build failed'}
+    if(-not $ForLaunch){
+        dotnet build frontend/Frame.Cli -c $Configuration -o build/app --nologo
+        if($LASTEXITCODE){throw 'CLI build failed'}
+    }
     if(-not $CliOnly){
         dotnet build frontend/Frame.Desktop -c $Configuration -o build/app --nologo
         if($LASTEXITCODE){throw 'Desktop build failed'}
