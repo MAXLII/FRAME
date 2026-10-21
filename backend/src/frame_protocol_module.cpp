@@ -21,6 +21,7 @@ void runtime::receive_packet(packet p) {
   incoming.push_back(std::move(p));
 }
 void runtime::probe_comm_v1() {
+  if (protocol_name != "frame-v1") return;
   if (!serial.opened() || serial.replay_active() || wire_mode == "e8" ||
       dst > 15 || dynamic_dst > 7)
     return; /* Skip on replay transports, forced legacy, and wide addresses. */

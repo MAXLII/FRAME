@@ -117,6 +117,7 @@ public partial class MainWindow : Window
             "M3,2 L3,22 M12,2 L12,22 M21,2 L21,22 M0,8 L6,8 M9,16 L15,16 M18,6 L24,6",
             "M1,12 L5,12 L8,3 L12,21 L16,7 L19,12 L23,12",
             "M2,2 L22,2 L22,22 L2,22 Z M4,14 L8,14 L8,7 L14,7 L14,17 L20,17",
+            "M2,2 L22,2 L22,22 L2,22 Z M4,12 L7,12 L10,5 L14,19 L17,12 L20,12",
             "M2,2 L2,22 L23,22 M4,6 L10,6 L14,10 L18,17 L22,19",
             "M2,22 L23,22 M5,20 L5,12 L8,12 L8,20 M12,20 L12,4 L15,4 L15,20 M19,20 L19,8 L22,8 L22,20",
             "M2,4 L8,4 L8,10 L15,10 L15,17 L22,17 M2,22 L22,22",
@@ -124,7 +125,10 @@ public partial class MainWindow : Window
             "M5,5 L19,5 L19,19 L5,19 Z M9,9 L15,9 L15,15 L9,15 Z M8,1 L8,5 M16,1 L16,5 M8,19 L8,23 M16,19 L16,23 M1,8 L5,8 M1,16 L5,16 M19,8 L23,8 M19,16 L23,16"
         ];
         Navigation.ItemsSource = pages.Values.Select((p,i) => new NavigationItem(p.Title,navigationIcons[i])).ToArray();
-        Navigation.SelectedIndex = 0;
+        string[] pageArgs = Environment.GetCommandLineArgs();
+        int pageIndex = Array.IndexOf(pageArgs, "--page");
+        string? requestedPage = pageIndex >= 0 && pageIndex + 1 < pageArgs.Length ? pageArgs[pageIndex + 1] : null;
+        Navigation.SelectedIndex = Math.Max(0, pages.Keys.ToList().IndexOf(requestedPage ?? "serial"));
         InitializePageDocking();
         Baud.ItemsSource=new[]{"1200","2400","4800","9600","14400","19200","38400","57600","115200","128000","230400","256000","460800","500000","576000","921600","1000000","自定义…"};
         RestoreSettings();
@@ -140,7 +144,16 @@ public partial class MainWindow : Window
         timer.Tick += async (_, _) => await UpdateAsync();
         timer.Start();
         Closing += OnClosing;
-        Loaded += async (_, _) => await RefreshPortsAsync();
+        Loaded += async (_, _) => {
+            await RefreshPortsAsync();
+            var launchArgs=Environment.GetCommandLineArgs();
+            int labelIndex=Array.IndexOf(launchArgs,"--label");
+            if(labelIndex>=0&&labelIndex+1<launchArgs.Length)Title+=" · "+launchArgs[labelIndex+1];
+            if(launchArgs.Contains("--connect"))await RunConnectionChangeAsync(async ()=>{
+                CheckConnectionResult(await client.ExecuteAsync(ConnectionRequest()));
+                Feedback.Text="连接成功";
+            },"连接中…");
+        };
     }
 
     private PageState Page(string key, string title, string hint, bool chart = false)
@@ -342,6 +355,10 @@ public partial class MainWindow : Window
         var scopeButtons=(WrapPanel)p.Form.Children[p.Form.Children.Count-1];p.Form.Children.Remove(scopeButtons);var scopeBar=new DockPanel();p.Form.Children.Add(scopeBar);
         var statusArea=new StackPanel{Orientation=Orientation.Horizontal};DockPanel.SetDock(statusArea,Dock.Right);scopeBar.Children.Add(statusArea);
         var statusButton=new Button{Content="状态"};statusButton.Click+=async(_,_)=>await RunPageAsync(scopePage,"info");statusArea.Children.Add(statusButton);statusArea.Children.Add(p.ScopeStatus);scopeBar.Children.Add(scopeButtons);
+        p = Page("realtime-scope", "实时示波器", "ELF 参数 · 32 通道 · 实时波形与触发");
+        p.Body.Children.Clear();
+        p.Diagnostic = new RealtimeScopePage(client, p.Fields, text => Feedback.Text = text);
+        p.Body.Children.Add(p.Diagnostic);
         p = Page("sfra", "SFRA", "软件扫频分析 · 上图幅值 dB，下图相位 °；配置与运行状态均来自设备。", true);
         p.Fields.Add("id",new TextBox{Text="0"});var sfraPage=p;
         var sfraSelector=new DockPanel();p.Form.Children.Add(sfraSelector);
@@ -959,7 +976,7 @@ public partial class MainWindow : Window
     }
     private void ApplyCurrentTarget(JsonObject request)
     {
-        if(request["group"]?.ToString() is not ("param" or "wave" or "scope" or "sfra" or "perf" or "trace" or "section"))return;
+        if(request["group"]?.ToString() is not ("param" or "wave" or "scope" or "sfra" or "perf" or "trace" or "section" or "realtime-scope-control"))return;
         if(request["group"]?.ToString()=="section"&&request["action"]?.ToString()=="resolve")return;
         if(!byte.TryParse(DynamicAddress.Text,out byte dynamicAddress))
             throw new InvalidOperationException("Dyn 必须是 0–255 的十进制整数");
@@ -1207,6 +1224,7 @@ public partial class MainWindow : Window
         if (disposed) return; e.Cancel = true; if (closing) return; closing = true; timer.Stop(); IsEnabled = false; Status.Text = "正在停止任务并关闭设备…";
         foreach(var key in detachedPages.Keys.ToArray()) DockPage(key,false);
         foreach(var diagnostic in pages.Values.Select(p=>p.Diagnostic).OfType<DiagnosticPage>())diagnostic.Shutdown();
+        foreach(var realtime in pages.Values.Select(p=>p.Diagnostic).OfType<RealtimeScopePage>())await realtime.ShutdownCompletion;
         try{SaveSettings();}catch(Exception error){Feedback.Text="保存界面设置失败："+error.Message;}
         while (updating) await Task.Delay(20);
         await client.DisposeAsync();

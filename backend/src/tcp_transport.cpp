@@ -41,6 +41,8 @@ void tcp_transport::open(const std::string &address, unsigned port, const std::f
     u_long nonblocking = 1;
     if (ioctlsocket(socket, FIONBIO, &nonblocking) != 0) socket_error("Cannot enable nonblocking TCP");
     int no_delay = 1;
+    int receive_capacity = 1024 * 1024;
+    if (setsockopt(socket, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char *>(&receive_capacity), sizeof(receive_capacity)) != 0) socket_error("Cannot set TCP receive capacity");
     if (setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&no_delay), sizeof(no_delay)) != 0) socket_error("Cannot set TCP_NODELAY");
     if (guard) guard();
     if (::connect(socket, reinterpret_cast<sockaddr *>(&storage), length) == SOCKET_ERROR) {
@@ -79,7 +81,7 @@ void tcp_transport::write(const bytes &data) {
 bytes tcp_transport::read(unsigned timeout_ms) {
   auto socket = static_cast<SOCKET>(socket_);
   if (!ready(socket,false,timeout_ms)) return {};
-  bytes data(16384);
+  bytes data(65536);
   int received=recv(socket,reinterpret_cast<char *>(data.data()),static_cast<int>(data.size()),0);
   if (received == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) return {};
   if (received == SOCKET_ERROR) socket_error("TCP receive failed");

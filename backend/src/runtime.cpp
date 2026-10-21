@@ -115,14 +115,22 @@ std::uint64_t runtime::submit(json cmd) {
   return op->id;
 }
 int runtime::result(std::uint64_t id, std::string &text) {
-  std::lock_guard lock(mutex_);
-  auto it = operations_.find(id);
-  if (it == operations_.end())
-    return -1;
-  if (!it->second->done)
-    return 1;
-  text =
-      it->second->result.dump(-1, ' ', false, json::error_handler_t::replace);
+  std::shared_ptr<operation> op;
+  {
+    std::lock_guard lock(mutex_);
+    auto it = operations_.find(id);
+    if (it == operations_.end())
+      return -1;
+    if (!it->second->done)
+      return 1;
+    op = it->second;
+  }
+  // Completed results are immutable. Keep their owner alive while serializing
+  // outside the receive lock, and reuse the text for size/read ABI calls.
+  std::call_once(op->result_text_once, [&op] {
+    op->result_text = op->result.dump(-1, ' ', false, json::error_handler_t::replace);
+  });
+  text = op->result_text;
   return 0;
 }
 int runtime::cancel(std::uint64_t id) {
@@ -134,13 +142,19 @@ int runtime::cancel(std::uint64_t id) {
   return 0;
 }
 int runtime::release(std::uint64_t id) {
-  std::lock_guard lock(mutex_);
-  auto it = operations_.find(id);
-  if (it == operations_.end())
-    return -1;
-  if (!it->second->done)
-    return 1;
-  operations_.erase(it);
+  std::shared_ptr<operation> released;
+  {
+    std::lock_guard lock(mutex_);
+    auto it = operations_.find(id);
+    if (it == operations_.end())
+      return -1;
+    if (!it->second->done)
+      return 1;
+    released = std::move(it->second);
+    operations_.erase(it);
+  }
+  // Destruction of a large completed waveform result must not block reception.
+  released.reset();
   return 0;
 }
 std::string runtime::snapshot() {
@@ -289,6 +303,11 @@ void runtime::pump(unsigned wait) {
   if (b.empty())
     return;
   rx_bytes += b.size();
+  if (protocol_name == "realtime-scope") {
+    receive_link.Push(b);
+    receive_link.Process();
+    return;
+  }
   if (comm_log.enabled()) {
     last_rx = clock::now();
     last_rx_preview = hex(bytes(b.begin(), b.begin() + std::min<std::size_t>(b.size(), 48)));

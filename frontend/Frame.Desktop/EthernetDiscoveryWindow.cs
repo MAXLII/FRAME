@@ -14,14 +14,15 @@ public sealed class EthernetDiscoveryWindow : Window
 {
     private readonly Func<CancellationToken,Task<JsonObject>> discover;
     private CancellationTokenSource? scan;
+    private readonly int? tcpPortOverride;
     private readonly DataGrid devices=new(){AutoGenerateColumns=false,IsReadOnly=true,SelectionMode=DataGridSelectionMode.Single,CanUserAddRows=false};
     private readonly TextBlock status=new(){Text="准备搜索…",Margin=new Thickness(0,8,0,8),TextWrapping=TextWrapping.Wrap};
     private readonly Button search=new(){Content="重新搜索"};
     private readonly Button use=new(){Content="连接选中设备",IsEnabled=false};
     public EthernetDevice? SelectedDevice { get; private set; }
-    public EthernetDiscoveryWindow(Func<CancellationToken,Task<JsonObject>> discover)
+    public EthernetDiscoveryWindow(Func<CancellationToken,Task<JsonObject>> discover, int? tcpPortOverride = null)
     {
-        this.discover=discover;Title="搜索以太网设备";Width=980;Height=420;MinWidth=720;MinHeight=320;WindowStartupLocation=WindowStartupLocation.CenterOwner;
+        this.tcpPortOverride=tcpPortOverride; this.discover=discover;Title="搜索以太网设备";Width=980;Height=420;MinWidth=720;MinHeight=320;WindowStartupLocation=WindowStartupLocation.CenterOwner;
         var layout=new DockPanel{Margin=new Thickness(16)};Content=layout;
         var buttons=new StackPanel{Orientation=Orientation.Horizontal};DockPanel.SetDock(buttons,Dock.Bottom);layout.Children.Add(buttons);
         var cancel=new Button{Content="取消搜索"};cancel.Click+=(_,_)=>scan?.Cancel();
@@ -45,10 +46,10 @@ public sealed class EthernetDiscoveryWindow : Window
             var result=await discover(cancellation.Token);
             if(cancellation.IsCancellationRequested){status.Text="搜索已取消";return;}
             if(result["ok"]?.GetValue<bool>()!=true)throw new InvalidOperationException(result["error"]?.ToString()??"搜索失败");
-            var data=result["data"]!;var found=data["devices"]!.AsArray().Select(d=>EthernetDevice.FromJson(d!)).ToArray();devices.ItemsSource=found;
+            var data=result["data"]!;var found=data["devices"]!.AsArray().Select(d=>{var item=EthernetDevice.FromJson(d!);return tcpPortOverride is int port?item with {Port=port}:item;}).ToArray();devices.ItemsSource=found;
             if(found.Length>0)devices.SelectedIndex=0;
             int count=data["interfaces"]!.AsArray().Count;
-            status.Text=found.Length>0?$"发现 {found.Length} 台设备（搜索了 {count} 个 IPv4 接口）。双击设备自动连接；已有连接会先断开。":$"未发现设备（搜索了 {count} 个 IPv4 接口）。请确认设备已连接网线并支持 FRAME 发现协议，可重新搜索或关闭后手动输入 IP。";
+            status.Text=found.Length>0?$"发现 {found.Length} 台设备（搜索了 {count} 个 IPv4 接口）。双击设备自动连接；已有连接会先断开。":$"未发现设备（搜索了 {count} 个 IPv4 接口）。请确认设备已连接网络并支持 FRAME 发现协议，可重新搜索或关闭后手动输入 IP。";
             var errors=data["send_errors"]?.AsArray();if(errors?.Count>0)status.Text+="\n部分接口搜索失败："+string.Join("；",errors.Select(e=>e?.ToString()));
         }catch(OperationCanceledException){status.Text="搜索已取消";}
         catch(Exception error){status.Text="搜索失败："+error.Message;}

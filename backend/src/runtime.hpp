@@ -5,6 +5,7 @@
 #include "stream_link.hpp"
 #include "backend_registry.hpp"
 #include "communication_log.hpp"
+#include "realtime_scope.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -19,6 +20,8 @@ using clock = std::chrono::steady_clock;
 struct operation final {
   std::uint64_t id = 0;
   json command, result;
+  std::once_flag result_text_once;
+  std::string result_text;
   std::atomic_bool cancel = false;
   const operation *parent = nullptr;
   bool done = false;
@@ -70,6 +73,7 @@ public:
   json set_wire(operation &op);
   transport serial;
   parser decoder;
+  RealtimeScopeState realtime_scope;
   StreamLink receive_link;
   std::deque<packet> incoming;
   std::map<std::uint64_t, stream_job> streams;
