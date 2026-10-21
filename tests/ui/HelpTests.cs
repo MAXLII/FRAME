@@ -10,7 +10,7 @@ internal static class HelpTests
     {
         var navigation = (ListBox)window.FindName("Navigation");
         var help = (Button)window.FindName("HelpButton");
-        string[] titles = ["串口调试", "参数读写", "参数波形", "Scope 录波", "SFRA", "Perf", "Trace", "链表顺序", "J-Link"];
+        string[] titles = ["串口调试", "参数读写", "参数波形", "Scope 录波", "实时示波器", "SFRA", "Perf", "Trace", "链表顺序", "J-Link"];
         if (navigation.Items.Count != titles.Length) throw new Exception("Help page count does not match navigation");
         if (!help.IsVisible || help.ActualWidth == 0 || help.Content?.ToString() != "❓") throw new Exception("Top help button is not visible");
 
@@ -38,6 +38,6 @@ internal static class HelpTests
             help.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             if (!opened || error != null) throw new Exception(error ?? $"Help dialog did not open for {title}");
         }
-        Console.WriteLine("PASS: help button opens all nine local page documents.");
+        Console.WriteLine($"PASS: help button opens all {titles.Length} local page documents.");
     }
 }

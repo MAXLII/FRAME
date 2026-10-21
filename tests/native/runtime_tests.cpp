@@ -82,8 +82,18 @@ int main(int argc, char **argv) {
       auto result = call(registered, {{"group", "backend"}, {"action", "catalog"}});
       require(result["code"] == 0, "registered catalog command");
       auto catalog = result["data"];
-      require(catalog["services"].size() == 10 && catalog["reports"].size() == 5,
-              "all linked business modules and reports retained");
+      const auto contains = [&](const char *collection, const char *name) {
+        for (const auto &entry : catalog[collection])
+          if (entry["name"] == name) return true;
+        return false;
+      };
+      for (const auto *service : {"system", "frame-protocol", "data", "acquisition",
+                                  "capture", "jlink", "param", "perf", "realtime-scope",
+                                  "section", "serial", "upgrade"})
+        require(contains("services", service), service);
+      require(contains("protocols", "frame-v1") && contains("protocols", "realtime-scope"),
+              "linked frame and realtime scope protocols retained");
+      require(catalog["reports"].size() == 5, "all linked reports retained");
       require(catalog["commands"].size() >= 60, "business command catalog populated");
       require(call(registered, {{"group", "param"}, {"action", "typo"}})["code"] == 2,
               "unknown action rejected before transport access");

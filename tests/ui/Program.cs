@@ -36,6 +36,9 @@ internal static class UiTests
             try
             {
                 if(args.Contains("--help")){HelpTests.Run(window);window.Close();return;}
+                if(args.Contains("--realtime-scope-config-hardware")){await RealtimeScopeConfigurationTests.RunHardware(window,root,args);window.Close();return;}
+                if(args.Contains("--realtime-scope-hardware")){await RealtimeScopeHardwareTests.Run(window,root,args);window.Close();return;}
+                if(args.Contains("--realtime-scope")){await RealtimeScopeTests.Run(window,root,args.Contains("--symbol-elf")?args[Array.IndexOf(args,"--symbol-elf")+1]:null);window.Close();return;}
                 if(args.Contains("--param-address")){await ParameterStreamingTests.Run();await ParameterTests.Run();ParameterAddressTests.Run(root);window.Close();return;}
                 if(args.Contains("--jlink-live")){await JlinkLiveTests.Run(root);window.Close();return;}
                 if(args.Contains("--plecs-live")){await PlecsWaveRefreshTests.Run(window,root,args[Array.IndexOf(args,"--plecs-live")+1]);window.Close();return;}
@@ -366,7 +369,7 @@ internal static class UiTests
             catch(Exception e){Console.Error.WriteLine(e);app.Shutdown(1);}
         };
         int code=app.Run(window);
-        if(code==0&&!args.Contains("--help")&&!args.Contains("--plecs-live")&&!args.Contains("--connection-switch")&&!args.Contains("--param-address"))
+        if(code==0&&!args.Contains("--help")&&!args.Contains("--plecs-live")&&!args.Contains("--connection-switch")&&!args.Contains("--param-address")&&!args.Contains("--realtime-scope")&&!args.Contains("--realtime-scope-hardware")&&!args.Contains("--realtime-scope-config-hardware"))
         {
             var closed=JsonNode.Parse(File.ReadAllText(Path.Combine(root,"build/ui-close-wave.json")))!;
             if(closed["stop_confirmed"]?.GetValue<bool>()!=true||closed["state"]?.GetValue<string>()!="cancelled")return 1;
