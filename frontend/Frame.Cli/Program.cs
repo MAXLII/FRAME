@@ -15,11 +15,11 @@ internal static class Program
         ["wave"]=["capture","start","stop","status"], ["scope"]=["list","info","channels","start","trigger","stop","reset","pull"],
         ["sfra"]=["list","info","configure","start","stop","reset","points"], ["perf"]=["info","summary","dictionary","samples","start","stop","reset"],
         ["trace"]=["capture","start","stop","status"], ["section"]=["list","nodes"], ["jlink"]=["connect","disconnect","detect","load","symbols","expand","read","write"],
-        ["data"]=["read","view","clear","export","release"], ["ethernet"]=["discover"], ["backend"]=["catalog"]
+        ["data"]=["read","view","clear","export","release"], ["ethernet"]=["discover"], ["backend"]=["catalog"], ["upgrade"]=["inspect","download"]
     };
     private static readonly string[] Numeric=["baud","dst","dynamic-dst","timeout","response-timeout","id","dataset","offset","limit","period","data-bits","stop-bits","count","revision","probe","tcp-port","scan-ms","discovery-port","speed"];
     private static readonly string[] Real=["duration","interval","start-hz","stop-hz","amplitude","seconds","left","right"];
-    private static readonly string[] Strings=["port","replay","name","value","min","max","input","output","hex","text","parity","enable","elf","path","device","jlink-exe","filter","record","transport","host","map","interface","protocol","wire"];
+    private static readonly string[] Strings=["port","replay","name","value","min","max","input","output","hex","text","parity","enable","elf","path","device","jlink-exe","filter","record","transport","host","map","interface","protocol","wire","force"];
     private static readonly Dictionary<ulong,BackendJob> jobs=new();
     private static readonly Dictionary<ulong,JsonObject> completedJobs=new();
     private static BackendClient? client;
@@ -87,7 +87,7 @@ internal static class Program
                         if(Numeric.Contains(pair.Key))request[key]=val.StartsWith("0x",StringComparison.OrdinalIgnoreCase)?Convert.ToInt64(val[2..],16):long.Parse(val,System.Globalization.CultureInfo.InvariantCulture);
                         else if(Real.Contains(pair.Key))request[key]=double.Parse(val,System.Globalization.CultureInfo.InvariantCulture);
                         else if(pair.Key=="filter"&&group=="perf")request[key]=int.Parse(val);
-                        else if(pair.Key=="enable")request[key]=val.ToLowerInvariant() switch {"true" or "on" or "1"=>true,"false" or "off" or "0"=>false,_=>throw new ArgumentException("--enable expects on/off")};
+                        else if(pair.Key is "enable" or "force")request[key]=val.ToLowerInvariant() switch {"true" or "on" or "1"=>true,"false" or "off" or "0"=>false,_=>throw new ArgumentException("--enable expects on/off")};
                         else request[key]=val;
                     }
                     if(group=="status"||group=="jobs"){var snapshot=Client.Snapshot();if(group=="jobs")snapshot["completed"]=new JsonArray(completedJobs.Values.Select(x=>x.DeepClone()).ToArray());Print(snapshot,json);return 0;}

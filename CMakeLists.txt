@@ -21,7 +21,7 @@ set(LLVM_ENABLE_PROJECTS "" CACHE STRING "" FORCE)
 add_subdirectory("${LLVM_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/llvm" EXCLUDE_FROM_ALL)
 add_library(frame_backend SHARED
     backend/src/backend_registry.cpp backend/src/system_module.cpp backend/src/frame_protocol_module.cpp
-    backend/src/data_module.cpp backend/src/serial_module.cpp backend/src/param_module.cpp
+    backend/src/data_module.cpp backend/src/serial_module.cpp backend/src/param_module.cpp backend/src/upgrade_module.cpp
     backend/src/acquisition_module.cpp backend/src/capture_module.cpp backend/src/section_module.cpp backend/src/perf_module.cpp
     backend/src/stream_link.cpp
     backend/src/api.cpp backend/src/protocol.cpp backend/src/transport.cpp
