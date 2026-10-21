@@ -21,6 +21,8 @@ Windows x64 设备诊断工作台，版本以根目录 [VERSION](VERSION) 为准
 
 直接入口为 `build/app/frame.exe` 和 `build/app/Frame.Desktop.exe`，同目录放置 `frame_backend.dll`，无需 Python。后续回归默认用 CLI/Shell，只有视觉或界面专属行为才打开 UI。
 
+日常调试运行 `./run_dbg.bat`：无改动时直接启动；源码或输出变化时增量构建界面及所需后端，不构建 CLI 或运行测试。`./run_dbg.bat -FullBuild` 执行完整构建和原生测试后启动；`-BuildOnly` 只准备程序、不打开窗口。构建失败不会启动旧程序。
+
 ## 开发验证
 
 安装包由 `build_frame_installer.bat` 生成，随包提供运行库。构建、用户数据目录、升级和发布流程见 [安装包与 Release](docs/INSTALLER_RELEASE.md)。
