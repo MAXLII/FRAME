@@ -23,6 +23,9 @@ public sealed partial class RealtimeScopePage
     private readonly Dictionary<int, double[]> rawSnapshot = new();
     private readonly double[] cursorPositions = [0.25, 0.75, -1, 1];
     private int draggedCursor = -1;
+    private Point? waveformDragOrigin;
+    private double waveformDragLeft, waveformDragRight, waveformDragWidth, waveformDragHeight, waveformDragPosition;
+    private RealtimeScopeChannel? draggedWaveform;
 
     private void InitializeInstrument()
     {
@@ -102,8 +105,67 @@ public sealed partial class RealtimeScopePage
     }
     private ScottPlot.Coordinates MouseCoordinates(MouseEventArgs e)
     {
-        var at = e.GetPosition(plot); var dpi = VisualTreeHelper.GetDpi(plot);
+        return PlotCoordinates(e.GetPosition(plot));
+    }
+    private ScottPlot.Coordinates PlotCoordinates(Point at)
+    {
+        var dpi = VisualTreeHelper.GetDpi(plot);
         return plot.Plot.GetCoordinates(new ScottPlot.Pixel((float)(at.X * dpi.DpiScaleX), (float)(at.Y * dpi.DpiScaleY)));
+    }
+    internal bool BeginWaveformDrag(Point at)
+    {
+        if (preview == null || snapshot.Count == 0) return false;
+        var point = PlotCoordinates(at); var limits = plot.Plot.Axes.GetLimits();
+        if (point.X < limits.Left || point.X > limits.Right || point.Y < limits.Bottom || point.Y > limits.Top) return false;
+        var dpi = VisualTreeHelper.GetDpi(plot);
+        var first = plot.Plot.GetPixel(new ScottPlot.Coordinates(limits.Left, limits.Bottom));
+        var last = plot.Plot.GetPixel(new ScottPlot.Coordinates(limits.Right, limits.Top));
+        waveformDragWidth = (last.X - first.X) / dpi.DpiScaleX;
+        waveformDragHeight = (first.Y - last.Y) / dpi.DpiScaleY;
+        if (waveformDragWidth <= 0 || waveformDragHeight <= 0) return false;
+        waveformDragOrigin = at; waveformDragLeft = limits.Left; waveformDragRight = limits.Right;
+        draggedWaveform = null; double nearest = 12;
+        foreach (var channel in workspace.Configuration.Enabled.Where(channel => channel.Display.Visible)) {
+            if (!rawSnapshot.TryGetValue(channel.Number, out var raw) || raw.Length == 0) continue;
+            double sample = (point.X + snapshotOriginMs - snapshotFirst) * preview.SampleRate / 1000;
+            if (sample < 0 || sample > raw.Length - 1) continue;
+            int index = (int)Math.Floor(sample), next = Math.Min(index + 1, raw.Length - 1);
+            double value = raw[index] + (raw[next] - raw[index]) * (sample - index);
+            var pixel = plot.Plot.GetPixel(new ScottPlot.Coordinates(point.X, channel.Display.Divisions(value)));
+            double distance = Math.Abs(pixel.Y / dpi.DpiScaleY - at.Y);
+            if (distance < nearest) { nearest = distance; draggedWaveform = channel; }
+        }
+        if (draggedWaveform != null) {
+            waveformDragPosition = draggedWaveform.Display.Position;
+            channelTable.SelectedItem = draggedWaveform;
+        }
+        return true;
+    }
+    internal void MoveWaveformDrag(Point at)
+    {
+        if (waveformDragOrigin is not Point origin || preview == null) return;
+        double dx = at.X - origin.X, dy = at.Y - origin.Y;
+        if (draggedWaveform != null) {
+            if (Math.Abs(dy) < 2) return;
+            draggedWaveform.Display.Position = waveformDragPosition - dy / waveformDragHeight * 8;
+        }
+        else {
+            if (Math.Abs(dx) < 2) return;
+            follow = false;
+            double span = waveformDragRight - waveformDragLeft;
+            double first = retainedHistory ? snapshotFirst : preview.Oldest * 1000.0 / preview.SampleRate;
+            double last = retainedHistory ? snapshotLast : (preview.NextSample - 1) * 1000.0 / preview.SampleRate;
+            double padding = Math.Min(span / 2, 1000.0 / preview.SampleRate);
+            double left = waveformDragLeft - dx / waveformDragWidth * span;
+            left = Math.Clamp(left, first - span + padding - snapshotOriginMs, last - padding - snapshotOriginMs);
+            plot.Plot.Axes.SetLimitsX(left, left + span);
+        }
+        if (previewRunning && !preview.DisplayPaused) CaptureSnapshot();
+        RenderSnapshot();
+    }
+    internal void EndWaveformDrag()
+    {
+        waveformDragOrigin = null; draggedWaveform = null;
     }
     private bool TriggerCoordinates(out ScottPlot.Coordinates point)
     {
@@ -170,10 +232,11 @@ public sealed partial class RealtimeScopePage
             if (distance < nearest) { nearest = distance; draggedCursor = i; }
         }
         if (draggedCursor >= 0) { plot.CaptureMouse(); e.Handled = true; }
-        else follow = false;
+        else if (BeginWaveformDrag(at)) { plot.CaptureMouse(); e.Handled = true; }
     }
     private void MoveCursor(object sender, MouseEventArgs e)
     {
+        if (waveformDragOrigin != null) { MoveWaveformDrag(e.GetPosition(plot)); e.Handled = true; return; }
         if (draggedCursor < 0) return;
         var at = MouseCoordinates(e); var limits = plot.Plot.Axes.GetLimits();
         if (draggedCursor >= 4) {
@@ -193,6 +256,9 @@ public sealed partial class RealtimeScopePage
     }
     private void EndCursorDrag(object sender, MouseButtonEventArgs e)
     {
+        if (waveformDragOrigin != null) {
+            EndWaveformDrag(); plot.ReleaseMouseCapture(); RenderSnapshot(); e.Handled = true; return;
+        }
         if (draggedCursor < 0) return;
         draggedCursor = -1; plot.ReleaseMouseCapture(); RenderSnapshot(); e.Handled = true;
     }

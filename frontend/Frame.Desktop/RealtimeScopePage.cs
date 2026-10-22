@@ -301,7 +301,7 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         plot.PreviewMouseDown += BeginCursorDrag;
         plot.PreviewMouseMove += MoveCursor;
         plot.PreviewMouseUp += EndCursorDrag;
-        plot.LostMouseCapture += (_, _) => { draggedCursor = -1; RenderSnapshot(); };
+        plot.LostMouseCapture += (_, _) => { draggedCursor = -1; EndWaveformDrag(); RenderSnapshot(); };
         plot.MouseUp += (_, _) => Dispatcher.BeginInvoke(new Action(() => {
             if (draggedCursor >= 0 || Closed) return;
             if (!follow && preview?.DisplayPaused == false) CaptureSnapshot();
