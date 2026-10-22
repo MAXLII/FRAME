@@ -2,9 +2,9 @@
 
 Windows x64 设备诊断工作台，版本以根目录 [VERSION](VERSION) 为准。C++20 后端与 C#/.NET 10 前端共用一套业务实现，提供 CLI、持续交互 Shell 和 WPF/XAML 界面。
 
-版本按软件代际区分：`1.x` 为旧 Python 上位机的终版系列，停止后续版本迭代；`2.x` 为 C++/C# 全新上位机系列，不再按目标用户区分。大功能更新递增第二位，小功能、后端优化和缺陷修复递增第三位。
+版本按软件代际区分：`1.x` 为旧 Python 上位机的终版系列，停止后续版本迭代；`2.x` 为 C++/C# 全新上位机系列，不再按目标用户区分。日常提交递增第三位，发布 GitHub Release 时递增第二位并将第三位归零。
 
-本期包含：串口调试、参数读写、参数波形、Scope、SFRA、Perf、Trace、链表顺序与 J-Link。设备连接支持串口和以太网 TCP。旧 Python 应用与测试已移除；不包含 CAN、升级、Factory Mode、Black Box。
+本期包含：串口调试、参数读写、参数波形、Scope、实时示波器、SFRA、Perf、Trace、链表顺序与 J-Link。设备连接支持串口和以太网 TCP，CLI 支持 SHUT 固件检查与 E8 下载。旧 Python 应用与测试已移除；不包含 CAN、Factory Mode、Black Box。
 
 ## 构建与启动
 
@@ -40,7 +40,8 @@ ctest --test-dir build/native -C Release --output-on-failure
 - [原生软件架构](docs/NATIVE_ARCHITECTURE.md)：Top Down 分层、ABI、线程和数据模型。
 - [后端注册与流式协议](docs/STREAM_PROTOCOL_ARCHITECTURE.md)：模块自注册、依赖生命周期、命令与上报分发、协议扩展。
 - [详细架构方案](docs/CPP_CSHARP_TOP_DOWN_ARCHITECTURE.md)：设计目标与阶段门槛。
-- [CLI / Shell 手册](docs/CLI_REFERENCE.md)：九项功能、退出码、NDJSON、任务与数据集。
+- [CLI / Shell 手册](docs/CLI_REFERENCE.md)：功能命令、退出码、NDJSON、任务与数据集。
+- [实时示波器](docs/help/realtime-scope.md)：参数选通、独立数据链路、触发、游标与历史波形。
 - [验证记录](docs/NATIVE_VALIDATION.md)：构建、回放、E507、UI、持续运行证据及未完成项。
 
 源码在 `backend/` 和 `frontend/`，统一脚本在 `scripts/`。历史协议资料继续保留；旧 Python 工程说明中的启动/构建命令不再适用。
