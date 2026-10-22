@@ -1,6 +1,7 @@
 """Physical-board scope diagnostic using FRAME's actual native backend and decoder."""
 import argparse
 import ctypes as c
+import hashlib
 import json
 import os
 import socket
@@ -49,6 +50,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--elf', required=True)
     parser.add_argument('--port', default='COM7')
+    parser.add_argument('--control-tcp', action='store_true')
+    parser.add_argument('--expected-frequency', type=int)
     parser.add_argument('--host', default='192.168.1.17')
     parser.add_argument('--seconds', type=float, default=30)
     parser.add_argument('--output', required=True)
@@ -76,12 +79,19 @@ def main():
         events.flush()
 
     try:
-        common.command('connect', transport='serial', port=args.port, baud=115200, dst=2, wire='e8')
-        radio = common.command('serial', 'raw', hex='776966690d0a', duration=0.3)
-        report['radio'] = ''.join(bytes.fromhex(row['hex']).decode('utf-8', 'replace') for row in radio['records'] if row['dir'] == 'rx')
+        if args.control_tcp:
+            common.command('connect', transport='tcp', host=args.host, tcp_port=5000, dst=2, wire='e8')
+        else:
+            common.command('connect', transport='serial', port=args.port, baud=115200, dst=2, wire='e8')
+            radio = common.command('serial', 'raw', hex='776966690d0a', duration=0.3)
+            report['radio'] = ''.join(bytes.fromhex(row['hex']).decode('utf-8', 'replace') for row in radio['records'] if row['dir'] == 'rx')
         capability = common.command('realtime-scope-control', 'capabilities')
         report['capabilities'] = capability
-        assert capability['sample_frequency'] == 31250, capability
+        frequency = capability['sample_frequency']
+        assert frequency > 0, capability
+        if args.expected_frequency is not None:
+            assert frequency == args.expected_frequency, capability
+        assert capability['elf_sha256'].lower() == hashlib.sha256(Path(args.elf).read_bytes()).hexdigest(), capability
         common.command('jlink', 'load', path=str(Path(args.elf).resolve()))
         demo = common.command('jlink', 'expand', name='g_scope_demo', limit=32)
         wave = common.command('jlink', 'expand', name='g_scope_demo.wave', limit=32)
@@ -120,7 +130,7 @@ def main():
             time.sleep(0.05)
         if not args.raw_receiver:
             data.command('realtime-scope', 'configure', channels=channels)
-            data.command('realtime-scope', 'start', frequency=31250)
+            data.command('realtime-scope', 'start', frequency=frequency)
         common.command('realtime-scope-control', 'start')
         started = time.monotonic()
         next_status = started
@@ -163,7 +173,7 @@ def main():
                     crossings.append(row['index'])
                 previous_signal = signal
                 value = row['values'][4]
-                if counter_name.endswith('sample_count') and previous is not None and value != previous + 1:
+                if counter_name.endswith('sample_count') and previous is not None and value != (int(previous) + 1) & 0xffffffff:
                     report['counter_gaps'] += 1
                 if previous is None or value != previous:
                     counter_values.append((row['index'], value))
@@ -201,7 +211,7 @@ def main():
                 report['isr_cpu_percent'] = busy_total * 100 / cycle_total
         report['counter_transitions'] = counter_values[:50]
         if len(crossings) >= 2:
-            report['waveform_hz'] = 31250 * (len(crossings)-1) / (crossings[-1]-crossings[0])
+            report['waveform_hz'] = frequency * (len(crossings)-1) / (crossings[-1]-crossings[0])
             report['wave_period_samples_min'] = min(b-a for a,b in zip(crossings,crossings[1:]))
             report['wave_period_samples_max'] = max(b-a for a,b in zip(crossings,crossings[1:]))
         report['passed'] = (report.get('device', {}).get('running', False) and not report.get('fault')
