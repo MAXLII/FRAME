@@ -38,7 +38,7 @@ internal static class UiTests
                 if(args.Contains("--help")){HelpTests.Run(window);window.Close();return;}
                 if(args.Contains("--realtime-scope-config-hardware")){await RealtimeScopeConfigurationTests.RunHardware(window,root,args);window.Close();return;}
                 if(args.Contains("--realtime-scope-hardware")){await RealtimeScopeHardwareTests.Run(window,root,args);window.Close();return;}
-                if(args.Contains("--realtime-scope")){await RealtimeScopeTests.Run(window,root,args.Contains("--symbol-elf")?args[Array.IndexOf(args,"--symbol-elf")+1]:null);window.Close();return;}
+                if(args.Contains("--realtime-scope")){if(args.Contains("--concurrency-only"))await RealtimeScopeConcurrencyTests.Run();else await RealtimeScopeTests.Run(window,root,args.Contains("--symbol-elf")?args[Array.IndexOf(args,"--symbol-elf")+1]:null);window.Close();return;}
                 if(args.Contains("--param-address")){await ParameterStreamingTests.Run();await ParameterTests.Run();ParameterAddressTests.Run(root);window.Close();return;}
                 if(args.Contains("--jlink-live")){await JlinkLiveTests.Run(root);window.Close();return;}
                 if(args.Contains("--plecs-live")){await PlecsWaveRefreshTests.Run(window,root,args[Array.IndexOf(args,"--plecs-live")+1]);window.Close();return;}

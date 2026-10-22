@@ -236,6 +236,7 @@ internal static class RealtimeScopeTests
     {
         Models();
         await RealtimeScopeDeviceTests.Run();
+        await RealtimeScopeConcurrencyTests.Run();
         await RealtimeScopeConfigurationTests.Run(root);
         var flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var pages = (IDictionary)typeof(MainWindow).GetField("pages", flags)!.GetValue(window)!;

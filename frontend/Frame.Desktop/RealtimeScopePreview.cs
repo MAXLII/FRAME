@@ -100,6 +100,8 @@ public sealed record RealtimeScopeTrigger(bool Enabled, int Channel, double Leve
 // Bounded sample history and trigger engine, shared by device and demonstration sources.
 public sealed class RealtimeScopePreview
 {
+    public object SyncRoot { get; } = new();
+    private RealtimeScopeHistory? pausedHistory;
     public const double RollThresholdSeconds = 0.5;
     private readonly Dictionary<int, double[]> values;
     private long? pendingTrigger;
@@ -109,17 +111,21 @@ public sealed class RealtimeScopePreview
     private RealtimeScopeTrigger trigger = new(false, 1, 0, RealtimeScopeEdge.Rising, 0.5, true);
     public int SampleRate { get; }
     public int Capacity { get; }
-    public long NextSample { get; private set; }
-    public long Oldest => Math.Max(0, NextSample - Capacity);
-    public long? CompletedTrigger { get; private set; }
-    public bool DisplayPaused { get; private set; }
-    public bool SingleCompleted { get; private set; }
-    public bool IsRolling => viewSeconds >= RollThresholdSeconds;
-    public bool TriggerEnabled => trigger.Enabled;
-    public bool AutoFallback => trigger.Mode == RealtimeScopeTriggerMode.Auto && NextSample - lastCapture >= Math.Max(SampleRate / 10, viewSeconds * SampleRate);
-    public bool CanDisplay => !trigger.Enabled || CompletedTrigger != null || AutoFallback;
+    private long nextSample;
+    public long NextSample { get { lock (SyncRoot) return nextSample; } private set => nextSample = value; }
+    public long Oldest { get { lock (SyncRoot) return Math.Max(0, NextSample - Capacity); } }
+    private long? completedTrigger;
+    public long? CompletedTrigger { get { lock (SyncRoot) return completedTrigger; } private set => completedTrigger = value; }
+    private bool displayPaused;
+    public bool DisplayPaused { get { lock (SyncRoot) return displayPaused; } private set => displayPaused = value; }
+    private bool singleCompleted;
+    public bool SingleCompleted { get { lock (SyncRoot) return singleCompleted; } private set => singleCompleted = value; }
+    public bool IsRolling { get { lock (SyncRoot) return viewSeconds >= RollThresholdSeconds; } }
+    public bool TriggerEnabled { get { lock (SyncRoot) return trigger.Enabled; } }
+    public bool AutoFallback { get { lock (SyncRoot) return trigger.Mode == RealtimeScopeTriggerMode.Auto && NextSample - lastCapture >= Math.Max(SampleRate / 10, viewSeconds * SampleRate); } }
+    public bool CanDisplay { get { lock (SyncRoot) return !trigger.Enabled || CompletedTrigger != null || AutoFallback; } }
     public event Action? TriggerCompleted;
-    public bool AutoPauseEligible => !IsRolling && trigger.Enabled && trigger.PauseOnTrigger;
+    public bool AutoPauseEligible { get { lock (SyncRoot) return !IsRolling && trigger.Enabled && trigger.PauseOnTrigger; } }
     public IReadOnlyCollection<int> Channels => values.Keys;
     public RealtimeScopePreview(RealtimeScopeConfiguration configuration, int sampleRate, double historySeconds)
     {
@@ -139,33 +145,41 @@ public sealed class RealtimeScopePreview
     }
     public void Configure(double seconds, RealtimeScopeTrigger settings)
     {
-        if (!double.IsFinite(seconds) || seconds <= 0 || seconds * SampleRate > Capacity)
-            throw new ArgumentException("显示时长必须大于 0 且不超过历史容量。");
-        if (seconds >= RollThresholdSeconds) settings = settings with { Enabled = false, Mode = RealtimeScopeTriggerMode.Roll, PauseOnTrigger = false, Level = 0, Pretrigger = 0.5 };
-        else if (settings.Mode == RealtimeScopeTriggerMode.Roll) settings = settings with { Mode = RealtimeScopeTriggerMode.Auto };
-        if (!double.IsFinite(settings.Level) || !double.IsFinite(settings.Pretrigger) || settings.Pretrigger < 0 || settings.Pretrigger > 1)
-            throw new ArgumentException("触发电平或预触发比例无效。");
-        if (settings.Enabled && !values.ContainsKey(settings.Channel)) throw new ArgumentException("触发源必须是已配置通道。");
-        if (seconds != viewSeconds || settings != trigger) {
-            bool paused = DisplayPaused, completed = SingleCompleted;
-            Rearm();
-            DisplayPaused = paused;
-            SingleCompleted = completed;
+        lock (SyncRoot) {
+            if (!double.IsFinite(seconds) || seconds <= 0 || seconds * SampleRate > Capacity)
+                throw new ArgumentException("显示时长必须大于 0 且不超过历史容量。");
+            if (seconds >= RollThresholdSeconds) settings = settings with { Enabled = false, Mode = RealtimeScopeTriggerMode.Roll, PauseOnTrigger = false, Level = 0, Pretrigger = 0.5 };
+            else if (settings.Mode == RealtimeScopeTriggerMode.Roll) settings = settings with { Mode = RealtimeScopeTriggerMode.Auto };
+            if (!double.IsFinite(settings.Level) || !double.IsFinite(settings.Pretrigger) || settings.Pretrigger < 0 || settings.Pretrigger > 1)
+                throw new ArgumentException("触发电平或预触发比例无效。");
+            if (settings.Enabled && !values.ContainsKey(settings.Channel)) throw new ArgumentException("触发源必须是已配置通道。");
+            if (seconds != viewSeconds || settings != trigger) {
+                bool paused = DisplayPaused, completed = SingleCompleted;
+                var retained = pausedHistory;
+                Rearm();
+                DisplayPaused = paused;
+                SingleCompleted = completed;
+                pausedHistory = retained;
+            }
+            viewSeconds = seconds;
+            trigger = settings;
+
         }
-        viewSeconds = seconds;
-        trigger = settings;
     }
-    public void Rearm() { DisplayPaused = false; SingleCompleted = false; pendingTrigger = null; CompletedTrigger = null; armedAt = lastCapture = NextSample; }
-    public void PauseDisplay() => DisplayPaused = true;
+    public void Rearm() { lock (SyncRoot) { DisplayPaused = false; SingleCompleted = false; pendingTrigger = null; CompletedTrigger = null; pausedHistory = null; armedAt = lastCapture = NextSample; } }
+    public void PauseDisplay() { lock (SyncRoot) { if (DisplayPaused && pausedHistory != null) return; DisplayPaused = true; pausedHistory = Capture(Oldest, NextSample - 1); } }
     public void ForceTrigger()
     {
-        if (!trigger.Enabled || SingleCompleted || pendingTrigger != null) return;
-        long size = Math.Max(2, (long)Math.Ceiling(viewSeconds * SampleRate));
-        long before = (long)Math.Floor((size - 1) * trigger.Pretrigger);
-        long at = NextSample - 1;
-        if (at < before || at - before < Oldest) return;
-        pendingTrigger = at; captureEnd = at + size - before - 1;
-        DisplayPaused = false;
+        lock (SyncRoot) {
+            if (!trigger.Enabled || SingleCompleted || pendingTrigger != null) return;
+            long size = Math.Max(2, (long)Math.Ceiling(viewSeconds * SampleRate));
+            long before = (long)Math.Floor((size - 1) * trigger.Pretrigger);
+            long at = NextSample - 1;
+            if (at < before || at - before < Oldest) return;
+            pendingTrigger = at; captureEnd = at + size - before - 1;
+            DisplayPaused = false; pausedHistory = null;
+
+        }
     }
     public static bool Crosses(double previous, double current, double level, RealtimeScopeEdge edge) =>
         edge == RealtimeScopeEdge.Rising ? previous < level && current >= level : previous > level && current <= level;
@@ -173,75 +187,111 @@ public sealed class RealtimeScopePreview
         Math.Sin(2 * Math.PI * 50 * sample / sampleRate + (channel - 1) * Math.PI / 3) * (1 + (channel - 1) % 3 * 0.5);
     public void Advance(int count)
     {
-        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-        for (int i = 0; i < count && !SingleCompleted; i++)
-            Append(values.Keys.ToDictionary(channel => channel, channel => Signal(channel, NextSample, SampleRate)));
+        lock (SyncRoot) {
+            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+            for (int i = 0; i < count && !SingleCompleted; i++)
+                Append(values.Keys.ToDictionary(channel => channel, channel => Signal(channel, NextSample, SampleRate)));
+
+        }
     }
     public void Append(IReadOnlyDictionary<int, double> sample)
     {
-        if (SingleCompleted) return;
-        if (values.Keys.Any(channel => !sample.ContainsKey(channel))) throw new ArgumentException("采样通道布局不完整。");
-        long window = Math.Max(2, (long)Math.Ceiling(viewSeconds * SampleRate));
-        long before = (long)Math.Floor((window - 1) * trigger.Pretrigger);
-        long after = window - before - 1;
-            long n = NextSample;
-            double previous = n > 0 && values.TryGetValue(trigger.Channel, out var source) ? source[(n - 1) % Capacity] : double.NaN;
-            foreach (var channel in values) channel.Value[n % Capacity] = sample[channel.Key];
-            NextSample++;
-            // Reception continues even while the displayed snapshot is paused.
-            if (!trigger.Enabled || DisplayPaused) return;
-            if (pendingTrigger == null && n >= before && n >= armedAt && n > 0 &&
-                Crosses(previous, sample[trigger.Channel], trigger.Level, trigger.Edge))
-            {
-                pendingTrigger = n;
-                captureEnd = n + after;
-            }
-            if (pendingTrigger != null && n >= captureEnd)
-            {
-                CompletedTrigger = pendingTrigger;
-                pendingTrigger = null;
-                lastCapture = NextSample;
-                SingleCompleted = trigger.Mode == RealtimeScopeTriggerMode.Single;
-                if (AutoPauseEligible || SingleCompleted) DisplayPaused = true;
-                TriggerCompleted?.Invoke();
-            }
+        lock (SyncRoot) {
+            if (SingleCompleted) return;
+            if (values.Keys.Any(channel => !sample.ContainsKey(channel))) throw new ArgumentException("采样通道布局不完整。");
+            long window = Math.Max(2, (long)Math.Ceiling(viewSeconds * SampleRate));
+            long before = (long)Math.Floor((window - 1) * trigger.Pretrigger);
+            long after = window - before - 1;
+                long n = NextSample;
+                double previous = n > 0 && values.TryGetValue(trigger.Channel, out var source) ? source[(n - 1) % Capacity] : double.NaN;
+                foreach (var channel in values) channel.Value[n % Capacity] = sample[channel.Key];
+                NextSample++;
+                // Reception continues even while the displayed snapshot is paused.
+                if (!trigger.Enabled || DisplayPaused) return;
+                if (pendingTrigger == null && n >= before && n >= armedAt && n > 0 &&
+                    Crosses(previous, sample[trigger.Channel], trigger.Level, trigger.Edge))
+                {
+                    pendingTrigger = n;
+                    captureEnd = n + after;
+                }
+                if (pendingTrigger != null && n >= captureEnd)
+                {
+                    CompletedTrigger = pendingTrigger;
+                    pendingTrigger = null;
+                    lastCapture = NextSample;
+                    SingleCompleted = trigger.Mode == RealtimeScopeTriggerMode.Single;
+                    if (AutoPauseEligible || SingleCompleted) DisplayPaused = true;
+                    if (DisplayPaused) pausedHistory = Capture(Oldest, NextSample - 1);
+                    TriggerCompleted?.Invoke();
+                }
+
+        }
     }
     public (long First, long Last) Window()
     {
-        long size = Math.Max(2, (long)Math.Ceiling(viewSeconds * SampleRate));
-        long last = NextSample - 1;
-        if (trigger.Enabled && !AutoFallback && CompletedTrigger is long at)
-            last = at + size - (long)Math.Floor((size - 1) * trigger.Pretrigger) - 1;
-        return (Math.Max(Oldest, last - size + 1), Math.Min(last, NextSample - 1));
+        lock (SyncRoot) {
+            long size = Math.Max(2, (long)Math.Ceiling(viewSeconds * SampleRate));
+            long last = NextSample - 1;
+            if (trigger.Enabled && !AutoFallback && CompletedTrigger is long at)
+                last = at + size - (long)Math.Floor((size - 1) * trigger.Pretrigger) - 1;
+            return (Math.Max(Oldest, last - size + 1), Math.Min(last, NextSample - 1));
+
+        }
     }
     public double[] Samples(int channel, long first, long last)
     {
-        first = Math.Max(first, Oldest); last = Math.Min(last, NextSample - 1);
-        if (last < first || !values.TryGetValue(channel, out var buffer)) return [];
-        var result = new double[checked((int)(last - first + 1))];
-        for (int i = 0; i < result.Length; i++) result[i] = buffer[(first + i) % Capacity];
-        return result;
+        lock (SyncRoot) {
+            first = Math.Max(first, Oldest); last = Math.Min(last, NextSample - 1);
+            if (last < first || !values.TryGetValue(channel, out var buffer)) return [];
+            var result = new double[checked((int)(last - first + 1))];
+            int offset = (int)(first % Capacity), prefix = Math.Min(result.Length, Capacity - offset);
+            Array.Copy(buffer, offset, result, 0, prefix);
+            if (prefix < result.Length) Array.Copy(buffer, 0, result, prefix, result.Length - prefix);
+            return result;
+
+        }
+    }
+    public RealtimeScopeHistory Capture(long first, long last)
+    {
+        lock (SyncRoot) {
+            first = Math.Max(first, Oldest); last = Math.Min(last, NextSample - 1);
+            return new(first, last, Window().Last, TriggerEnabled && !AutoFallback ? CompletedTrigger : null,
+                values.Keys.ToDictionary(channel => channel, channel => Samples(channel, first, last)));
+        }
+    }
+    public RealtimeScopeHistory CaptureWindow()
+    {
+        lock (SyncRoot) { var window = Window(); return Capture(window.First, window.Last); }
+    }
+    public RealtimeScopeHistory CaptureHistory()
+    {
+        lock (SyncRoot) return DisplayPaused && pausedHistory != null ? pausedHistory : Capture(Oldest, NextSample - 1);
     }
     public (double[] X, double[] Y) Points(int channel, long first, long last, RealtimeScopeDisplay display, int pixels = 1000)
     {
-        first = Math.Max(first, Oldest);
-        last = Math.Min(last, NextSample - 1);
-        if (last < first || !values.TryGetValue(channel, out var buffer)) return ([], []);
-        var x = new List<double>();
-        var y = new List<double>();
-        long stride = Math.Max(1, (last - first + 1 + pixels - 1) / pixels);
-        void Add(long n) { x.Add(n * 1000.0 / SampleRate); y.Add(display.Divisions(buffer[n % Capacity])); }
-        for (long n = first; n <= last; n += stride)
-        {
-            long min = n, max = n, end = Math.Min(last, n + stride - 1);
-            for (long j = n + 1; j <= end; j++)
+        lock (SyncRoot) {
+            first = Math.Max(first, Oldest);
+            last = Math.Min(last, NextSample - 1);
+            if (last < first || !values.TryGetValue(channel, out var buffer)) return ([], []);
+            var x = new List<double>();
+            var y = new List<double>();
+            long stride = Math.Max(1, (last - first + 1 + pixels - 1) / pixels);
+            void Add(long n) { x.Add(n * 1000.0 / SampleRate); y.Add(display.Divisions(buffer[n % Capacity])); }
+            for (long n = first; n <= last; n += stride)
             {
-                if (buffer[j % Capacity] < buffer[min % Capacity]) min = j;
-                if (buffer[j % Capacity] > buffer[max % Capacity]) max = j;
+                long min = n, max = n, end = Math.Min(last, n + stride - 1);
+                for (long j = n + 1; j <= end; j++)
+                {
+                    if (buffer[j % Capacity] < buffer[min % Capacity]) min = j;
+                    if (buffer[j % Capacity] > buffer[max % Capacity]) max = j;
+                }
+                Add(Math.Min(min, max));
+                if (min != max) Add(Math.Max(min, max));
             }
-            Add(Math.Min(min, max));
-            if (min != max) Add(Math.Max(min, max));
+            return (x.ToArray(), y.ToArray());
+
         }
-        return (x.ToArray(), y.ToArray());
     }
 }
+
+public sealed record RealtimeScopeHistory(long First, long Last, long WindowLast, long? Trigger, IReadOnlyDictionary<int, double[]> Values);

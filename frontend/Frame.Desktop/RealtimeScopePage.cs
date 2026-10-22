@@ -472,7 +472,7 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
     private void AdvancePreview()
     {
         if (Closed || !previewRunning || preview == null) return;
-        if (deviceRunning) { _ = DrainDeviceAsync(); return; }
+        if (deviceRunning) { RefreshDevice(); return; }
         long target = (long)(clock.Elapsed.TotalSeconds * preview.SampleRate);
         int count = (int)Math.Clamp(target - generated, 0, preview.SampleRate / 5 + 1);
         bool wasPaused = preview.DisplayPaused;
@@ -493,26 +493,26 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         if (preview == null) return;
         if (preview.DisplayPaused || preview.SingleCompleted || !previewRunning) {
             if ((!retainedHistory || !ReferenceEquals(snapshotSource, preview)) && follow) {
-                snapshotAnchorLast = preview.Window().Last * 1000.0 / preview.SampleRate;
-                snapshotOriginMs = triggerEnabled.IsChecked == true && !preview.AutoFallback && preview.CompletedTrigger is long completed ? completed * 1000.0 / preview.SampleRate : 0;
+                var retained = preview.CaptureHistory();
+                snapshotAnchorLast = retained.WindowLast * 1000.0 / preview.SampleRate;
+                snapshotOriginMs = triggerEnabled.IsChecked == true && retained.Trigger is long completed ? completed * 1000.0 / preview.SampleRate : 0;
             }
             RetainHistorySnapshot(); return;
         }
-        var window = preview.Window();
+        RealtimeScopeHistory capture;
         if (!follow && !preview.DisplayPaused) {
             var limits = plot.Plot.Axes.GetLimits();
-            window = ((long)Math.Floor((limits.Left + snapshotOriginMs) * preview.SampleRate / 1000), (long)Math.Ceiling((limits.Right + snapshotOriginMs) * preview.SampleRate / 1000));
+            capture = preview.Capture((long)Math.Floor((limits.Left + snapshotOriginMs) * preview.SampleRate / 1000), (long)Math.Ceiling((limits.Right + snapshotOriginMs) * preview.SampleRate / 1000));
         }
-        if (follow) snapshotOriginMs = triggerEnabled.IsChecked == true && !preview.AutoFallback && preview.CompletedTrigger is long triggerAt ? triggerAt * 1000.0 / preview.SampleRate : 0;
-        if (window.Last < window.First) return;
-        window = (Math.Max(preview.Oldest, window.First), Math.Min(preview.NextSample - 1, window.Last));
-        if (window.Last < window.First) return;
+        else capture = preview.CaptureWindow();
+        if (follow) snapshotOriginMs = triggerEnabled.IsChecked == true && capture.Trigger is long triggerAt ? triggerAt * 1000.0 / preview.SampleRate : 0;
+        if (capture.Last < capture.First) return;
         snapshot.Clear(); rawSnapshot.Clear(); retainedHistory = false;
-        snapshotFirst = window.First * 1000.0 / preview.SampleRate; snapshotLast = window.Last * 1000.0 / preview.SampleRate;
+        snapshotFirst = capture.First * 1000.0 / preview.SampleRate; snapshotLast = capture.Last * 1000.0 / preview.SampleRate;
         snapshotAnchorLast = snapshotLast;
         snapshotSource = preview;
         foreach (var channel in workspace.Configuration.Enabled) {
-            var raw = preview.Samples(channel.Number, window.First, window.Last);
+            var raw = capture.Values[channel.Number];
             rawSnapshot[channel.Number] = raw;
             snapshot[channel.Number] = raw.Length == 0 ? ([], []) : ([snapshotFirst, snapshotLast], [raw[0], raw[^1]]);
         }
@@ -520,12 +520,13 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
     private void RetainHistorySnapshot()
     {
         if (preview == null || preview.NextSample == 0 || (retainedHistory && ReferenceEquals(snapshotSource, preview))) return;
-        if (snapshot.Count == 0 || !ReferenceEquals(snapshotSource, preview)) snapshotAnchorLast = preview.Window().Last * 1000.0 / preview.SampleRate;
-        snapshotFirst = preview.Oldest * 1000.0 / preview.SampleRate;
-        snapshotLast = (preview.NextSample - 1) * 1000.0 / preview.SampleRate;
+        var capture = preview.CaptureHistory();
+        if (snapshot.Count == 0 || !ReferenceEquals(snapshotSource, preview)) snapshotAnchorLast = capture.WindowLast * 1000.0 / preview.SampleRate;
+        snapshotFirst = capture.First * 1000.0 / preview.SampleRate;
+        snapshotLast = capture.Last * 1000.0 / preview.SampleRate;
         snapshot.Clear(); rawSnapshot.Clear();
         foreach (var channel in workspace.Configuration.Enabled) {
-            var raw = preview.Samples(channel.Number, preview.Oldest, preview.NextSample - 1);
+            var raw = capture.Values[channel.Number];
             rawSnapshot[channel.Number] = raw;
             snapshot[channel.Number] = raw.Length == 0 ? ([], []) : ([snapshotFirst, snapshotLast], [raw[0], raw[^1]]);
         }
@@ -634,7 +635,7 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         discoveryWindow?.Close();
         parameterPicker?.Close();
         var symbols = symbolClient is { } client ? client.DisposeAsync().AsTask() : Task.CompletedTask;
-        ShutdownCompletion = Task.WhenAll(symbols, deviceStopTask, deviceConfigurationTask, scopeLink.DisposeAsync().AsTask());
+        ShutdownCompletion = Task.WhenAll(symbols, deviceStopTask, deviceStatusTask, deviceConfigurationTask, scopeLink.DisposeAsync().AsTask());
     }
     private void Try(Action action) { if (Closed) return; try { action(); } catch (Exception error) { Status(error.Message); } }
     private static double Read(TextBox input, string name) => double.TryParse(input.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value) ? value : throw new ArgumentException(name + "请输入有效数值。");

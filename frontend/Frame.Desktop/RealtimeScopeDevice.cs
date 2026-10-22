@@ -9,12 +9,17 @@ public sealed partial class RealtimeScopePage
 {
     private readonly ComboBox sourceChoice = Choice("realtime_source", "设备", "模拟源");
     private readonly TextBlock sourceBadge = Text("设备");
-    private bool deviceRunning, deviceDraining;
+    private bool deviceRunning;
+    private RealtimeScopeAcquisition? deviceAcquisition;
+    private Task deviceReceiveStopTask = Task.CompletedTask;
+    private long displayedTriggerRevision;
     private int deviceGeneration;
     private Task deviceStopTask = Task.CompletedTask;
+    private Task deviceStatusTask = Task.CompletedTask;
     private long deviceByteBudget;
     private long nextDeviceStatus;
     public string LastDeviceFault { get; private set; } = "";
+    public string LastDeviceStatusError { get; private set; } = "";
     private string? verifiedDeviceBindings;
     private string? publicConnection;
     private string? synchronizedConnection;
@@ -116,6 +121,7 @@ public sealed partial class RealtimeScopePage
     {
         StopPreview(); await deviceStopTask; await deviceConfigurationTask;
         LastDeviceFault = "";
+        LastDeviceStatusError = "";
         if (sourceChoice.SelectedIndex == 1) { StartSimulation(); return; }
         if (BindingsNeedRefresh) throw new InvalidOperationException(synchronizationError ?? "参数绑定待更新，请先参数同步。");
         if (demonstrationSymbols) throw new InvalidOperationException("示例地址不能用于设备采样。");
@@ -147,14 +153,17 @@ public sealed partial class RealtimeScopePage
         }
         if (!ready) throw new InvalidOperationException("设备数据链路尚未就绪。");
         await scopeLink.CommandAsync("configure", new() { ["channels"] = channels });
-        preview = candidate; preview.TriggerCompleted += CaptureSnapshot;
+        preview = candidate;
         UpdateSources(); ConfigurePreviewCore(); snapshot.Clear(); rawSnapshot.Clear(); retainedHistory = false; snapshotSource = null; snapshotOriginMs = 0; follow = true;
         try {
             await scopeLink.CommandAsync("start", new() { ["frequency"] = candidate.SampleRate });
             var started = await ControlAsync("start");
             if (started["frequency"]!.GetValue<int>() != candidate.SampleRate) throw new InvalidOperationException("设备采样率已变化，请重新查询后运行。");
             nextDeviceStatus = 0;
-            deviceRunning = true; ++deviceGeneration; previewRunning = true; previewTimer.Start();
+            deviceRunning = true; ++deviceGeneration;
+            deviceAcquisition = new(scopeLink, candidate, workspace.Configuration.Enabled.Select(channel => channel.Number));
+            displayedTriggerRevision = 0; deviceAcquisition.Start();
+            previewRunning = true; previewTimer.Start();
             sourceBadge.Text = "设备"; syncState.Text = "已同步"; PendingDeviceConfiguration = [];
             frequency.IsEnabled = history.IsEnabled = sourceChoice.IsEnabled = false; UpdateSummary(); UpdateRunState();
         }
@@ -172,41 +181,57 @@ public sealed partial class RealtimeScopePage
     {
         if (!deviceRunning) return;
         deviceRunning = false; ++deviceGeneration; sourceChoice.IsEnabled = true;
+        deviceReceiveStopTask = deviceAcquisition?.StopAsync() ?? Task.CompletedTask;
+        deviceAcquisition = null;
         deviceStopTask = StopDeviceCoreAsync();
     }
     private async Task StopDeviceCoreAsync()
     {
-        try { await ControlAsync("stop"); }
+        try { await deviceReceiveStopTask; await ControlAsync("stop"); }
         catch (Exception error) { if (!Closed) Status(error.Message); }
     }
-    private async Task DrainDeviceAsync()
+    private async Task PollDeviceStatusAsync(int generation)
     {
-        if (deviceDraining || !deviceRunning || preview == null) return;
-        deviceDraining = true; int generation = deviceGeneration;
         try {
-            var batch = await scopeLink.CommandAsync("drain");
-            if (Environment.TickCount64 >= nextDeviceStatus) {
-                var status = await ControlAsync("status");
-                nextDeviceStatus = Environment.TickCount64 + 500;
-                if (status["fault"]?.ToString() is { Length: > 0 } deviceFault) batch["fault"] = deviceFault;
-                else if (status["link_fault"]?.GetValue<long>() is > 0) batch["fault"] = $"设备数据链路异常（{status["link_fault"]}）。";
-                if (status["running"]?.GetValue<bool>() != true) batch["running"] = false;
+            var status = await ControlAsync("status");
+            if (Closed || !deviceRunning || generation != deviceGeneration) return;
+            if (LastDeviceStatusError.Length > 0) { LastDeviceStatusError = ""; Status("设备状态查询已恢复。"); }
+            string fault = status["fault"]?.ToString() ?? "";
+            if (fault.Length == 0 && status["link_fault"]?.GetValue<long>() is > 0)
+                fault = $"设备数据链路异常（{status["link_fault"]}）。";
+            if (fault.Length > 0 || status["running"]?.GetValue<bool>() != true) {
+                LastDeviceFault = fault.Length > 0 ? fault : "设备已停止采样。";
+                StopPreview(); Status(LastDeviceFault);
             }
-            if (Closed || !deviceRunning || generation != deviceGeneration || preview == null) return;
-            bool paused = preview.DisplayPaused;
-            var channels = workspace.Configuration.Enabled.ToArray();
-            foreach (var row in batch["rows"]!.AsArray().OfType<JsonObject>()) {
-                var values = row["values"]!.AsArray();
-                preview.Append(channels.Select((channel, i) => (channel.Number, Value: values[i]?.GetValue<double>() ?? double.NaN)).ToDictionary(item => item.Number, item => item.Value));
-                if (preview.SingleCompleted) break;
-            }
-            if (!paused) { if (!preview.DisplayPaused && (preview.AutoFallback || !preview.TriggerEnabled || !follow)) CaptureSnapshot(); RenderSnapshot(); }
-            string fault = batch["fault"]?.ToString() ?? "";
-            if (fault.Length > 0 || batch["running"]?.GetValue<bool>() != true) { LastDeviceFault = fault.Length > 0 ? fault : "设备已停止采样。"; StopPreview(); Status(LastDeviceFault); }
-            else if (preview.SingleCompleted) StopPreview();
-            UpdateRunState();
         }
-        catch (Exception error) { if (!Closed && generation == deviceGeneration) { LastDeviceFault = error.Message; StopPreview(); Status(error.Message); } }
-        finally { deviceDraining = false; }
+        catch (Exception error) {
+            if (!Closed && deviceRunning && generation == deviceGeneration) {
+                if (LastDeviceStatusError != error.Message) Status("设备状态查询失败，数据接收继续：" + error.Message);
+                LastDeviceStatusError = error.Message;
+            }
+        }
+        finally {
+            if (generation == deviceGeneration) nextDeviceStatus = Environment.TickCount64 + 500;
+        }
+    }
+    private void RefreshDevice()
+    {
+        if (!deviceRunning || preview == null || deviceAcquisition == null) return;
+        bool controlIdle = Client.Snapshot()["jobs"]?.AsArray().OfType<JsonObject>()
+            .Any(job => job["background_stream"]?.GetValue<bool>() == false) != true;
+        if (Environment.TickCount64 >= nextDeviceStatus && deviceStatusTask.IsCompleted && controlIdle) {
+            nextDeviceStatus = Environment.TickCount64 + 500;
+            deviceStatusTask = PollDeviceStatusAsync(deviceGeneration);
+        }
+        if (!deviceRunning || deviceAcquisition == null) return;
+        long revision = deviceAcquisition.TriggerRevision;
+        if (revision != displayedTriggerRevision || (!preview.DisplayPaused && (preview.AutoFallback || !preview.TriggerEnabled || !follow))) {
+            displayedTriggerRevision = revision; CaptureSnapshot();
+        }
+        RenderSnapshot();
+        string fault = deviceAcquisition.Fault;
+        if (fault.Length > 0) { LastDeviceFault = fault; StopPreview(); Status(fault); }
+        else if (preview.SingleCompleted) StopPreview();
+        UpdateRunState();
     }
 }
