@@ -27,7 +27,7 @@ public sealed partial class RealtimeScopePage
     private void InitializeInstrument()
     {
         sourceChoice.SelectionChanged += (_, _) => {
-            StopPreview(); preview = null; snapshot.Clear(); rawSnapshot.Clear(); snapshotOriginMs = 0;
+            StopPreview(); preview = null; snapshot.Clear(); rawSnapshot.Clear(); retainedHistory = false; snapshotSource = null; snapshotOriginMs = 0;
             sourceBadge.Text = sourceChoice.SelectedIndex == 1 ? "模拟源" : "设备";
             frequency.IsReadOnly = sourceChoice.SelectedIndex == 0; verifiedDeviceBindings = null;
             frequency.Text = sourceChoice.SelectedIndex == 0 ? "待同步" : "30000";
@@ -223,16 +223,21 @@ public sealed partial class RealtimeScopePage
             lines.Add($"Y1 = {Value(y1)}\nY2 = {Value(y2)}\nΔY = {Value(y2 - y1)}");
         }
         cursorValues.Text = string.Join("\n", lines);
-        var m = RealtimeScopeMeasurements.Calculate(samples, display, preview.SampleRate);
+        var view = plot.Plot.Axes.GetLimits();
+        int first = (int)Math.Clamp(Math.Ceiling((view.Left + snapshotOriginMs - snapshotFirst) * preview.SampleRate / 1000), 0, samples.Length);
+        int end = (int)Math.Clamp(Math.Floor((view.Right + snapshotOriginMs - snapshotFirst) * preview.SampleRate / 1000) + 1, first, samples.Length);
+        var visibleSamples = first == 0 && end == samples.Length ? samples : samples[first..end];
+        var m = RealtimeScopeMeasurements.Calculate(visibleSamples, display, preview.SampleRate);
         measurements.Text = m == null ? "无有效测量（含非有限值）" :
             $"最大    {Value(m.Maximum)}\n最小    {Value(m.Minimum)}\n峰峰值  {Value(m.PeakToPeak)}\n均值    {Value(m.Mean)}\nRMS     {Value(m.Rms)}\n频率    {(m.Frequency is double hz ? $"{hz:G6} Hz" : "—")}" +
-            $"\n周期    {(m.Period is double period ? $"{period * 1000:G6} ms" : "—")}\n占空比  {(m.Duty is double duty ? $"{duty:G5} %" : "—")}\n样本数  {samples.Length}";
+            $"\n周期    {(m.Period is double period ? $"{period * 1000:G6} ms" : "—")}\n占空比  {(m.Duty is double duty ? $"{duty:G5} %" : "—")}\n样本数  {visibleSamples.Length}";
     }
     private void AutoSet() => Try(() => {
         if (preview == null) return;
         var measured = workspace.Configuration.Enabled.Where(channel => channel.Display.Visible)
             .Select(channel => (Channel: channel, Measurement: RealtimeScopeMeasurements.Calculate(
-                preview.Samples(channel.Number, preview.Oldest, preview.NextSample - 1), channel.Display, preview.SampleRate)))
+                retainedHistory && ReferenceEquals(snapshotSource, preview) && rawSnapshot.TryGetValue(channel.Number, out var held)
+                    ? held : preview.Samples(channel.Number, preview.Oldest, preview.NextSample - 1), channel.Display, preview.SampleRate)))
             .Where(item => item.Measurement != null).ToArray();
         if (measured.Length == 0) return;
         foreach (var (channel, measurement) in measured) {

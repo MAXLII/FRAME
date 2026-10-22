@@ -148,7 +148,7 @@ public sealed partial class RealtimeScopePage
         if (!ready) throw new InvalidOperationException("设备数据链路尚未就绪。");
         await scopeLink.CommandAsync("configure", new() { ["channels"] = channels });
         preview = candidate; preview.TriggerCompleted += CaptureSnapshot;
-        UpdateSources(); ConfigurePreviewCore(); snapshot.Clear(); rawSnapshot.Clear(); snapshotOriginMs = 0; follow = true;
+        UpdateSources(); ConfigurePreviewCore(); snapshot.Clear(); rawSnapshot.Clear(); retainedHistory = false; snapshotSource = null; snapshotOriginMs = 0; follow = true;
         try {
             await scopeLink.CommandAsync("start", new() { ["frequency"] = candidate.SampleRate });
             var started = await ControlAsync("start");

@@ -404,8 +404,8 @@ internal static class RealtimeScopeTests
         Require(page.Preview.AutoPauseEligible && !page.Preview.IsRolling, "100ms must remain eligible for triggering and pause");
         Control<TextBox>(page, "realtime_window_ms").Text = "250"; WheelTime(-120);
         Require(Control<TextBox>(page, "realtime_window_ms").Text == "500" && !page.Preview.AutoPauseEligible && Control<CheckBox>(page, "realtime_trigger_pause").IsEnabled == false, "500ms window must disable trigger pause");
-        Require(page.Preview.IsRolling && !page.Preview.TriggerEnabled && !page.Preview.DisplayPaused && !Control<ComboBox>(page, "realtime_trigger_mode").IsEnabled &&
-            Control<ComboBox>(page, "realtime_trigger_mode").SelectedItem?.ToString() == "滚动" && !Control<Button>(page, "realtime_single").IsEnabled, "500ms must enter untriggered Roll and clear the old triggered hold");
+        Require(page.Preview.IsRolling && !page.Preview.TriggerEnabled && page.Preview.DisplayPaused && !Control<ComboBox>(page, "realtime_trigger_mode").IsEnabled &&
+            Control<ComboBox>(page, "realtime_trigger_mode").SelectedItem?.ToString() == "滚动" && !Control<Button>(page, "realtime_single").IsEnabled, "500ms must enter untriggered Roll while retaining the frozen history");
         Require(!triggerLevelBox.IsEnabled && !Control<Button>(page, "realtime_force").IsEnabled, "Roll must disable trigger controls");
         Require(plot.Plot.GetPlottables<ScottPlot.Plottables.HorizontalLine>().Count() == 2 && plot.Plot.GetPlottables<ScottPlot.Plottables.Marker>().Count() == 1 && plot.Plot.GetPlottables<ScottPlot.Plottables.Polygon>().Count() == 1, "Running Roll must retain both trigger indicators without a level line");
         dragField.SetValue(page, 5); renderMethod.Invoke(page, null);
@@ -415,6 +415,7 @@ internal static class RealtimeScopeTests
         Require(triggerLevelBox.Text == "0.5" && page.Preview.IsRolling && !page.Preview.TriggerEnabled, "Roll cursor drag must update the saved level without enabling triggering");
         dragField.SetValue(page, -1); renderMethod.Invoke(page, null);
         Require(plot.Plot.GetPlottables<ScottPlot.Plottables.HorizontalLine>().Count() == 2, "Releasing T in Roll must hide its reference line");
+        Click(page, "realtime_pause");
         typeof(RealtimeScopePage).GetField("follow", flags)!.SetValue(page, false);
         double left = (page.Preview.NextSample - 2000) * 1000.0 / page.Preview.SampleRate;
         double right = (page.Preview.NextSample - 1000) * 1000.0 / page.Preview.SampleRate;
@@ -455,11 +456,59 @@ internal static class RealtimeScopeTests
         page.StopPreview();
         var source = Control<ComboBox>(page, "realtime_source"); source.SelectedIndex = 1;
         page.StartPreview(); page.AdvancePreviewForTest(9000); page.StopPreview();
+        HistoryRetention(page);
         source.SelectedIndex = 0;
         Require(page.Preview == null && !plot.Plot.GetPlottables<ScottPlot.Plottables.Scatter>().Any() &&
             ((TextBlock)typeof(RealtimeScopePage).GetField("sourceBadge", flags)!.GetValue(page)!).Text == "设备", "Switching to device must clear simulated samples and the simulated source badge");
         await ReloadAndSynchronize(page, root);
         Console.WriteLine("PASS: ELF member expansion, parameter picker, context-menu CH32 and sequential add, single channel list, scope modes, measurements, cursor readouts and screenshot: " + output);
+    }
+    private static void HistoryRetention(RealtimeScopePage page)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var frequency = Control<TextBox>(page, "realtime_frequency");
+        var history = Control<TextBox>(page, "realtime_history");
+        var window = Control<TextBox>(page, "realtime_window_ms");
+        string oldFrequency = frequency.Text, oldHistory = history.Text, oldWindow = window.Text;
+        var configure = typeof(RealtimeScopePage).GetMethod("ConfigurePreview", flags)!;
+        var zoom = typeof(RealtimeScopePage).GetMethod("ZoomTime", flags)!;
+        Dictionary<int, double[]> Raw() => (Dictionary<int, double[]>)typeof(RealtimeScopePage).GetField("rawSnapshot", flags)!.GetValue(page)!;
+        void Window(string value) { window.Text = value; configure.Invoke(page, null); }
+        try {
+            frequency.Text = "1000"; history.Text = "1"; Window("500");
+            page.StartPreview(); page.AdvancePreviewForTest(1500);
+            var preview = page.Preview!; int channel = preview.Channels.First();
+            long first = preview.Oldest, next = preview.NextSample;
+            var expected = preview.Samples(channel, first, next - 1);
+            foreach (string duration in new[] { "0.01", "250", "1000", "500" }) {
+                Window(duration);
+                Require(ReferenceEquals(preview, page.Preview) && preview.NextSample == next && preview.Oldest == first && preview.Capacity == 1000 &&
+                    preview.Samples(channel, first, next - 1).SequenceEqual(expected), "Changing the timebase must preserve every retained sample and the original history capacity");
+            }
+            Click(page, "realtime_pause");
+            var frozen = Raw()[channel];
+            Require(frozen.SequenceEqual(expected), "Freeze must retain full history, including samples outside the visible window");
+            page.AdvancePreviewForTest(1500);
+            Require(preview.Oldest > next, "Freeze test must overwrite the entire live ring");
+            foreach (double factor in new[] { 0.00002, 100000.0, 0.02, 50.0 }) {
+                zoom.Invoke(page, new object[] { factor });
+                Require(preview.DisplayPaused && ReferenceEquals(frozen, Raw()[channel]) && frozen.SequenceEqual(expected),
+                    "Frozen zoom across Roll/trigger boundaries must preserve the complete snapshot even after live history expiry");
+            }
+            Click(page, "realtime_pause"); page.AdvancePreviewForTest(10);
+            expected = preview.Samples(channel, preview.Oldest, preview.NextSample - 1);
+            page.StopPreview();
+            var stopped = Raw()[channel];
+            Require(stopped.SequenceEqual(expected), "Stopping must retain all history rather than just the current view");
+            foreach (double factor in new[] { 0.00002, 100000.0 }) {
+                zoom.Invoke(page, new object[] { factor });
+                Require(ReferenceEquals(stopped, Raw()[channel]) && stopped.SequenceEqual(expected), "Stopped timebase changes must not trim retained data");
+            }
+            Console.WriteLine("PASS: running, frozen and stopped timebase changes retain full bounded raw history, including after live-ring overwrite.");
+        }
+        finally {
+            page.StopPreview(); frequency.Text = oldFrequency; history.Text = oldHistory; window.Text = oldWindow;
+        }
     }
     private static async Task ReloadAndSynchronize(RealtimeScopePage page, string root)
     {

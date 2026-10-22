@@ -29,20 +29,45 @@ internal static class RealtimeScopeConfigurationTests
     {
         string Arg(string key) => args[Array.IndexOf(args, key) + 1];
         string path = Path.GetFullPath(Arg("--elf")), port = Arg("--port");
+        string host = args.Contains("--host") ? Arg("--host") : "192.168.1.17";
         var common = Field<BackendClient>(window, "client");
         var pages = Field<System.Collections.IDictionary>(window, "pages");
         ((ListBox)window.FindName("Navigation")).SelectedIndex = pages.Keys.Cast<string>().ToList().IndexOf("realtime-scope");
         var state = pages["realtime-scope"]!;
         var page = (RealtimeScopePage)state.GetType().GetField("Diagnostic")!.GetValue(state)!;
-        string output = Path.Combine(root, "build/scope-configuration-hardware"); Directory.CreateDirectory(output);
+        string output = args.Contains("--output") ? Path.GetFullPath(Arg("--output")) : Path.Combine(root, "build/scope-configuration-hardware"); Directory.CreateDirectory(output);
         var report = new JsonObject { ["hardware"] = true, ["passed"] = false, ["port"] = port, ["elf"] = path };
-        async Task<JsonObject> Execute(JsonObject command) {
+        bool demoParameters = args.Contains("--demo-parameters");
+        double? originalAmplitude = null, originalFrequency = null;
+        async Task<JsonNode?> Query(JsonObject command) {
             var result = await common.ExecuteAsync(command);
             Require(result["ok"]?.GetValue<bool>() == true, result.ToJsonString());
-            return result["data"]!.AsObject();
+            return result["data"];
+        }
+        async Task<JsonObject> Execute(JsonObject command) => (await Query(command))!.AsObject();
+        Task<JsonObject> WriteParameter(string name, double value) => Execute(new() { ["group"] = "param", ["action"] = "write", ["name"] = name,
+            ["value"] = value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) });
+        async Task SetDemo(double amplitude, int hz) {
+            await WriteParameter("DEMO_SCOPE_AMPLITUDE", amplitude);
+            await WriteParameter("DEMO_SCOPE_FREQUENCY", hz);
+            var a = await Execute(new() { ["group"] = "param", ["action"] = "read", ["name"] = "DEMO_SCOPE_AMPLITUDE" });
+            var f = await Execute(new() { ["group"] = "param", ["action"] = "read", ["name"] = "DEMO_SCOPE_FREQUENCY" });
+            Require(Math.Abs(a["value"]!.GetValue<double>() - amplitude) < 1e-5 && f["value"]!.GetValue<double>() == hz,
+                "Physical amplitude/frequency parameter readback mismatch");
         }
         try {
-            await Execute(new() { ["group"] = "connect", ["transport"] = "serial", ["port"] = port, ["baud"] = 115200, ["dst"] = 2, ["wire"] = "e8" });
+            await Execute(args.Contains("--control-tcp")
+                ? new() { ["group"] = "connect", ["transport"] = "tcp", ["host"] = host, ["tcp_port"] = 5000, ["dst"] = 2, ["wire"] = "e8" }
+                : new() { ["group"] = "connect", ["transport"] = "serial", ["port"] = port, ["baud"] = 115200, ["dst"] = 2, ["wire"] = "e8" });
+            if (demoParameters) {
+                var directory = (await Query(new() { ["group"] = "param", ["action"] = "list" }))!.AsArray();
+                Require(new[] { "DEMO_SCOPE_AMPLITUDE", "DEMO_SCOPE_FREQUENCY" }.All(name => directory.Any(row => row!["name"]!.ToString() == name)),
+                    "Physical parameter directory is missing the writable waveform settings");
+                originalAmplitude = (await Execute(new() { ["group"] = "param", ["action"] = "read", ["name"] = "DEMO_SCOPE_AMPLITUDE" }))["value"]!.GetValue<double>();
+                originalFrequency = (await Execute(new() { ["group"] = "param", ["action"] = "read", ["name"] = "DEMO_SCOPE_FREQUENCY" }))["value"]!.GetValue<double>();
+                await SetDemo(2, 50);
+                report["demo_parameters"] = new JsonArray();
+            }
             Field<TextBox>(page, "elf").Text = path; Field<TextBox>(page, "map").Clear();
             foreach (var channel in page.Workspace.Configuration.Channels) channel.Assign(null);
             await page.SynchronizeParametersAsync();
@@ -71,11 +96,41 @@ internal static class RealtimeScopeConfigurationTests
                 for (int i = 1; i <= 8; i++) page.AssignSymbol(i <= 4 ? wave.Children[i - 1] : counter, i);
                 await page.ChannelConfigurationCompletion;
                 await page.SynchronizeParametersAsync();
-                Field<TextBox>(page, "linkHost").Text = "192.168.1.17";
+                Field<TextBox>(page, "linkHost").Text = host;
                 Field<TextBox>(page, "windowMs").Text = "1000";
-                await page.ScopeLink.ConnectAsync(new("tcp", "", 0, "192.168.1.17", 9001));
+                bool historyChecks = args.Contains("--history-checks");
+                if (historyChecks) Field<CheckBox>(page, "triggerPause").IsChecked = false;
+                await page.ScopeLink.ConnectAsync(new("tcp", "", 0, host, 9001));
                 await (Task)typeof(RealtimeScopePage).GetMethod("StartSelectedSourceAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(page, null)!;
                 long last = 0; double? previous = null; long gaps = 0;
+                double[]? frozen = null, frozenCopy = null;
+                long frozenEnd = 0; bool resumed = false; int scaleChanges = 0;
+                double nextScale = 2;
+                int parameterStage = 0;
+                void MeasureDemo(double amplitude, int hz) {
+                    var preview = page.Preview!;
+                    var measurements = new JsonArray();
+                    for (int channel = 1; channel <= 3; channel++) {
+                        var raw = preview.Samples(channel, preview.NextSample - preview.SampleRate / 2, preview.NextSample - 1);
+                        var measured = RealtimeScopeMeasurements.Calculate(raw, new(), preview.SampleRate);
+                        double peak = channel == 1 ? amplitude : amplitude / 2;
+                        // Triangle slope is 4*peak/period. The nearest sample can
+                        // miss the apex by half a sample plus one 625-entry LUT step.
+                        double tolerance = channel == 3
+                            ? Math.Max(0.01, peak * (2.0 * hz / preview.SampleRate + 4.0 / 625) + 1e-6)
+                            : Math.Max(0.01, peak * 0.01);
+                        Require(measured?.Frequency is double frequency && Math.Abs(frequency - hz) < hz * 0.005 &&
+                            Math.Abs(measured.Maximum - peak) < tolerance && Math.Abs(measured.Minimum + peak) < tolerance,
+                            $"Physical CH{channel} does not match amplitude {amplitude}/frequency {hz}: {measured}");
+                        measurements.Add(new JsonObject { ["channel"] = channel, ["minimum"] = measured!.Minimum,
+                            ["maximum"] = measured.Maximum, ["frequency_hz"] = measured.Frequency, ["peak_tolerance"] = tolerance });
+                    }
+                    report["demo_parameters"]!.AsArray().Add(new JsonObject { ["amplitude"] = amplitude, ["waveform_hz"] = hz, ["measured"] = measurements });
+                    Console.WriteLine($"PASS physical waveform parameters: amplitude {amplitude}, frequency {hz} Hz; CH1/2/3 peaks and periods match");
+                }
+                var configure = typeof(RealtimeScopePage).GetMethod("ConfigurePreview", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                void SetWindow(string value) { Field<TextBox>(page, "windowMs").Text = value; configure.Invoke(page, null); }
+                void Pause() => Field<Button>(page, "pauseButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 var watch = System.Diagnostics.Stopwatch.StartNew();
                 while (watch.Elapsed.TotalSeconds < seconds && page.PreviewRunning) {
                     await Task.Delay(250);
@@ -85,13 +140,65 @@ internal static class RealtimeScopeConfigurationTests
                         previous = value;
                     }
                     last = preview.NextSample;
+                    if (demoParameters) {
+                        if (parameterStage == 0 && watch.Elapsed.TotalSeconds >= 2) { MeasureDemo(2, 50); await SetDemo(0.8, 25); parameterStage++; }
+                        else if (parameterStage == 1 && watch.Elapsed.TotalSeconds >= 5) { MeasureDemo(0.8, 25); await SetDemo(3.2, 100); parameterStage++; }
+                        else if (parameterStage == 2 && watch.Elapsed.TotalSeconds >= 8) { MeasureDemo(3.2, 100); parameterStage++; }
+                        else if (parameterStage == 3 && watch.Elapsed.TotalSeconds >= 20) { await SetDemo(2, 50); parameterStage++; }
+                        else if (parameterStage == 4 && watch.Elapsed.TotalSeconds >= 23) { MeasureDemo(2, 50); parameterStage++; }
+                    }
+                    if (historyChecks) {
+                        if (frozen == null && watch.Elapsed.TotalSeconds >= 4) {
+                            var expected = preview.Samples(5, preview.Oldest, preview.NextSample - 1);
+                            Pause(); frozen = Field<Dictionary<int, double[]>>(page, "rawSnapshot")[5]; frozenCopy = frozen.ToArray();
+                            frozenEnd = preview.NextSample;
+                            Require(preview.DisplayPaused && frozen.SequenceEqual(expected), "Physical freeze did not retain all history");
+                        }
+                        if (frozen != null && !resumed && watch.Elapsed.TotalSeconds >= 16) {
+                            Require(preview.Oldest > frozenEnd && frozen.SequenceEqual(frozenCopy!), "Physical frozen history changed after live-ring overwrite");
+                            SetWindow("1000"); Pause(); resumed = true;
+                        }
+                        if (watch.Elapsed.TotalSeconds >= nextScale) {
+                            long oldest = preview.Oldest, next = preview.NextSample;
+                            var expected = preview.Samples(5, oldest, Math.Min(oldest + 127, next - 1));
+                            string[] durations = ["50", "500", "5000", "0.01", "1000", "10000"];
+                            SetWindow(durations[scaleChanges++ % durations.Length]);
+                            Require(preview.NextSample == next && preview.Oldest == oldest &&
+                                preview.Samples(5, oldest, Math.Min(oldest + 127, next - 1)).SequenceEqual(expected),
+                                "Physical timebase change discarded or rewrote cached samples");
+                            if (frozen != null && !resumed)
+                                Require(preview.DisplayPaused && ReferenceEquals(frozen, Field<Dictionary<int, double[]>>(page, "rawSnapshot")[5]) && frozen.SequenceEqual(frozenCopy!),
+                                    "Physical frozen timebase change replaced retained history");
+                            nextScale += 2;
+                        }
+                    }
                 }
                 report["stream_seconds"] = watch.Elapsed.TotalSeconds; report["stream_samples"] = page.Preview!.NextSample;
                 report["counter_gaps"] = gaps; report["last_fault"] = page.LastDeviceFault;
                 report["stream_status"] = (await Execute(new() { ["group"] = "realtime-scope-control", ["action"] = "status" })).DeepClone();
                 Require(page.PreviewRunning && gaps == 0 && report["stream_status"]!["overflows"]!.GetValue<int>() == 0,
                     "Physical GUI stream stopped, lost samples or overflowed: " + report.ToJsonString());
+                if (demoParameters) {
+                    Require(parameterStage == 5 && (await Execute(new() { ["group"] = "realtime-scope-control", ["action"] = "capabilities" }))["sample_frequency"]!.GetValue<int>() == actual,
+                        "Waveform settings must not change the fixed sampling rate");
+                    report["fixed_sampling_hz"] = actual;
+                }
                 page.StopPreview();
+                if (historyChecks) {
+                    Require(resumed && scaleChanges >= 8, "Physical history test did not complete freeze/overwrite/resume/zoom phases");
+                    var preview = page.Preview!;
+                    var stopped = Field<Dictionary<int, double[]>>(page, "rawSnapshot")[5];
+                    var expected = preview.Samples(5, preview.Oldest, preview.NextSample - 1);
+                    Require(stopped.Length == preview.Capacity && stopped.SequenceEqual(expected), "Physical stop retained less than the configured history");
+                    foreach (string duration in new[] { "0.01", "50", "10000", "60" }) {
+                        SetWindow(duration);
+                        Require(ReferenceEquals(stopped, Field<Dictionary<int, double[]>>(page, "rawSnapshot")[5]) && stopped.SequenceEqual(expected),
+                            "Physical stopped zoom discarded historical samples");
+                    }
+                    report["history_checks"] = new JsonObject { ["passed"] = true, ["timebase_changes"] = scaleChanges,
+                        ["retained_samples_per_channel"] = stopped.Length, ["frozen_samples_per_channel"] = frozen!.Length,
+                        ["live_overwrite_while_frozen"] = true, ["stopped_zoom_retained_full_capacity"] = true };
+                }
                 Console.WriteLine($"PASS physical GUI stream: {seconds} s, {last} samples, zero counter gaps/overflows");
             }
             window.UpdateLayout();
@@ -103,6 +210,8 @@ internal static class RealtimeScopeConfigurationTests
         }
         finally {
             await common.ExecuteAsync(new() { ["group"] = "realtime-scope-control", ["action"] = "stop" });
+            if (originalAmplitude is double amplitude) await WriteParameter("DEMO_SCOPE_AMPLITUDE", amplitude);
+            if (originalFrequency is double frequency) await WriteParameter("DEMO_SCOPE_FREQUENCY", frequency);
             await common.ExecuteAsync(new() { ["group"] = "disconnect" });
             File.WriteAllText(Path.Combine(output, "result.json"), report.ToJsonString(new() { WriteIndented = true }));
         }

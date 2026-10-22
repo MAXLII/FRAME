@@ -48,6 +48,9 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
     private long generated;
     private bool refreshing, follow = true, previewRunning, demonstrationSymbols;
     private double snapshotFirst, snapshotLast, snapshotOriginMs;
+    private double snapshotAnchorLast;
+    private bool retainedHistory;
+    private RealtimeScopePreview? snapshotSource;
     public RealtimeScopeWorkspace Workspace => workspace;
     public RealtimeScopePreview? Preview => preview;
     public bool PreviewRunning => previewRunning;
@@ -145,11 +148,13 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         previewButton = Click("运行", "realtime_preview", () => { if (previewRunning) StopPreview(); else { singleArmed = false; _ = Run(StartSelectedSourceAsync); } });
         pauseButton = Click("冻结", "realtime_pause", () => {
             if (preview == null) return;
-            if (preview.DisplayPaused) { preview.Rearm(); follow = true; } else preview.PauseDisplay(); UpdateRunState();
+            if (preview.DisplayPaused) { preview.Rearm(); retainedHistory = false; follow = true; }
+            else { preview.PauseDisplay(); RetainHistorySnapshot(); }
+            RenderSnapshot(); UpdateRunState();
         });
-        armButton = Click("重新触发", "realtime_arm", () => { preview?.Rearm(); follow = true; UpdateRunState(); });
+        armButton = Click("重新触发", "realtime_arm", () => { preview?.Rearm(); retainedHistory = false; follow = true; UpdateRunState(); });
         singleButton = Click("单次", "realtime_single", () => { if (!rollMode) { singleArmed = true; _ = Run(StartSelectedSourceAsync); } });
-        forceButton = Click("强制触发", "realtime_force", () => preview?.ForceTrigger());
+        forceButton = Click("强制触发", "realtime_force", () => { preview?.ForceTrigger(); retainedHistory = false; });
         InitializeInstrument();
         var root = new LayoutGrid(); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new()); root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.Children.Add(BuildHeader());
@@ -410,7 +415,7 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
     }
     private void ChannelsChanged(int? changedChannel = null)
     {
-        preview = null; snapshot.Clear(); rawSnapshot.Clear(); InvalidatePendingConfiguration();
+        preview = null; snapshot.Clear(); rawSnapshot.Clear(); snapshotSource = null; retainedHistory = false; InvalidatePendingConfiguration();
         UpdateSources(); UpdateSummary(); RenderSnapshot();
         if (changedChannel is int number) QueueChannelUpdate(number);
     }
@@ -451,13 +456,14 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         preview = ValidatePreview(workspace.Configuration);
         preview.TriggerCompleted += CaptureSnapshot;
         UpdateSources(); ConfigurePreviewCore();
-        snapshot.Clear(); rawSnapshot.Clear(); generated = 0; snapshotOriginMs = 0; follow = true;
+        snapshot.Clear(); rawSnapshot.Clear(); retainedHistory = false; snapshotSource = null; generated = 0; snapshotOriginMs = 0; follow = true;
         clock.Restart(); previewRunning = true; previewTimer.Start(); previewButton.Content = "停止预览";
         sourceBadge.Text = "模拟源"; sourceChoice.IsEnabled = false;
         frequency.IsEnabled = history.IsEnabled = false; UpdateSummary(); UpdateRunState();
     }
     public void StopPreview()
     {
+        if (previewRunning) RetainHistorySnapshot();
         StopDevice();
         previewTimer.Stop(); clock.Stop(); previewRunning = false; previewButton.Content = "开始预览";
         sourceChoice.IsEnabled = true;
@@ -485,6 +491,13 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
     private void CaptureSnapshot()
     {
         if (preview == null) return;
+        if (preview.DisplayPaused || preview.SingleCompleted || !previewRunning) {
+            if ((!retainedHistory || !ReferenceEquals(snapshotSource, preview)) && follow) {
+                snapshotAnchorLast = preview.Window().Last * 1000.0 / preview.SampleRate;
+                snapshotOriginMs = triggerEnabled.IsChecked == true && !preview.AutoFallback && preview.CompletedTrigger is long completed ? completed * 1000.0 / preview.SampleRate : 0;
+            }
+            RetainHistorySnapshot(); return;
+        }
         var window = preview.Window();
         if (!follow && !preview.DisplayPaused) {
             var limits = plot.Plot.Axes.GetLimits();
@@ -494,20 +507,37 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         if (window.Last < window.First) return;
         window = (Math.Max(preview.Oldest, window.First), Math.Min(preview.NextSample - 1, window.Last));
         if (window.Last < window.First) return;
-        snapshot.Clear(); rawSnapshot.Clear();
+        snapshot.Clear(); rawSnapshot.Clear(); retainedHistory = false;
         snapshotFirst = window.First * 1000.0 / preview.SampleRate; snapshotLast = window.Last * 1000.0 / preview.SampleRate;
+        snapshotAnchorLast = snapshotLast;
+        snapshotSource = preview;
         foreach (var channel in workspace.Configuration.Enabled) {
             var raw = preview.Samples(channel.Number, window.First, window.Last);
             rawSnapshot[channel.Number] = raw;
             snapshot[channel.Number] = raw.Length == 0 ? ([], []) : ([snapshotFirst, snapshotLast], [raw[0], raw[^1]]);
         }
     }
+    private void RetainHistorySnapshot()
+    {
+        if (preview == null || preview.NextSample == 0 || (retainedHistory && ReferenceEquals(snapshotSource, preview))) return;
+        if (snapshot.Count == 0 || !ReferenceEquals(snapshotSource, preview)) snapshotAnchorLast = preview.Window().Last * 1000.0 / preview.SampleRate;
+        snapshotFirst = preview.Oldest * 1000.0 / preview.SampleRate;
+        snapshotLast = (preview.NextSample - 1) * 1000.0 / preview.SampleRate;
+        snapshot.Clear(); rawSnapshot.Clear();
+        foreach (var channel in workspace.Configuration.Enabled) {
+            var raw = preview.Samples(channel.Number, preview.Oldest, preview.NextSample - 1);
+            rawSnapshot[channel.Number] = raw;
+            snapshot[channel.Number] = raw.Length == 0 ? ([], []) : ([snapshotFirst, snapshotLast], [raw[0], raw[^1]]);
+        }
+        retainedHistory = true;
+        snapshotSource = preview;
+    }
     private void RenderSnapshot()
     {
         if (Closed) return;
         plot.Plot.Clear();
         if (follow && snapshot.Count > 0) {
-            double span = ReadSafe(windowMs, 100); double right = Math.Max(snapshotLast, snapshotFirst + span) - snapshotOriginMs;
+            double span = ReadSafe(windowMs, 100); double right = Math.Max(snapshotAnchorLast, snapshotFirst + span) - snapshotOriginMs;
             plot.Plot.Axes.SetLimitsX(right - span, right);
         }
         var visible = plot.Plot.Axes.GetLimits();
@@ -536,7 +566,6 @@ public sealed partial class RealtimeScopePage : DiagnosticPage
         bool changed = modeInitialized && rollMode != nextRolling;
         if (changed) {
             singleArmed = false;
-            if (previewRunning && preview?.DisplayPaused != true) { snapshot.Clear(); rawSnapshot.Clear(); }
             follow = true;
         }
         rollMode = nextRolling; modeInitialized = true;

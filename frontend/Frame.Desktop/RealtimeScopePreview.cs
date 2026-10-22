@@ -146,7 +146,12 @@ public sealed class RealtimeScopePreview
         if (!double.IsFinite(settings.Level) || !double.IsFinite(settings.Pretrigger) || settings.Pretrigger < 0 || settings.Pretrigger > 1)
             throw new ArgumentException("触发电平或预触发比例无效。");
         if (settings.Enabled && !values.ContainsKey(settings.Channel)) throw new ArgumentException("触发源必须是已配置通道。");
-        if (seconds != viewSeconds || settings != trigger) Rearm();
+        if (seconds != viewSeconds || settings != trigger) {
+            bool paused = DisplayPaused, completed = SingleCompleted;
+            Rearm();
+            DisplayPaused = paused;
+            SingleCompleted = completed;
+        }
         viewSeconds = seconds;
         trigger = settings;
     }
